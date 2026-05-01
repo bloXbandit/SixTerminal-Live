@@ -18,6 +18,7 @@ ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(ROOT))
 
 from engine.xer_reader import load_xer
+from engine.xml_reader import load_xml
 from engine.xml_writer import write_p6_xml
 from engine.edit_engine import apply_commands
 from interpreter.llm_interpreter import interpret
@@ -60,9 +61,7 @@ def upload_file():
         if ext == ".xer":
             project = load_xer(tmp.name)
         else:
-            # XML reader — placeholder until xml_reader.py is built
-            # For now, return a clear message
-            return jsonify({"error": "P6 XML import coming soon. Please use XER for now."}), 400
+            project = load_xml(tmp.name)
 
         _session["project"] = project
         _session["source_path"] = tmp.name
