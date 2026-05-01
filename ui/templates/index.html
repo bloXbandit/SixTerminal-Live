@@ -48,6 +48,7 @@
       text-transform: uppercase;
     }
     .logo span { color: var(--text-dim); font-weight: 400; }
+    .header-right { display: flex; align-items: center; gap: 10px; }
     #project-badge {
       font-size: 12px;
       color: var(--text-dim);
@@ -57,6 +58,110 @@
       padding: 4px 10px;
     }
     #project-badge.loaded { color: var(--accent); border-color: var(--accent-dim); }
+    #settings-btn {
+      background: transparent;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      color: var(--text-dim);
+      cursor: pointer;
+      padding: 5px 10px;
+      font-size: 13px;
+      transition: border-color 0.15s, color 0.15s;
+    }
+    #settings-btn:hover { border-color: var(--accent); color: var(--accent); }
+    #model-indicator {
+      font-size: 11px;
+      color: var(--text-dim);
+      padding: 4px 8px;
+      background: #1a1a1a;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+    }
+    #model-indicator.key-set { color: var(--success); border-color: #1a4a2a; }
+    #model-indicator.no-key { color: var(--warning); border-color: #4a3a00; }
+
+    /* ── Settings Modal ── */
+    .modal-overlay {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.7);
+      z-index: 100;
+      align-items: center;
+      justify-content: center;
+    }
+    .modal-overlay.open { display: flex; }
+    .modal {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      width: 440px;
+      max-width: 95vw;
+      padding: 28px;
+    }
+    .modal h2 {
+      font-size: 16px;
+      font-weight: 700;
+      color: var(--text);
+      margin-bottom: 20px;
+    }
+    .form-group { margin-bottom: 18px; }
+    .form-group label {
+      display: block;
+      font-size: 12px;
+      color: var(--text-dim);
+      margin-bottom: 6px;
+      font-weight: 500;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+    .form-group select,
+    .form-group input {
+      width: 100%;
+      background: #0d0d0d;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      color: var(--text);
+      font-family: var(--font);
+      font-size: 13px;
+      padding: 10px 12px;
+      outline: none;
+      transition: border-color 0.2s;
+    }
+    .form-group select:focus,
+    .form-group input:focus { border-color: var(--accent); }
+    .form-group select option { background: #1a1a1a; }
+    .form-group .hint {
+      font-size: 11px;
+      color: var(--text-dim);
+      margin-top: 5px;
+      line-height: 1.5;
+    }
+    .modal-actions { display: flex; gap: 10px; justify-content: flex-end; margin-top: 24px; }
+    .btn {
+      padding: 9px 18px;
+      border-radius: 6px;
+      border: none;
+      font-size: 13px;
+      font-family: var(--font);
+      cursor: pointer;
+      font-weight: 500;
+      transition: opacity 0.15s;
+    }
+    .btn:disabled { opacity: 0.35; cursor: not-allowed; }
+    .btn-primary { background: var(--accent); color: #000; }
+    .btn-primary:hover:not(:disabled) { opacity: 0.85; }
+    .btn-ghost { background: transparent; color: var(--text-dim); border: 1px solid var(--border); }
+    .btn-ghost:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+    #settings-status {
+      font-size: 12px;
+      margin-top: 12px;
+      padding: 8px 12px;
+      border-radius: 6px;
+      display: none;
+    }
+    #settings-status.ok { background: #0a2a14; color: var(--success); display: block; }
+    #settings-status.err { background: #2a0a0a; color: var(--error); display: block; }
 
     /* ── Main layout ── */
     .main {
@@ -65,9 +170,9 @@
       overflow: hidden;
     }
 
-    /* ── Drop zone / sidebar ── */
+    /* ── Sidebar ── */
     .sidebar {
-      width: 280px;
+      width: 260px;
       border-right: 1px solid var(--border);
       background: var(--surface);
       display: flex;
@@ -109,22 +214,8 @@
       display: flex;
       flex-direction: column;
       gap: 8px;
+      margin-top: auto;
     }
-    .btn {
-      padding: 9px 14px;
-      border-radius: 6px;
-      border: none;
-      font-size: 13px;
-      font-family: var(--font);
-      cursor: pointer;
-      font-weight: 500;
-      transition: opacity 0.15s;
-    }
-    .btn:disabled { opacity: 0.35; cursor: not-allowed; }
-    .btn-primary { background: var(--accent); color: #000; }
-    .btn-primary:hover:not(:disabled) { opacity: 0.85; }
-    .btn-ghost { background: transparent; color: var(--text-dim); border: 1px solid var(--border); }
-    .btn-ghost:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
 
     /* ── Chat area ── */
     .chat-area {
@@ -145,10 +236,7 @@
     #messages::-webkit-scrollbar-track { background: transparent; }
     #messages::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
 
-    .msg {
-      max-width: 720px;
-      animation: fadeIn 0.2s ease;
-    }
+    .msg { max-width: 720px; animation: fadeIn 0.2s ease; }
     @keyframes fadeIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
     .msg.user { align-self: flex-end; }
     .msg.system { align-self: flex-start; }
@@ -171,7 +259,6 @@
     .msg-meta { font-size: 11px; color: var(--text-dim); margin-top: 4px; padding: 0 4px; }
     .msg.user .msg-meta { text-align: right; }
 
-    /* Result cards inside messages */
     .result-card {
       margin-top: 10px;
       background: #0d0d0d;
@@ -250,7 +337,7 @@
     #send-btn:hover:not(:disabled) { opacity: 0.85; }
     #send-btn svg { width: 18px; height: 18px; fill: #000; }
 
-    /* ── Welcome state ── */
+    /* ── Welcome ── */
     .welcome {
       flex: 1;
       display: flex;
@@ -281,9 +368,46 @@
 </head>
 <body>
 
+<!-- Settings Modal -->
+<div class="modal-overlay" id="settings-modal" onclick="closeSettingsOnOverlay(event)">
+  <div class="modal">
+    <h2>⚙ Model Settings</h2>
+
+    <div class="form-group">
+      <label>AI Model</label>
+      <select id="model-select">
+        <option value="gpt-4.1-mini">GPT-4.1 Mini (OpenAI)</option>
+        <option value="gpt-4.1-nano">GPT-4.1 Nano (OpenAI)</option>
+        <option value="claude">Claude (Anthropic)</option>
+      </select>
+      <div class="hint">GPT-4.1 Mini is the default and recommended model. Claude requires an Anthropic API key.</div>
+    </div>
+
+    <div class="form-group">
+      <label>API Key</label>
+      <input type="password" id="api-key-input" placeholder="Paste your API key here..." autocomplete="off" />
+      <div class="hint">
+        Your key is stored in memory only — never saved to disk or sent anywhere except the selected model's API.
+        Leave blank to use the <code>OPENAI_API_KEY</code> or <code>ANTHROPIC_API_KEY</code> environment variable.
+      </div>
+    </div>
+
+    <div id="settings-status"></div>
+
+    <div class="modal-actions">
+      <button class="btn btn-ghost" onclick="closeSettings()">Cancel</button>
+      <button class="btn btn-primary" onclick="saveSettings()">Save</button>
+    </div>
+  </div>
+</div>
+
 <header>
   <div class="logo">Six Terminal <span>Live</span></div>
-  <div id="project-badge">No schedule loaded</div>
+  <div class="header-right">
+    <div id="model-indicator" class="no-key">No key set</div>
+    <button id="settings-btn" onclick="openSettings()">⚙ Settings</button>
+    <div id="project-badge">No schedule loaded</div>
+  </div>
 </header>
 
 <div class="main">
@@ -340,6 +464,77 @@
 
 <script>
   let editCount = 0;
+
+  // ── Init: load current settings from server ──
+  async function initSettings() {
+    try {
+      const res = await fetch('/api/settings');
+      const data = await res.json();
+      updateModelIndicator(data.model_key, data.api_key_set);
+      document.getElementById('model-select').value = data.model_key;
+    } catch(e) { /* silent */ }
+  }
+  initSettings();
+
+  function updateModelIndicator(modelKey, keySet) {
+    const el = document.getElementById('model-indicator');
+    const labels = {
+      'gpt-4.1-mini': 'GPT-4.1 Mini',
+      'gpt-4.1-nano': 'GPT-4.1 Nano',
+      'claude': 'Claude',
+    };
+    const label = labels[modelKey] || modelKey;
+    if (keySet) {
+      el.textContent = `${label} · Key set`;
+      el.className = 'key-set';
+    } else {
+      el.textContent = `${label} · No key`;
+      el.className = 'no-key';
+    }
+  }
+
+  // ── Settings modal ──
+  function openSettings() {
+    document.getElementById('settings-status').className = '';
+    document.getElementById('settings-status').textContent = '';
+    document.getElementById('api-key-input').value = '';
+    document.getElementById('settings-modal').classList.add('open');
+  }
+
+  function closeSettings() {
+    document.getElementById('settings-modal').classList.remove('open');
+  }
+
+  function closeSettingsOnOverlay(e) {
+    if (e.target === document.getElementById('settings-modal')) closeSettings();
+  }
+
+  async function saveSettings() {
+    const modelKey = document.getElementById('model-select').value;
+    const apiKey = document.getElementById('api-key-input').value.trim();
+    const statusEl = document.getElementById('settings-status');
+
+    try {
+      const res = await fetch('/api/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model_key: modelKey, api_key: apiKey }),
+      });
+      const data = await res.json();
+      if (data.error) {
+        statusEl.textContent = '✕ ' + data.error;
+        statusEl.className = 'err';
+        return;
+      }
+      statusEl.textContent = `✓ Saved — using ${data.model_label}${data.api_key_set ? ' with your key' : ' (env key)'}`;
+      statusEl.className = 'ok';
+      updateModelIndicator(data.model_key, data.api_key_set);
+      setTimeout(closeSettings, 1200);
+    } catch(e) {
+      statusEl.textContent = '✕ Failed to save: ' + e.message;
+      statusEl.className = 'err';
+    }
+  }
 
   // ── Drag & drop ──
   const dropZone = document.getElementById('drop-zone');
@@ -419,7 +614,6 @@
         editCount += data.commands_applied || 0;
         document.getElementById('info-edits').textContent = editCount;
         addMessage('system', buildResultCard(data));
-        // Refresh project info
         const status = await fetch('/api/status').then(r => r.json());
         if (status.loaded) {
           document.getElementById('info-acts').textContent = status.activity_count;
@@ -461,21 +655,18 @@
   }
 
   // ── Download ──
-  function downloadXML() {
-    window.location.href = '/api/download';
-  }
+  function downloadXML() { window.location.href = '/api/download'; }
 
   // ── Clear session ──
   function clearSession() {
     if (!confirm('Clear the current session? All unsaved edits will be lost.')) return;
-    fetch('/api/status').then(() => location.reload());
+    fetch('/api/clear', { method: 'POST' }).then(() => location.reload());
   }
 
   // ── Message helpers ──
   function addMessage(role, html, id) {
     const welcome = document.getElementById('welcome-screen');
     if (welcome) welcome.style.display = 'none';
-
     const msgs = document.getElementById('messages');
     const div = document.createElement('div');
     div.className = `msg ${role}`;
@@ -492,10 +683,7 @@
 
   // ── Input helpers ──
   function handleKey(e) {
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault();
-      sendInstruction();
-    }
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendInstruction(); }
   }
 
   function autoResize(el) {

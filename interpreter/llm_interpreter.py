@@ -1,6 +1,6 @@
 """
 llm_interpreter.py — Translate natural language schedule edit instructions
-into structured JSON edit commands using the Anthropic Claude API.
+into structured JSON edit commands using Claude (Anthropic) or GPT-4.1-mini (OpenAI).
 
 The LLM never touches the schedule file directly.
 It only produces a JSON list of edit commands that the edit engine applies.
@@ -29,6 +29,28 @@ try:
     _OPENAI_AVAILABLE = True
 except ImportError:
     _OPENAI_AVAILABLE = False
+
+
+# Supported model configurations
+MODELS = {
+    "claude": {
+        "provider": "anthropic",
+        "model_id": "claude-sonnet-4-5",
+        "label": "Claude (Anthropic)",
+    },
+    "gpt-4.1-mini": {
+        "provider": "openai",
+        "model_id": "gpt-4.1-mini",
+        "label": "GPT-4.1 Mini (OpenAI)",
+    },
+    "gpt-4.1-nano": {
+        "provider": "openai",
+        "model_id": "gpt-4.1-nano",
+        "label": "GPT-4.1 Nano (OpenAI)",
+    },
+}
+
+DEFAULT_MODEL = "gpt-4.1-mini"
 
 
 SYSTEM_PROMPT = """You are a Primavera P6 schedule editing assistant for Six Terminal Live.
@@ -118,56 +140,80 @@ def _build_context_summary(project_summary: Optional[str]) -> str:
 def interpret(
     instruction: str,
     project_summary: Optional[str] = None,
-    model: str = "claude-sonnet-4-5",
+    model_key: str = DEFAULT_MODEL,
+    api_key: Optional[str] = None,
 ) -> Tuple[List[Dict[str, Any]], str]:
     """
     Translate a natural language instruction into a list of edit commands.
+
+    Args:
+        instruction:     Natural language edit instruction from the user.
+        project_summary: Optional schedule context string to include in the prompt.
+        model_key:       One of the keys in MODELS dict (e.g. "gpt-4.1-mini", "claude").
+                         Defaults to DEFAULT_MODEL.
+        api_key:         API key to use. If None, falls back to environment variables.
 
     Returns:
         (commands: list of dicts, raw_response: str)
 
     Raises:
-        RuntimeError if no LLM API is available or the response cannot be parsed.
+        RuntimeError if no LLM API is available or configured.
     """
     user_message = instruction.strip()
     if project_summary:
         user_message += _build_context_summary(project_summary)
 
-    raw_response = ""
+    # Resolve model config
+    model_cfg = MODELS.get(model_key)
+    if model_cfg is None:
+        # Try matching by provider name
+        for k, v in MODELS.items():
+            if v["provider"] == model_key:
+                model_cfg = v
+                break
+    if model_cfg is None:
+        model_cfg = MODELS[DEFAULT_MODEL]
 
-    # Try Anthropic first
-    if _ANTHROPIC_AVAILABLE:
-        api_key = os.environ.get("ANTHROPIC_API_KEY", "")
-        if api_key:
-            client = anthropic.Anthropic(api_key=api_key)
-            response = client.messages.create(
-                model=model,
-                max_tokens=2048,
-                system=SYSTEM_PROMPT,
-                messages=[{"role": "user", "content": user_message}],
-            )
-            raw_response = response.content[0].text
-            return _parse_commands(raw_response), raw_response
+    provider = model_cfg["provider"]
+    model_id = model_cfg["model_id"]
 
-    # Fallback to OpenAI-compatible API
-    if _OPENAI_AVAILABLE:
-        api_key = os.environ.get("OPENAI_API_KEY", "")
-        if api_key:
-            client = OpenAI(api_key=api_key)
-            response = client.chat.completions.create(
-                model="gpt-4.1-mini",
-                messages=[
-                    {"role": "system", "content": SYSTEM_PROMPT},
-                    {"role": "user", "content": user_message},
-                ],
-                max_tokens=2048,
-            )
-            raw_response = response.choices[0].message.content
-            return _parse_commands(raw_response), raw_response
+    # --- Anthropic ---
+    if provider == "anthropic":
+        resolved_key = api_key or os.environ.get("ANTHROPIC_API_KEY", "")
+        if not resolved_key:
+            raise RuntimeError("Anthropic API key not set. Enter your key in the settings panel or set ANTHROPIC_API_KEY.")
+        if not _ANTHROPIC_AVAILABLE:
+            raise RuntimeError("anthropic package not installed. Run: pip install anthropic")
+        client = anthropic.Anthropic(api_key=resolved_key)
+        response = client.messages.create(
+            model=model_id,
+            max_tokens=2048,
+            system=SYSTEM_PROMPT,
+            messages=[{"role": "user", "content": user_message}],
+        )
+        raw_response = response.content[0].text
+        return _parse_commands(raw_response), raw_response
 
-    raise RuntimeError(
-        "No LLM API available. Set ANTHROPIC_API_KEY or OPENAI_API_KEY environment variable."
-    )
+    # --- OpenAI ---
+    if provider == "openai":
+        resolved_key = api_key or os.environ.get("OPENAI_API_KEY", "")
+        if not resolved_key:
+            raise RuntimeError("OpenAI API key not set. Enter your key in the settings panel or set OPENAI_API_KEY.")
+        if not _OPENAI_AVAILABLE:
+            raise RuntimeError("openai package not installed. Run: pip install openai")
+        client = OpenAI(api_key=resolved_key)
+        response = client.chat.completions.create(
+            model=model_id,
+            messages=[
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": user_message},
+            ],
+            max_tokens=2048,
+        )
+        raw_response = response.choices[0].message.content
+        return _parse_commands(raw_response), raw_response
+
+    raise RuntimeError(f"Unknown provider '{provider}' for model '{model_key}'.")
 
 
 def _parse_commands(raw: str) -> List[Dict[str, Any]]:
