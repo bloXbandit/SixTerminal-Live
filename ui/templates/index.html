@@ -1,0 +1,514 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Six Terminal Live</title>
+  <style>
+    :root {
+      --bg: #0d0d0d;
+      --surface: #141414;
+      --border: #2a2a2a;
+      --accent: #00e5ff;
+      --accent-dim: #007a8a;
+      --text: #e8e8e8;
+      --text-dim: #888;
+      --success: #00c853;
+      --error: #ff3d3d;
+      --warning: #ffab00;
+      --font: 'Inter', 'Segoe UI', system-ui, sans-serif;
+      --mono: 'JetBrains Mono', 'Fira Code', 'Consolas', monospace;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--font);
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    /* ── Header ── */
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 12px 24px;
+      border-bottom: 1px solid var(--border);
+      background: var(--surface);
+      flex-shrink: 0;
+    }
+    .logo {
+      font-size: 15px;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      color: var(--accent);
+      text-transform: uppercase;
+    }
+    .logo span { color: var(--text-dim); font-weight: 400; }
+    #project-badge {
+      font-size: 12px;
+      color: var(--text-dim);
+      background: #1e1e1e;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 4px 10px;
+    }
+    #project-badge.loaded { color: var(--accent); border-color: var(--accent-dim); }
+
+    /* ── Main layout ── */
+    .main {
+      display: flex;
+      flex: 1;
+      overflow: hidden;
+    }
+
+    /* ── Drop zone / sidebar ── */
+    .sidebar {
+      width: 280px;
+      border-right: 1px solid var(--border);
+      background: var(--surface);
+      display: flex;
+      flex-direction: column;
+      flex-shrink: 0;
+    }
+    #drop-zone {
+      margin: 16px;
+      border: 2px dashed var(--border);
+      border-radius: 8px;
+      padding: 28px 16px;
+      text-align: center;
+      cursor: pointer;
+      transition: border-color 0.2s, background 0.2s;
+      flex-shrink: 0;
+    }
+    #drop-zone:hover, #drop-zone.drag-over {
+      border-color: var(--accent);
+      background: rgba(0,229,255,0.04);
+    }
+    #drop-zone .icon { font-size: 28px; margin-bottom: 8px; }
+    #drop-zone .label { font-size: 13px; color: var(--text-dim); line-height: 1.5; }
+    #drop-zone .label strong { color: var(--text); }
+    #file-input { display: none; }
+
+    #project-info {
+      margin: 0 16px 16px;
+      font-size: 12px;
+      color: var(--text-dim);
+      line-height: 1.8;
+      display: none;
+    }
+    #project-info.visible { display: block; }
+    #project-info .info-row { display: flex; justify-content: space-between; }
+    #project-info .info-val { color: var(--text); font-family: var(--mono); }
+
+    .sidebar-actions {
+      padding: 0 16px 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .btn {
+      padding: 9px 14px;
+      border-radius: 6px;
+      border: none;
+      font-size: 13px;
+      font-family: var(--font);
+      cursor: pointer;
+      font-weight: 500;
+      transition: opacity 0.15s;
+    }
+    .btn:disabled { opacity: 0.35; cursor: not-allowed; }
+    .btn-primary { background: var(--accent); color: #000; }
+    .btn-primary:hover:not(:disabled) { opacity: 0.85; }
+    .btn-ghost { background: transparent; color: var(--text-dim); border: 1px solid var(--border); }
+    .btn-ghost:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+
+    /* ── Chat area ── */
+    .chat-area {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+    #messages {
+      flex: 1;
+      overflow-y: auto;
+      padding: 20px 24px;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+    #messages::-webkit-scrollbar { width: 4px; }
+    #messages::-webkit-scrollbar-track { background: transparent; }
+    #messages::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+    .msg {
+      max-width: 720px;
+      animation: fadeIn 0.2s ease;
+    }
+    @keyframes fadeIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+    .msg.user { align-self: flex-end; }
+    .msg.system { align-self: flex-start; }
+    .msg-bubble {
+      padding: 12px 16px;
+      border-radius: 10px;
+      font-size: 14px;
+      line-height: 1.6;
+    }
+    .msg.user .msg-bubble {
+      background: var(--accent-dim);
+      color: #fff;
+      border-bottom-right-radius: 3px;
+    }
+    .msg.system .msg-bubble {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-bottom-left-radius: 3px;
+    }
+    .msg-meta { font-size: 11px; color: var(--text-dim); margin-top: 4px; padding: 0 4px; }
+    .msg.user .msg-meta { text-align: right; }
+
+    /* Result cards inside messages */
+    .result-card {
+      margin-top: 10px;
+      background: #0d0d0d;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      overflow: hidden;
+    }
+    .result-card-header {
+      padding: 8px 12px;
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      border-bottom: 1px solid var(--border);
+    }
+    .result-card-header.success { color: var(--success); }
+    .result-card-header.error { color: var(--error); }
+    .result-card-header.warning { color: var(--warning); }
+    .result-card-body { padding: 10px 12px; }
+    .result-row {
+      display: flex;
+      align-items: flex-start;
+      gap: 8px;
+      font-size: 12px;
+      font-family: var(--mono);
+      padding: 3px 0;
+      color: var(--text-dim);
+    }
+    .result-row .dot { flex-shrink: 0; margin-top: 2px; }
+    .result-row.ok .dot { color: var(--success); }
+    .result-row.fail .dot { color: var(--error); }
+    .result-row .msg-text { color: var(--text); }
+
+    /* ── Input bar ── */
+    .input-bar {
+      padding: 16px 24px;
+      border-top: 1px solid var(--border);
+      background: var(--surface);
+      display: flex;
+      gap: 10px;
+      align-items: flex-end;
+      flex-shrink: 0;
+    }
+    #instruction-input {
+      flex: 1;
+      background: #0d0d0d;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      color: var(--text);
+      font-family: var(--font);
+      font-size: 14px;
+      padding: 12px 14px;
+      resize: none;
+      min-height: 46px;
+      max-height: 160px;
+      outline: none;
+      transition: border-color 0.2s;
+      line-height: 1.5;
+    }
+    #instruction-input:focus { border-color: var(--accent); }
+    #instruction-input::placeholder { color: var(--text-dim); }
+    #send-btn {
+      width: 46px;
+      height: 46px;
+      border-radius: 8px;
+      background: var(--accent);
+      border: none;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+      transition: opacity 0.15s;
+    }
+    #send-btn:disabled { opacity: 0.35; cursor: not-allowed; }
+    #send-btn:hover:not(:disabled) { opacity: 0.85; }
+    #send-btn svg { width: 18px; height: 18px; fill: #000; }
+
+    /* ── Welcome state ── */
+    .welcome {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 12px;
+      color: var(--text-dim);
+      text-align: center;
+      padding: 40px;
+    }
+    .welcome .title { font-size: 22px; font-weight: 700; color: var(--text); }
+    .welcome .sub { font-size: 14px; max-width: 420px; line-height: 1.7; }
+    .welcome .examples { margin-top: 16px; display: flex; flex-direction: column; gap: 8px; width: 100%; max-width: 480px; }
+    .example-chip {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 10px 14px;
+      font-size: 13px;
+      color: var(--text-dim);
+      cursor: pointer;
+      text-align: left;
+      transition: border-color 0.15s, color 0.15s;
+    }
+    .example-chip:hover { border-color: var(--accent); color: var(--text); }
+  </style>
+</head>
+<body>
+
+<header>
+  <div class="logo">Six Terminal <span>Live</span></div>
+  <div id="project-badge">No schedule loaded</div>
+</header>
+
+<div class="main">
+  <!-- Sidebar -->
+  <div class="sidebar">
+    <div id="drop-zone" onclick="document.getElementById('file-input').click()">
+      <div class="icon">📂</div>
+      <div class="label"><strong>Drop XER or XML here</strong><br/>or click to browse</div>
+      <input type="file" id="file-input" accept=".xer,.xml" />
+    </div>
+
+    <div id="project-info">
+      <div class="info-row"><span>Activities</span><span class="info-val" id="info-acts">—</span></div>
+      <div class="info-row"><span>WBS Nodes</span><span class="info-val" id="info-wbs">—</span></div>
+      <div class="info-row"><span>Relations</span><span class="info-val" id="info-rels">—</span></div>
+      <div class="info-row"><span>Data Date</span><span class="info-val" id="info-date">—</span></div>
+      <div class="info-row"><span>Edits Applied</span><span class="info-val" id="info-edits">0</span></div>
+    </div>
+
+    <div class="sidebar-actions">
+      <button class="btn btn-primary" id="download-btn" disabled onclick="downloadXML()">
+        ⬇ Download Edited XML
+      </button>
+      <button class="btn btn-ghost" id="clear-btn" onclick="clearSession()">
+        Clear Session
+      </button>
+    </div>
+  </div>
+
+  <!-- Chat -->
+  <div class="chat-area">
+    <div id="messages">
+      <div class="welcome" id="welcome-screen">
+        <div class="title">Six Terminal Live</div>
+        <div class="sub">Load a schedule file, then describe your edits in plain English. The engine will apply them and give you a clean P6 XML to import.</div>
+        <div class="examples">
+          <div class="example-chip" onclick="fillExample(this)">Change the duration of Install Drywall to 5 days</div>
+          <div class="example-chip" onclick="fillExample(this)">Rename WBS node "Structure" to "Structural Steel & Concrete"</div>
+          <div class="example-chip" onclick="fillExample(this)">Add a FS relationship from "Pour Slab Level 2" to "Frame Walls Level 2"</div>
+          <div class="example-chip" onclick="fillExample(this)">Add a new activity A1099 "Owner Punch Walk" under Closeout, 3 days</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="input-bar">
+      <textarea id="instruction-input" placeholder="Describe your schedule edit..." rows="1"
+        onkeydown="handleKey(event)" oninput="autoResize(this)"></textarea>
+      <button id="send-btn" onclick="sendInstruction()" disabled>
+        <svg viewBox="0 0 24 24"><path d="M2 21l21-9L2 3v7l15 2-15 2z"/></svg>
+      </button>
+    </div>
+  </div>
+</div>
+
+<script>
+  let editCount = 0;
+
+  // ── Drag & drop ──
+  const dropZone = document.getElementById('drop-zone');
+  const fileInput = document.getElementById('file-input');
+
+  dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('drag-over'); });
+  dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag-over'));
+  dropZone.addEventListener('drop', e => {
+    e.preventDefault();
+    dropZone.classList.remove('drag-over');
+    const file = e.dataTransfer.files[0];
+    if (file) uploadFile(file);
+  });
+  fileInput.addEventListener('change', () => {
+    if (fileInput.files[0]) uploadFile(fileInput.files[0]);
+  });
+
+  async function uploadFile(file) {
+    const fd = new FormData();
+    fd.append('file', file);
+    addMessage('system', `Loading <strong>${file.name}</strong>...`);
+    try {
+      const res = await fetch('/api/upload', { method: 'POST', body: fd });
+      const data = await res.json();
+      if (data.error) {
+        addMessage('system', `<span style="color:var(--error)">❌ ${data.error}</span>`);
+        return;
+      }
+      updateProjectInfo(data);
+      document.getElementById('welcome-screen').style.display = 'none';
+      addMessage('system',
+        `<strong>${data.project_name}</strong> loaded successfully.<br/>` +
+        `${data.activity_count} activities · ${data.wbs_count} WBS nodes · ${data.relation_count} relations · Data date: ${data.data_date || 'N/A'}`
+      );
+      document.getElementById('send-btn').disabled = false;
+    } catch(e) {
+      addMessage('system', `<span style="color:var(--error)">❌ Upload failed: ${e.message}</span>`);
+    }
+  }
+
+  function updateProjectInfo(data) {
+    document.getElementById('info-acts').textContent = data.activity_count ?? '—';
+    document.getElementById('info-wbs').textContent = data.wbs_count ?? '—';
+    document.getElementById('info-rels').textContent = data.relation_count ?? '—';
+    document.getElementById('info-date').textContent = data.data_date ?? '—';
+    document.getElementById('project-info').classList.add('visible');
+    document.getElementById('project-badge').textContent = data.project_name;
+    document.getElementById('project-badge').classList.add('loaded');
+    document.getElementById('download-btn').disabled = false;
+  }
+
+  // ── Send instruction ──
+  async function sendInstruction() {
+    const input = document.getElementById('instruction-input');
+    const instruction = input.value.trim();
+    if (!instruction) return;
+
+    addMessage('user', instruction);
+    input.value = '';
+    autoResize(input);
+    document.getElementById('send-btn').disabled = true;
+
+    addMessage('system', '<em style="color:var(--text-dim)">Interpreting and applying edits...</em>', 'pending');
+
+    try {
+      const res = await fetch('/api/edit', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ instruction }),
+      });
+      const data = await res.json();
+      removePending();
+
+      if (data.error) {
+        addMessage('system', buildErrorCard(data.error));
+      } else {
+        editCount += data.commands_applied || 0;
+        document.getElementById('info-edits').textContent = editCount;
+        addMessage('system', buildResultCard(data));
+        // Refresh project info
+        const status = await fetch('/api/status').then(r => r.json());
+        if (status.loaded) {
+          document.getElementById('info-acts').textContent = status.activity_count;
+          document.getElementById('info-rels').textContent = status.relation_count;
+        }
+      }
+    } catch(e) {
+      removePending();
+      addMessage('system', buildErrorCard(e.message));
+    }
+
+    document.getElementById('send-btn').disabled = false;
+  }
+
+  function buildResultCard(data) {
+    const overall = data.success ? 'success' : (data.commands_failed > 0 ? 'warning' : 'error');
+    const label = data.success
+      ? `✓ ${data.commands_applied} edit${data.commands_applied !== 1 ? 's' : ''} applied`
+      : `${data.commands_applied} applied · ${data.commands_failed} failed`;
+
+    let rows = '';
+    for (const r of (data.results || [])) {
+      const cls = r.success ? 'ok' : 'fail';
+      const dot = r.success ? '●' : '✕';
+      rows += `<div class="result-row ${cls}"><span class="dot">${dot}</span><span class="msg-text">[${r.action}] ${r.message}</span></div>`;
+    }
+
+    return `<div class="result-card">
+      <div class="result-card-header ${overall}">${label}</div>
+      <div class="result-card-body">${rows}</div>
+    </div>`;
+  }
+
+  function buildErrorCard(msg) {
+    return `<div class="result-card">
+      <div class="result-card-header error">✕ Error</div>
+      <div class="result-card-body"><div class="result-row fail"><span class="dot">✕</span><span class="msg-text">${msg}</span></div></div>
+    </div>`;
+  }
+
+  // ── Download ──
+  function downloadXML() {
+    window.location.href = '/api/download';
+  }
+
+  // ── Clear session ──
+  function clearSession() {
+    if (!confirm('Clear the current session? All unsaved edits will be lost.')) return;
+    fetch('/api/status').then(() => location.reload());
+  }
+
+  // ── Message helpers ──
+  function addMessage(role, html, id) {
+    const welcome = document.getElementById('welcome-screen');
+    if (welcome) welcome.style.display = 'none';
+
+    const msgs = document.getElementById('messages');
+    const div = document.createElement('div');
+    div.className = `msg ${role}`;
+    if (id) div.id = id;
+    div.innerHTML = `<div class="msg-bubble">${html}</div>`;
+    msgs.appendChild(div);
+    msgs.scrollTop = msgs.scrollHeight;
+  }
+
+  function removePending() {
+    const el = document.getElementById('pending');
+    if (el) el.remove();
+  }
+
+  // ── Input helpers ──
+  function handleKey(e) {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      sendInstruction();
+    }
+  }
+
+  function autoResize(el) {
+    el.style.height = 'auto';
+    el.style.height = Math.min(el.scrollHeight, 160) + 'px';
+  }
+
+  function fillExample(el) {
+    const input = document.getElementById('instruction-input');
+    input.value = el.textContent.trim();
+    autoResize(input);
+    input.focus();
+  }
+</script>
+</body>
+</html>
