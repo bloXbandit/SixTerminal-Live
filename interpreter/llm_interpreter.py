@@ -1,6 +1,6 @@
 """
 llm_interpreter.py — Translate natural language schedule edit instructions
-into structured JSON edit commands using Claude (Anthropic) or GPT-4.1-mini (OpenAI).
+into structured JSON edit commands using Claude (Anthropic) or OpenAI models.
 
 The LLM never touches the schedule file directly.
 It only produces a JSON list of edit commands that the edit engine applies.
@@ -11,8 +11,9 @@ Supported actions (must match edit_engine.py):
   rename_wbs, add_wbs, move_activity_wbs,
   bulk_rename, bulk_update_duration,
   set_constraint, clear_constraint
-"""
 
+Supported models: claude, gpt-4.1-mini, gpt-4.1-nano, gpt-5.4-mini
+"""
 import os
 import json
 import re
@@ -47,6 +48,11 @@ MODELS = {
         "provider": "openai",
         "model_id": "gpt-4.1-nano",
         "label": "GPT-4.1 Nano (OpenAI)",
+    },
+    "gpt-5.4-mini": {
+        "provider": "openai",
+        "model_id": "gpt-5.4-mini",
+        "label": "GPT-5.4 Mini (OpenAI)",
     },
 }
 
