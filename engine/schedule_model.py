@@ -283,6 +283,32 @@ class Project:
                 risk_note = f"  [{risk['total']} acts | {crit_pct}% crit | open_s:{risk['open_s']} open_f:{risk['open_f']}]"
             lines.append(f"{indent}{w.code} — {w.name}{risk_note}")
 
+        # ── WBS Phase Sequence ───────────────────────────────────────────────
+        # Build parent → children map, sorted by sequence_num
+        _parent_to_children: dict = {}
+        _top_level: list = []
+        for w in self.wbs_nodes:
+            if w.parent_uid is None or w.parent_uid not in wbs_map:
+                _top_level.append(w)
+            else:
+                _parent_to_children.setdefault(w.parent_uid, []).append(w)
+        _top_level.sort(key=lambda x: x.sequence_num)
+        for _v in _parent_to_children.values():
+            _v.sort(key=lambda x: x.sequence_num)
+
+        lines.append("")
+        lines.append("WBS PHASE SEQUENCE (this project's actual phase order — authoritative phase map):")
+        if _top_level:
+            _flow_parts = [f"{i+1}. {w.name}" for i, w in enumerate(_top_level)]
+            lines.append("  Phase flow: " + " → ".join(_flow_parts))
+            for i, w in enumerate(_top_level):
+                _children = _parent_to_children.get(w.uid, [])
+                if _children:
+                    _sub = [f"{chr(97+j)}. {c.name}" for j, c in enumerate(_children)]
+                    lines.append(f"    Phase {i+1} ({w.name}) → " + " → ".join(_sub))
+        else:
+            lines.append("  (no WBS defined)")
+
         # ── Critical path chain ─────────────────────────────────────────────
         if cp_chain:
             lines.append("")

@@ -146,20 +146,31 @@ Before placing any logic tie, scan the entire activity list in the context. Unde
   - Where work is flowing — which activities are upstream, which are downstream
   - What parallel workstreams exist that might converge or diverge
 
-STEP 2 — PHASE FLOW (general construction sequence):
-  Procurement → Construction → Commissioning/CX → Closeout
-Materials must be procured and delivered before they can be installed.
-Never tie a Phase 3 (Procurement) activity directly to Phase 5 (Closeout) when Phase 4 (Construction) activities exist and logically depend on the procured materials.
+STEP 2 — PHASE FLOW (read THIS project's WBS, not a generic template):
+  The schedule context contains a "WBS PHASE SEQUENCE" section showing this project's actual phases in their defined order.
+  That section is your authoritative phase map for this project — use it.
+  - Determine what phase precedes what by reading the project's WBS PHASE SEQUENCE, not by assuming a standard building sequence.
+  - If this project has phases like "Permitting → Procurement → Civil → Superstructure → MEP → Finishes → CX → Closeout", respect that exact order.
+  - If this project has phases like "Engineering → Procurement → Fabrication → Installation → Commissioning → Handover" (an industrial/process project), read and use those phases.
+  - If this project is infrastructure, healthcare, federal, or anything else — the WBS PHASE SEQUENCE tells you the flow. Trust it.
+  - Use your construction expertise to interpret what unfamiliar phase names mean. Do NOT use it to override what the project's WBS defines.
+  - When no WBS PHASE SEQUENCE is available (bare project), fall back to general construction knowledge for context.
 
-STEP 3 — WITHIN-PHASE SEQUENCING (use construction knowledge):
-  Site:          Mobilization → Clear/Demo → Erosion Control → Grading → Underground Utilities → Paving
-  Foundation:    Excavation → Footings/Grade Beams → Foundation Walls → Waterproofing → Backfill
-  Structure:     Foundations complete → Steel Erection / Concrete Frame → Slab on Metal Deck → Slab on Grade
-  Envelope:      Structure complete → Curtain Wall / Cladding → Roofing → Waterproofing → Glazing
-  MEP Rough-In:  Structure/Slab → Overhead Rough-In (Mechanical, Electrical, Plumbing) → Frame Walls → In-Wall Rough-In
-  Finishes:      Rough-in complete → Insulation → Drywall → Taping/Mud → Paint → Flooring → Specialties
-  Commissioning: Systems installed → Equipment startup → TAB → Controls → CX documentation
-  Closeout:      Substantial work complete → Punch Walk → Owner Training → Closeout Docs → TCO → Final Completion
+STEP 3 — WITHIN-PHASE SEQUENCING (apply construction knowledge as a reference library):
+  Once you know the phase order from the project's WBS PHASE SEQUENCE, use construction knowledge to reason about activity order WITHIN each phase.
+  This is a reference library — apply only what is relevant to this project's actual phase names and activities:
+  - Site/Civil:     Mobilization → Clear/Demo → Erosion Control → Grading → Underground Utilities → Paving
+  - Foundation:     Excavation → Footings/Grade Beams → Foundation Walls → Waterproofing → Backfill
+  - Structure:      Foundations complete → Steel Erection / Concrete Frame → Slab on Metal Deck → Slab on Grade
+  - Envelope:       Structure complete → Curtain Wall / Cladding → Roofing → Waterproofing → Glazing
+  - MEP Rough-In:   Structure/Slab → Overhead Rough-In (Mechanical, Electrical, Plumbing) → Frame Walls → In-Wall Rough-In
+  - Finishes:       Rough-in complete → Insulation → Drywall → Taping/Mud → Paint → Flooring → Specialties
+  - Commissioning:  Systems installed → Equipment startup → TAB → Controls → CX documentation
+  - Closeout:       Substantial work complete → Punch Walk → Owner Training → Closeout Docs → TCO → Final Completion
+  - Procurement:    Bid/Buy-Out → Award Subs → Shop Drawings → Fabricate → Deliver to site
+  - Permitting:     Design complete → Submit → Review/Comment → Resubmit → Approve → Issue permit
+  - Engineering:    Conceptual → Schematic → Design Development → Construction Documents → Issued for Construction
+  Do NOT apply this list as a hardcoded sequence. It is a knowledge library for interpreting what activity names mean and how work flows within a phase — not a template to impose on every project.
 
 STEP 4 — MULTI-PREDECESSOR / MULTI-SUCCESSOR (this is normal, expect it):
   - Many activities genuinely need MULTIPLE predecessors (e.g., in-wall MEP rough-in requires overhead rough-in AND framing to be complete)
@@ -323,6 +334,48 @@ set_constraint:
 
 clear_constraint:
   {"action": "clear_constraint", "activity_id": "A1000"}
+
+bulk_add_activity:
+  Add the same activity into multiple WBS nodes in one call. Auto-assigns sequential IDs.
+  {"action": "bulk_add_activity", "name": "Daily Safety Huddle", "duration_days": 0, "activity_type": "Task Dependent",
+   "wbs_names": ["Site Work", "Foundation", "Structure", "MEP Rough-In"],
+   "start_id": "A2000", "id_increment": 10}
+  - wbs_names: list of WBS names to add the activity into (one copy per WBS)
+  - start_id: optional — first ID to assign (auto-picks next available if omitted)
+  - id_increment: default 10
+
+bulk_create_wbs:
+  Create multiple WBS folders under the same parent in one call.
+  {"action": "bulk_create_wbs", "parent_name": "Construction",
+   "nodes": [{"name": "Level 1", "code": "L1"}, {"name": "Level 2", "code": "L2"}, {"name": "Level 3", "code": "L3"}]}
+  - parent_name / parent_code: optional. Omit to create at root level.
+  - nodes: list of {name, code} dicts. code is optional (defaults to name[:20]).
+
+bulk_rename_activities:
+  Rename multiple activities by explicit from→to list. Each entry targets by activity_id, from_name (substring), or wbs_name (all in that WBS).
+  Supports {original} placeholder in to_name to build on the existing name.
+  {"action": "bulk_rename_activities", "renames": [
+    {"activity_id": "A1000", "to_name": "NTP — Notice to Proceed"},
+    {"from_name": "Install Drywall", "to_name": "Install Drywall & Shaft Wall"},
+    {"wbs_name": "Site Work", "to_name": "Phase 1 — {original}"}
+  ]}
+  Use this when the user says things like:
+  - "rename these activities: X → Y, A → B, C → D"
+  - "prefix all Site Work activities with 'Phase 1 —'"
+  - "rename Install Drywall to Install Drywall & Shaft Wall"
+
+bulk_update_activity_id:
+  Mass activity ID updates. Three modes:
+  Mode "resequence" — renumber all (or WBS-scoped) activities from a starting ID:
+    {"action": "bulk_update_activity_id", "mode": "resequence", "start_id": "A2000", "increment": 10, "filter_wbs": "Construction"}
+    - filter_wbs: optional — limit to activities in that WBS only
+  Mode "pattern" — regex find/replace on ID strings:
+    {"action": "bulk_update_activity_id", "mode": "pattern", "pattern": "^A1(\\d+)", "replacement": "B1\\1"}
+  Mode "prefix_swap" — swap the prefix letter on all matching IDs:
+    {"action": "bulk_update_activity_id", "mode": "prefix_swap", "old_prefix": "A", "new_prefix": "B", "filter_wbs": "Site Work"}
+  Use resequence when the user says "renumber activities" or "resequence IDs".
+  Use prefix_swap when the user says "change all A-IDs to B-IDs".
+  Use pattern for surgical regex-based replacements.
 
 EXAMPLES:
 

@@ -7,20 +7,24 @@ The result is then serialized to P6 XML by xml_writer.py.
 
 Supported commands:
 
-  rename_activity       — Change activity name (by ID or name match)
-  update_duration       — Change planned/remaining duration (days → hours internally)
-  update_activity_id    — Change the user-visible activity code
-  add_activity          — Add a new activity to a WBS node
-  delete_activity       — Remove an activity (and its relations)
-  add_relation          — Add a predecessor/successor link
-  delete_relation       — Remove a predecessor/successor link
-  rename_wbs            — Rename a WBS node
-  add_wbs               — Add a new WBS node
-  move_activity_wbs     — Move an activity to a different WBS node
-  bulk_rename           — Rename multiple activities matching a pattern
-  bulk_update_duration  — Change duration for all activities matching a pattern
-  set_constraint        — Set a date constraint on an activity
-  clear_constraint      — Remove a date constraint from an activity
+  rename_activity           — Change activity name (by ID or name match)
+  update_duration           — Change planned/remaining duration (days → hours internally)
+  update_activity_id        — Change the user-visible activity code
+  add_activity              — Add a new activity to a WBS node
+  delete_activity           — Remove an activity (and its relations)
+  add_relation              — Add a predecessor/successor link
+  delete_relation           — Remove a predecessor/successor link
+  rename_wbs                — Rename a WBS node
+  add_wbs                   — Add a new WBS node
+  move_activity_wbs         — Move an activity to a different WBS node
+  bulk_rename               — Rename multiple activities matching a regex pattern
+  bulk_update_duration      — Change duration for all activities matching a pattern
+  set_constraint            — Set a date constraint on an activity
+  clear_constraint          — Remove a date constraint from an activity
+  bulk_add_activity         — Add the same activity to multiple WBS nodes in one call
+  bulk_create_wbs           — Create multiple WBS folders under the same parent in one call
+  bulk_rename_activities    — Rename activities by explicit from→to list (ID, name, or WBS scope)
+  bulk_update_activity_id   — Mass ID updates: resequence, pattern replace, or prefix swap
 
 Each command dict must have an "action" key. Other keys depend on the action.
 """
@@ -119,6 +123,14 @@ def apply_command(project: Project, command: Dict[str, Any]) -> Tuple[bool, str]
             return _set_constraint(project, command)
         elif action == "clear_constraint":
             return _clear_constraint(project, command)
+        elif action == "bulk_add_activity":
+            return _bulk_add_activity(project, command)
+        elif action == "bulk_create_wbs":
+            return _bulk_create_wbs(project, command)
+        elif action == "bulk_rename_activities":
+            return _bulk_rename_activities(project, command)
+        elif action == "bulk_update_activity_id":
+            return _bulk_update_activity_id(project, command)
         else:
             return False, f"Unknown action: '{action}'"
     except EditError as e:
@@ -575,3 +587,278 @@ def _clear_constraint(project: Project, cmd: Dict) -> Tuple[bool, str]:
         a.constraint_type = None
         a.constraint_date = None
     return True, f"Cleared constraints on {len(matches)} activity/activities"
+
+
+def _bulk_add_activity(project: Project, cmd: Dict) -> Tuple[bool, str]:
+    """
+    Add the same activity to multiple WBS nodes in one call.
+    Auto-assigns sequential activity IDs starting from next available (or start_id).
+
+    Required:
+      name       — activity name
+      wbs_names  — list of WBS names (each gets its own copy of the activity)
+    Optional:
+      duration_days  — default 0
+      activity_type  — default "Task Dependent"
+      start_id       — e.g. "A2000". Defaults to next available ID in project.
+      id_increment   — default 10
+    """
+    name = cmd.get("name", "").strip()
+    if not name:
+        raise EditError("name is required for bulk_add_activity")
+    wbs_names = cmd.get("wbs_names", [])
+    if not wbs_names:
+        raise EditError("wbs_names (list of WBS names) is required for bulk_add_activity")
+
+    duration_days = float(cmd.get("duration_days", 0))
+    act_type = cmd.get("activity_type", "Task Dependent")
+    cal_uid = cmd.get("calendar_uid") or (project.calendars[0].uid if project.calendars else "1")
+    increment = int(cmd.get("id_increment", 10))
+
+    # Determine prefix and starting number
+    prefix = "A"
+    numeric_ids = []
+    for a in project.activities:
+        raw = a.activity_id.lstrip("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz")
+        try:
+            numeric_ids.append(int(raw))
+            if a.activity_id and a.activity_id[0].isalpha():
+                prefix = a.activity_id[0]
+        except ValueError:
+            pass
+
+    if cmd.get("start_id"):
+        start_str = str(cmd["start_id"]).strip()
+        raw_s = start_str.lstrip("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz")
+        if start_str and start_str[0].isalpha():
+            prefix = start_str[0]
+        try:
+            current_num = int(raw_s)
+        except ValueError:
+            current_num = (((max(numeric_ids) // 10) + 1) * 10) if numeric_ids else 1000
+    else:
+        current_num = (((max(numeric_ids) // 10) + 1) * 10) if numeric_ids else 1000
+
+    added = []
+    skipped = []
+    for wbs_name in wbs_names:
+        wbs = _find_wbs(project, wbs_name=wbs_name)
+        if not wbs:
+            skipped.append(f"WBS '{wbs_name}' not found")
+            continue
+        # Advance past any collisions
+        while project.get_activity(activity_id=f"{prefix}{current_num:04d}"):
+            current_num += increment
+        act_id = f"{prefix}{current_num:04d}"
+        new_act = Activity(
+            uid=_new_uid(),
+            activity_id=act_id,
+            name=name,
+            wbs_uid=wbs.uid,
+            calendar_uid=cal_uid,
+            activity_type=act_type,
+            status="Not Started",
+            planned_duration=_hours(duration_days),
+            remaining_duration=_hours(duration_days),
+        )
+        project.activities.append(new_act)
+        added.append(f"{act_id} → {wbs.name}")
+        current_num += increment
+
+    project.build_lookups()
+    msg = f"Added '{name}' ({duration_days}d) to {len(added)} WBS node(s): {', '.join(added)}"
+    if skipped:
+        msg += f". Skipped: {'; '.join(skipped)}"
+    return bool(added), msg
+
+
+def _bulk_create_wbs(project: Project, cmd: Dict) -> Tuple[bool, str]:
+    """
+    Create multiple WBS folders under the same optional parent in one call.
+
+    Required:
+      nodes — list of {name, code} dicts (code is optional, defaults to name[:20])
+    Optional:
+      parent_name — parent WBS name
+      parent_code — parent WBS code
+    """
+    nodes = cmd.get("nodes", [])
+    if not nodes:
+        raise EditError("nodes (list of {name, code}) is required for bulk_create_wbs")
+
+    parent = None
+    if cmd.get("parent_code") or cmd.get("parent_name"):
+        parent = _find_wbs(project, cmd.get("parent_code"), cmd.get("parent_name"))
+        if not parent:
+            raise EditError(f"Parent WBS not found: {cmd.get('parent_code') or cmd.get('parent_name')}")
+
+    created = []
+    seq_start = len(project.wbs_nodes)
+    for i, node_def in enumerate(nodes):
+        name = str(node_def.get("name", "")).strip()
+        code = str(node_def.get("code", name[:20])).strip() or name[:20]
+        if not name:
+            continue
+        new_wbs = WBSNode(
+            uid=_new_uid(),
+            name=name,
+            code=code,
+            parent_uid=parent.uid if parent else None,
+            sequence_num=seq_start + i,
+        )
+        project.wbs_nodes.append(new_wbs)
+        created.append(f"'{code} — {name}'")
+
+    project.build_lookups()
+    parent_str = f" under '{parent.name}'" if parent else " at root level"
+    return bool(created), f"Created {len(created)} WBS node(s){parent_str}: {', '.join(created)}"
+
+
+def _bulk_rename_activities(project: Project, cmd: Dict) -> Tuple[bool, str]:
+    """
+    Rename multiple activities by explicit from→to list.
+    Each entry can target by activity_id, from_name (substring), or wbs_name (all in that WBS).
+    Supports {original} placeholder in to_name to build on existing name.
+
+    Required:
+      renames — list of rename entries, each with:
+        activity_id OR from_name OR wbs_name   (how to find)
+        to_name                                 (new name; supports {original})
+    """
+    renames = cmd.get("renames", [])
+    if not renames:
+        raise EditError("renames list is required for bulk_rename_activities")
+
+    applied = 0
+    errors = []
+
+    for r in renames:
+        act_id   = r.get("activity_id")
+        from_name = r.get("from_name") or r.get("target_name")
+        wbs_name  = r.get("wbs_name")
+        to_name   = str(r.get("to_name", "")).strip()
+        if not to_name:
+            errors.append("Missing to_name in a rename entry")
+            continue
+
+        # Scope: entire WBS
+        if wbs_name and not act_id and not from_name:
+            wbs = _find_wbs(project, wbs_name=wbs_name)
+            if not wbs:
+                errors.append(f"WBS '{wbs_name}' not found")
+                continue
+            for a in project.activities:
+                if a.wbs_uid == wbs.uid:
+                    a.name = to_name.replace("{original}", a.name)
+                    applied += 1
+            continue
+
+        # Scope: by ID or name
+        matches = _find_activity(project, act_id, from_name)
+        if not matches:
+            errors.append(f"No activity found: {act_id or from_name}")
+            continue
+        for a in matches:
+            a.name = to_name.replace("{original}", a.name)
+            applied += 1
+
+    msg = f"Renamed {applied} activity/activities"
+    if errors:
+        msg += f". Issues: {'; '.join(errors)}"
+    return applied > 0, msg
+
+
+def _bulk_update_activity_id(project: Project, cmd: Dict) -> Tuple[bool, str]:
+    """
+    Mass activity ID updates. Three modes:
+
+    mode="resequence"   — renumber activities in their current order
+      start_id    — e.g. "A2000" (required)
+      increment   — default 10
+      filter_wbs  — optional WBS name to limit scope
+
+    mode="pattern"      — regex find/replace on ID strings
+      pattern     — regex to match
+      replacement — replacement string (backreferences supported)
+
+    mode="prefix_swap"  — swap the letter prefix on matching IDs
+      old_prefix  — e.g. "A"
+      new_prefix  — e.g. "B"
+      filter_wbs  — optional WBS name to limit scope
+    """
+    mode = str(cmd.get("mode", "pattern")).lower()
+
+    if mode == "resequence":
+        start_id = str(cmd.get("start_id", "A1000")).strip()
+        raw_s = start_id.lstrip("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz")
+        prefix = start_id[0] if start_id and start_id[0].isalpha() else "A"
+        try:
+            current_num = int(raw_s)
+        except ValueError:
+            current_num = 1000
+        increment = int(cmd.get("increment", 10))
+
+        filter_wbs = cmd.get("filter_wbs")
+        target_wbs_uid = None
+        if filter_wbs:
+            wbs = _find_wbs(project, wbs_name=filter_wbs)
+            if not wbs:
+                raise EditError(f"filter_wbs '{filter_wbs}' not found")
+            target_wbs_uid = wbs.uid
+
+        acts = [a for a in project.activities
+                if target_wbs_uid is None or a.wbs_uid == target_wbs_uid]
+
+        # Pass 1: temp IDs to avoid mid-sequence collisions
+        for a in acts:
+            a.activity_id = f"__TEMP_{a.uid}__"
+        project.build_lookups()
+
+        # Pass 2: final IDs
+        for a in acts:
+            a.activity_id = f"{prefix}{current_num:04d}"
+            current_num += increment
+        project.build_lookups()
+        scope = f" in WBS '{filter_wbs}'" if filter_wbs else ""
+        return True, f"Resequenced {len(acts)} activity IDs{scope} starting from {start_id} (increment {increment})"
+
+    elif mode == "pattern":
+        pattern = str(cmd.get("pattern", "")).strip()
+        replacement = str(cmd.get("replacement", "")).strip()
+        if not pattern:
+            raise EditError("pattern is required for bulk_update_activity_id with mode=pattern")
+        count = 0
+        for a in project.activities:
+            if re.search(pattern, a.activity_id):
+                new_id = re.sub(pattern, replacement, a.activity_id)
+                if new_id != a.activity_id and not project.get_activity(activity_id=new_id):
+                    a.activity_id = new_id
+                    count += 1
+        project.build_lookups()
+        return True, f"Updated {count} activity IDs matching pattern '{pattern}'"
+
+    elif mode == "prefix_swap":
+        old_prefix = str(cmd.get("old_prefix", "")).strip()
+        new_prefix = str(cmd.get("new_prefix", "")).strip()
+        if not old_prefix or not new_prefix:
+            raise EditError("old_prefix and new_prefix are required for prefix_swap mode")
+        filter_wbs = cmd.get("filter_wbs")
+        target_wbs_uid = None
+        if filter_wbs:
+            wbs = _find_wbs(project, wbs_name=filter_wbs)
+            if wbs:
+                target_wbs_uid = wbs.uid
+        count = 0
+        for a in project.activities:
+            if target_wbs_uid and a.wbs_uid != target_wbs_uid:
+                continue
+            if a.activity_id.startswith(old_prefix):
+                new_id = new_prefix + a.activity_id[len(old_prefix):]
+                if not project.get_activity(activity_id=new_id):
+                    a.activity_id = new_id
+                    count += 1
+        project.build_lookups()
+        return True, f"Swapped prefix '{old_prefix}' → '{new_prefix}' on {count} activity IDs"
+
+    else:
+        raise EditError(f"Unknown mode '{mode}' for bulk_update_activity_id. Use: resequence, pattern, prefix_swap")
