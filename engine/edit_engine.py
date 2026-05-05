@@ -87,6 +87,9 @@ def apply_command(project: Project, command: Dict[str, Any]) -> Tuple[bool, str]
     """
     action = command.get("action", "").lower().strip()
 
+    if action in ("chat", "clarify"):
+        return (True, command.get("message", command.get("question", "")))
+
     try:
         if action == "rename_activity":
             return _rename_activity(project, command)
@@ -125,14 +128,197 @@ def apply_command(project: Project, command: Dict[str, Any]) -> Tuple[bool, str]
 
 
 def apply_commands(project: Project, commands: List[Dict[str, Any]]) -> List[Tuple[bool, str]]:
-    """Apply a list of edit commands in order. Returns list of (success, message) tuples."""
+    """Apply a list of edit commands in order. Returns list of (success, message) tuples.
+    After all commands, re-runs a CPM forward/backward pass to keep projected
+    Start / Finish dates current (including newly added activities)."""
+    from engine.schedule_model import compute_dates
     results = []
+    any_ok = False
     for cmd in commands:
         ok, msg = apply_command(project, cmd)
         results.append((ok, msg))
+        if ok:
+            any_ok = True
         if not ok:
             break  # Stop on first failure to avoid cascading bad state
+    if any_ok:
+        try:
+            compute_dates(project)
+        except Exception:
+            pass  # CPM failure must never block an edit from completing
     return results
+
+
+# ── Disambiguation helpers ────────────────────────────────────────────────────
+
+# Actions that support name-based target lookup and may need disambiguation
+_NAME_TARGET_ACTIONS = {
+    "rename_activity", "update_duration", "update_activity_id",
+    "delete_activity", "move_activity_wbs", "set_constraint", "clear_constraint",
+}
+
+
+def get_wbs_path(project: Project, wbs_uid: str) -> str:
+    """Return full WBS path string, e.g. 'Structure / Level 2 / Concrete'."""
+    wbs_map = {w.uid: w for w in project.wbs_nodes}
+    path = []
+    uid = wbs_uid
+    seen = set()
+    while uid and uid not in seen:
+        seen.add(uid)
+        node = wbs_map.get(uid)
+        if not node:
+            break
+        path.insert(0, node.name)
+        uid = node.parent_uid
+    return " / ".join(path) if path else ""
+
+
+def activity_display(project: Project, a: Activity) -> Dict[str, str]:
+    """Return a display dict for an activity — used in disambiguation cards."""
+    return {
+        "uid": a.uid,
+        "activity_id": a.activity_id,
+        "name": a.name,
+        "wbs_path": get_wbs_path(project, a.wbs_uid),
+        "planned_start": a.planned_start or "",
+        "planned_finish": a.planned_finish or "",
+        "status": a.status,
+        "activity_type": a.activity_type,
+    }
+
+
+def check_disambiguation(
+    project: Project, commands: List[Dict[str, Any]]
+) -> Optional[Dict[str, Any]]:
+    """
+    Pre-check commands for ambiguous name matches before applying.
+
+    Returns a disambiguation dict if any command matches multiple activities
+    and apply_to_all is not explicitly set:
+        {
+          "command_index": int,
+          "command": dict,
+          "field": "target_name" | "predecessor_name" | "successor_name",
+          "search_term": str,
+          "matches": [activity_display dicts],
+        }
+
+    Returns None if all commands are unambiguous.
+    """
+    for idx, cmd in enumerate(commands):
+        action = cmd.get("action", "").lower().strip()
+
+        if action in _NAME_TARGET_ACTIONS:
+            if cmd.get("target_name") and not cmd.get("activity_id") and not cmd.get("apply_to_all"):
+                matches = _find_activity(project, name=cmd["target_name"])
+                if len(matches) > 1:
+                    return {
+                        "command_index": idx,
+                        "command": cmd,
+                        "field": "target_name",
+                        "search_term": cmd["target_name"],
+                        "matches": [activity_display(project, a) for a in matches],
+                    }
+
+        elif action == "add_relation":
+            # Check predecessor
+            if cmd.get("predecessor_name") and not cmd.get("predecessor_id"):
+                matches = _find_activity(project, name=cmd["predecessor_name"])
+                if len(matches) > 1:
+                    return {
+                        "command_index": idx,
+                        "command": cmd,
+                        "field": "predecessor_name",
+                        "search_term": cmd["predecessor_name"],
+                        "matches": [activity_display(project, a) for a in matches],
+                    }
+            # Check successor
+            if cmd.get("successor_name") and not cmd.get("successor_id"):
+                matches = _find_activity(project, name=cmd["successor_name"])
+                if len(matches) > 1:
+                    return {
+                        "command_index": idx,
+                        "command": cmd,
+                        "field": "successor_name",
+                        "search_term": cmd["successor_name"],
+                        "matches": [activity_display(project, a) for a in matches],
+                    }
+
+        elif action == "delete_relation":
+            if cmd.get("predecessor_name") and not cmd.get("predecessor_id"):
+                matches = _find_activity(project, name=cmd["predecessor_name"])
+                if len(matches) > 1:
+                    return {
+                        "command_index": idx,
+                        "command": cmd,
+                        "field": "predecessor_name",
+                        "search_term": cmd["predecessor_name"],
+                        "matches": [activity_display(project, a) for a in matches],
+                    }
+
+    return None
+
+
+# ── Schedule health / constraint report ──────────────────────────────────────
+
+_HARD_CONSTRAINT_TYPES = {
+    "Must Start On", "Must Finish On", "Start On", "Finish On",
+}
+_SOFT_CONSTRAINT_TYPES = {
+    "Start On Or Before", "Finish On Or Before",
+    "Start On Or After", "Finish On Or After",
+    "As Late As Possible",
+}
+_SKIP_TYPES_FOR_OPEN_END = {"WBS Summary", "Level of Effort"}
+
+
+def generate_schedule_report(project: Project) -> Dict[str, Any]:
+    """
+    Analyze schedule health and return a structured report dict.
+
+    Checks:
+      - Activities with hard constraints (Must Start/Finish On, Start/Finish On)
+      - Activities with soft constraints
+      - Activities with no predecessors (open start)
+      - Activities with no successors (open finish)
+    """
+    has_predecessor: set = {r.successor_uid for r in project.relations}
+    has_successor: set = {r.predecessor_uid for r in project.relations}
+
+    hard_constraints = []
+    soft_constraints = []
+    open_start = []   # no predecessors
+    open_finish = []  # no successors
+
+    for a in project.activities:
+        skip_open_end = a.activity_type in _SKIP_TYPES_FOR_OPEN_END or a.status == "Completed"
+
+        if a.constraint_type in _HARD_CONSTRAINT_TYPES:
+            hard_constraints.append(activity_display(project, a) | {"constraint_type": a.constraint_type, "constraint_date": a.constraint_date or ""})
+        elif a.constraint_type in _SOFT_CONSTRAINT_TYPES:
+            soft_constraints.append(activity_display(project, a) | {"constraint_type": a.constraint_type, "constraint_date": a.constraint_date or ""})
+
+        if not skip_open_end:
+            if a.uid not in has_predecessor:
+                open_start.append(activity_display(project, a))
+            if a.uid not in has_successor:
+                open_finish.append(activity_display(project, a))
+
+    total = len(project.activities)
+    checkable = [a for a in project.activities if a.activity_type not in _SKIP_TYPES_FOR_OPEN_END and a.status != "Completed"]
+
+    return {
+        "total_activities": total,
+        "total_relations": len(project.relations),
+        "hard_constraints": hard_constraints,
+        "soft_constraints": soft_constraints,
+        "open_start": open_start,
+        "open_finish": open_finish,
+        "health_pct": round(
+            100 * (1 - (len(open_start) + len(open_finish)) / max(len(checkable) * 2, 1)), 1
+        ),
+    }
 
 
 # --- Individual command handlers ---

@@ -4,700 +4,1798 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Six Terminal Live</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
   <style>
     :root {
-      --bg: #0d0d0d;
-      --surface: #141414;
-      --border: #2a2a2a;
-      --accent: #00e5ff;
-      --accent-dim: #007a8a;
-      --text: #e8e8e8;
-      --text-dim: #888;
-      --success: #00c853;
-      --error: #ff3d3d;
-      --warning: #ffab00;
-      --font: 'Inter', 'Segoe UI', system-ui, sans-serif;
-      --mono: 'JetBrains Mono', 'Fira Code', 'Consolas', monospace;
+      --bg:        #07090f;
+      --bg2:       #0b0e17;
+      --surface:   #0f1420;
+      --surface2:  #141929;
+      --surface3:  #1a2035;
+      --border:    #1e2a3a;
+      --border2:   #263040;
+      --accent:    #00cfff;
+      --accent2:   #0090b8;
+      --accent-glow:  rgba(0,207,255,.12);
+      --accent-glow2: rgba(0,207,255,.05);
+      --green:  #22c55e; --green-bg:  rgba(34,197,94,.08);
+      --red:    #ef4444; --red-bg:    rgba(239,68,68,.08);
+      --orange: #f59e0b; --orange-bg: rgba(245,158,11,.08);
+      --blue:   #3b82f6; --blue-bg:   rgba(59,130,246,.08);
+      --text:  #e2e8f0;
+      --text2: #94a3b8;
+      --text3: #4a5568;
+      --font: 'Inter','Segoe UI',system-ui,sans-serif;
+      --mono: 'JetBrains Mono','Fira Code','Consolas',monospace;
+      --r-sm:4px; --r-md:8px; --r-lg:12px; --r-xl:16px;
+      --shadow-lg: 0 8px 32px rgba(0,0,0,.6);
     }
-    * { box-sizing: border-box; margin: 0; padding: 0; }
-    body {
-      background: var(--bg);
-      color: var(--text);
-      font-family: var(--font);
-      height: 100vh;
-      display: flex;
-      flex-direction: column;
-      overflow: hidden;
+    *,*::before,*::after{box-sizing:border-box;margin:0;padding:0;}
+    html,body{height:100%;}
+    body{
+      background:var(--bg);
+      color:var(--text);
+      font-family:var(--font);
+      height:100vh;
+      display:flex;
+      flex-direction:column;
+      overflow:hidden;
+      font-size:14px;
+      background-image:
+        radial-gradient(ellipse 80% 40% at 50% -5%, rgba(0,207,255,.05) 0%, transparent 60%);
+    }
+    ::-webkit-scrollbar{width:4px;height:4px;}
+    ::-webkit-scrollbar-track{background:transparent;}
+    ::-webkit-scrollbar-thumb{background:var(--border2);border-radius:2px;}
+
+    /* ── TOP BAR ─────────────────────────────────────────── */
+    .topbar{
+      display:flex;align-items:center;height:46px;
+      border-bottom:1px solid var(--border);
+      background:var(--surface);flex-shrink:0;
+      position:relative;z-index:10;
+    }
+    .topbar::after{
+      content:'';position:absolute;bottom:-1px;left:0;right:0;height:1px;
+      background:linear-gradient(90deg,var(--accent2) 0%,transparent 55%);
+      opacity:.35;
+    }
+    .logo-block{
+      width:224px;flex-shrink:0;display:flex;align-items:center;gap:9px;
+      padding:0 16px;height:100%;border-right:1px solid var(--border);
+    }
+    .logo-icon{
+      width:26px;height:26px;border-radius:6px;flex-shrink:0;
+      background:linear-gradient(135deg,var(--accent2),var(--accent));
+      display:flex;align-items:center;justify-content:center;
+      font-size:11px;font-weight:700;color:#000;letter-spacing:-.01em;
+    }
+    .logo-text{font-size:13px;font-weight:600;color:var(--text);letter-spacing:.01em;}
+    .logo-text span{color:var(--text3);font-weight:400;}
+    .topbar-center{flex:1;display:flex;align-items:center;padding:0 16px;gap:8px;overflow:hidden;}
+    #project-badge{
+      font-size:12px;color:var(--text3);white-space:nowrap;
+      overflow:hidden;text-overflow:ellipsis;max-width:440px;
+    }
+    #project-badge.loaded{color:var(--text);font-weight:500;}
+    #project-badge.loaded::before{
+      content:'';display:inline-block;width:6px;height:6px;
+      background:var(--green);border-radius:50%;margin-right:7px;
+      box-shadow:0 0 7px var(--green);
+      animation:blink 2.4s ease-in-out infinite;
+      vertical-align:middle;margin-top:-1px;
+    }
+    @keyframes blink{0%,100%{opacity:1}50%{opacity:.35}}
+    .topbar-right{display:flex;align-items:center;gap:8px;padding-right:16px;flex-shrink:0;}
+    #model-indicator{
+      font-size:10px;font-family:var(--mono);color:var(--text3);
+      padding:3px 8px;background:var(--surface2);
+      border:1px solid var(--border);border-radius:var(--r-sm);
+    }
+    #model-indicator.key-set{color:var(--green);border-color:rgba(34,197,94,.25);background:var(--green-bg);}
+    #model-indicator.no-key{color:var(--orange);border-color:rgba(245,158,11,.25);background:var(--orange-bg);}
+    #settings-btn{
+      display:flex;align-items:center;gap:5px;background:transparent;
+      border:1px solid var(--border);border-radius:var(--r-sm);
+      color:var(--text2);cursor:pointer;padding:4px 10px;
+      font-size:12px;font-family:var(--font);
+      transition:border-color .15s,color .15s,background .15s;
+    }
+    #settings-btn:hover{border-color:var(--accent2);color:var(--accent);background:var(--accent-glow2);}
+
+    /* ── SHELL ───────────────────────────────────────────── */
+    .shell{display:flex;flex:1;overflow:hidden;}
+
+    /* ── SIDEBAR ─────────────────────────────────────────── */
+    .sidebar{
+      width:224px;flex-shrink:0;display:flex;flex-direction:column;
+      border-right:1px solid var(--border);background:var(--surface);
+      overflow-y:auto;overflow-x:hidden;
+    }
+    .sidebar-section{
+      padding:14px 12px;border-bottom:1px solid var(--border);
+    }
+    .sidebar-label{
+      font-size:9px;font-weight:600;letter-spacing:.12em;
+      text-transform:uppercase;color:var(--text3);margin-bottom:8px;padding:0 2px;
     }
 
-    /* ── Header ── */
-    header {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      padding: 12px 24px;
-      border-bottom: 1px solid var(--border);
-      background: var(--surface);
-      flex-shrink: 0;
+    /* Drop zone */
+    #drop-zone{
+      border:1px dashed var(--border2);border-radius:var(--r-md);
+      padding:16px 12px;text-align:center;cursor:pointer;
+      background:var(--surface2);
+      transition:border-color .2s,background .2s;
     }
-    .logo {
-      font-size: 15px;
-      font-weight: 700;
-      letter-spacing: 0.08em;
-      color: var(--accent);
-      text-transform: uppercase;
+    #drop-zone:hover,#drop-zone.drag-over{
+      border-color:var(--accent2);background:var(--accent-glow2);
     }
-    .logo span { color: var(--text-dim); font-weight: 400; }
-    .header-right { display: flex; align-items: center; gap: 10px; }
-    #project-badge {
-      font-size: 12px;
-      color: var(--text-dim);
-      background: #1e1e1e;
-      border: 1px solid var(--border);
-      border-radius: 4px;
-      padding: 4px 10px;
+    .dz-icon{font-size:18px;margin-bottom:5px;opacity:.5;}
+    .dz-label{font-size:11px;color:var(--text2);line-height:1.5;}
+    .dz-label strong{color:var(--text);display:block;margin-bottom:2px;}
+    .dz-sub{font-size:9px;color:var(--text3);margin-top:4px;letter-spacing:.04em;}
+    #file-input{display:none;}
+    #new-project-btn{
+      width:100%;display:flex;align-items:center;justify-content:center;gap:5px;
+      margin-top:8px;padding:7px;border-radius:var(--r-sm);
+      border:1px dashed rgba(0,207,255,.25);background:transparent;
+      color:var(--accent2);font-size:11px;cursor:pointer;font-family:var(--font);
+      transition:border-color .15s,color .15s,background .15s;
     }
-    #project-badge.loaded { color: var(--accent); border-color: var(--accent-dim); }
-    #settings-btn {
-      background: transparent;
-      border: 1px solid var(--border);
-      border-radius: 6px;
-      color: var(--text-dim);
-      cursor: pointer;
-      padding: 5px 10px;
-      font-size: 13px;
-      transition: border-color 0.15s, color 0.15s;
-    }
-    #settings-btn:hover { border-color: var(--accent); color: var(--accent); }
-    #model-indicator {
-      font-size: 11px;
-      color: var(--text-dim);
-      padding: 4px 8px;
-      background: #1a1a1a;
-      border: 1px solid var(--border);
-      border-radius: 4px;
-    }
-    #model-indicator.key-set { color: var(--success); border-color: #1a4a2a; }
-    #model-indicator.no-key { color: var(--warning); border-color: #4a3a00; }
+    #new-project-btn:hover{border-color:var(--accent);color:var(--accent);background:var(--accent-glow2);}
 
-    /* ── Settings Modal ── */
-    .modal-overlay {
-      display: none;
-      position: fixed;
-      inset: 0;
-      background: rgba(0,0,0,0.7);
-      z-index: 100;
-      align-items: center;
-      justify-content: center;
+    /* Metric cards */
+    .metric-grid{display:grid;grid-template-columns:1fr 1fr;gap:6px;}
+    .metric-card{
+      background:var(--surface3);border:1px solid var(--border);
+      border-radius:var(--r-md);padding:10px 10px 8px;
     }
-    .modal-overlay.open { display: flex; }
-    .modal {
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: 12px;
-      width: 440px;
-      max-width: 95vw;
-      padding: 28px;
+    .metric-val{
+      font-size:20px;font-weight:700;font-family:var(--mono);
+      color:var(--text);line-height:1;margin-bottom:3px;
     }
-    .modal h2 {
-      font-size: 16px;
-      font-weight: 700;
-      color: var(--text);
-      margin-bottom: 20px;
+    .metric-label{font-size:9px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--text3);}
+    .metric-card.accent .metric-val{color:var(--accent);}
+    .metric-card.green  .metric-val{color:var(--green);}
+    .info-date-row{
+      display:flex;justify-content:space-between;align-items:center;
+      font-size:10px;color:var(--text3);margin-top:8px;
+      padding:7px 2px 0;border-top:1px solid var(--border);
     }
-    .form-group { margin-bottom: 18px; }
-    .form-group label {
-      display: block;
-      font-size: 12px;
-      color: var(--text-dim);
-      margin-bottom: 6px;
-      font-weight: 500;
-      letter-spacing: 0.04em;
-      text-transform: uppercase;
-    }
-    .form-group select,
-    .form-group input {
-      width: 100%;
-      background: #0d0d0d;
-      border: 1px solid var(--border);
-      border-radius: 6px;
-      color: var(--text);
-      font-family: var(--font);
-      font-size: 13px;
-      padding: 10px 12px;
-      outline: none;
-      transition: border-color 0.2s;
-    }
-    .form-group select:focus,
-    .form-group input:focus { border-color: var(--accent); }
-    .form-group select option { background: #1a1a1a; }
-    .form-group .hint {
-      font-size: 11px;
-      color: var(--text-dim);
-      margin-top: 5px;
-      line-height: 1.5;
-    }
-    .modal-actions { display: flex; gap: 10px; justify-content: flex-end; margin-top: 24px; }
-    .btn {
-      padding: 9px 18px;
-      border-radius: 6px;
-      border: none;
-      font-size: 13px;
-      font-family: var(--font);
-      cursor: pointer;
-      font-weight: 500;
-      transition: opacity 0.15s;
-    }
-    .btn:disabled { opacity: 0.35; cursor: not-allowed; }
-    .btn-primary { background: var(--accent); color: #000; }
-    .btn-primary:hover:not(:disabled) { opacity: 0.85; }
-    .btn-ghost { background: transparent; color: var(--text-dim); border: 1px solid var(--border); }
-    .btn-ghost:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
-    #settings-status {
-      font-size: 12px;
-      margin-top: 12px;
-      padding: 8px 12px;
-      border-radius: 6px;
-      display: none;
-    }
-    #settings-status.ok { background: #0a2a14; color: var(--success); display: block; }
-    #settings-status.err { background: #2a0a0a; color: var(--error); display: block; }
+    .info-date-row span:last-child{font-family:var(--mono);color:var(--text2);}
+    #project-info{display:none;}
+    #project-info.visible{display:block;}
 
-    /* ── Main layout ── */
-    .main {
-      display: flex;
-      flex: 1;
-      overflow: hidden;
+    /* Sidebar actions */
+    .sidebar-bottom{padding:12px;margin-top:auto;display:flex;flex-direction:column;gap:6px;}
+
+    /* ── BUTTONS ─────────────────────────────────────────── */
+    .btn{
+      display:inline-flex;align-items:center;justify-content:center;gap:6px;
+      padding:8px 14px;border-radius:var(--r-sm);border:none;
+      font-size:12px;font-family:var(--font);font-weight:500;
+      cursor:pointer;transition:opacity .15s,background .15s,box-shadow .15s;
+      white-space:nowrap;
+    }
+    .btn:disabled{opacity:.3;cursor:not-allowed;}
+    .btn-primary{background:var(--accent);color:#000;font-weight:600;}
+    .btn-primary:hover:not(:disabled){background:#1ad8ff;box-shadow:0 0 16px rgba(0,207,255,.3);}
+    .btn-ghost{background:transparent;color:var(--text2);border:1px solid var(--border2);}
+    .btn-ghost:hover:not(:disabled){border-color:var(--accent2);color:var(--accent);background:var(--accent-glow2);}
+    .btn-warn{background:var(--orange);color:#000;font-weight:600;}
+    .btn-warn:hover:not(:disabled){opacity:.85;}
+    .btn-danger{background:var(--red);color:#fff;font-weight:600;}
+    .btn-danger:hover:not(:disabled){opacity:.85;}
+    .btn-sm{padding:5px 10px;font-size:11px;}
+    .btn-full{width:100%;}
+
+    /* ── WORKSPACE ───────────────────────────────────────── */
+    .workspace{flex:1;display:flex;flex-direction:column;overflow:hidden;}
+    #tab-panels{flex:1;display:flex;flex-direction:column;overflow:hidden;}
+    #panel-editor{flex:1;display:flex;flex-direction:column;overflow:hidden;}
+    #panel-editor.hidden{display:none;}
+
+    #messages{
+      flex:1;overflow-y:auto;padding:24px 28px;
+      display:flex;flex-direction:column;gap:12px;
+    }
+    .msg{animation:msgIn .18s ease;}
+    @keyframes msgIn{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+    .msg.user{align-self:flex-end;max-width:680px;}
+    .msg.system{align-self:flex-start;width:100%;max-width:800px;}
+    .msg-bubble{
+      padding:10px 14px;border-radius:var(--r-lg);
+      font-size:13px;line-height:1.6;
+    }
+    .msg.user .msg-bubble{
+      background:linear-gradient(135deg,var(--accent2) 0%,#006a8a 100%);
+      color:#dff6ff;border-bottom-right-radius:3px;font-weight:450;
+    }
+    .msg.system .msg-bubble{
+      background:var(--surface);border:1px solid var(--border);
+      border-bottom-left-radius:3px;color:var(--text2);
+    }
+    .msg.system .msg-bubble strong{color:var(--text);}
+    .msg.assistant .msg-bubble{
+      background:var(--surface2);border:1px solid var(--border);
+      border-bottom-left-radius:3px;color:var(--text);
+      border-left:2px solid var(--accent2);
+      line-height:1.7;
     }
 
-    /* ── Sidebar ── */
-    .sidebar {
-      width: 260px;
-      border-right: 1px solid var(--border);
-      background: var(--surface);
-      display: flex;
-      flex-direction: column;
-      flex-shrink: 0;
+    /* Result card */
+    .result-card{
+      margin-top:2px;background:var(--surface2);
+      border:1px solid var(--border);border-radius:var(--r-md);overflow:hidden;
     }
-    #drop-zone {
-      margin: 16px;
-      border: 2px dashed var(--border);
-      border-radius: 8px;
-      padding: 28px 16px;
-      text-align: center;
-      cursor: pointer;
-      transition: border-color 0.2s, background 0.2s;
-      flex-shrink: 0;
+    .result-card-header{
+      padding:7px 12px;font-size:10px;font-weight:600;
+      letter-spacing:.08em;text-transform:uppercase;border-bottom:1px solid var(--border);
+      display:flex;align-items:center;gap:7px;
     }
-    #drop-zone:hover, #drop-zone.drag-over {
-      border-color: var(--accent);
-      background: rgba(0,229,255,0.04);
+    .result-card-header::before{
+      content:'';width:5px;height:5px;border-radius:50%;flex-shrink:0;
     }
-    #drop-zone .icon { font-size: 28px; margin-bottom: 8px; }
-    #drop-zone .label { font-size: 13px; color: var(--text-dim); line-height: 1.5; }
-    #drop-zone .label strong { color: var(--text); }
-    #file-input { display: none; }
+    .result-card-header.success{color:var(--green);background:var(--green-bg);}
+    .result-card-header.success::before{background:var(--green);box-shadow:0 0 6px var(--green);}
+    .result-card-header.error{color:var(--red);background:var(--red-bg);}
+    .result-card-header.error::before{background:var(--red);}
+    .result-card-header.warning{color:var(--orange);background:var(--orange-bg);}
+    .result-card-header.warning::before{background:var(--orange);}
+    .result-card-header.info{color:var(--blue);background:var(--blue-bg);}
+    .result-card-header.info::before{background:var(--blue);}
+    .result-card-body{padding:8px 12px;}
+    .result-row{
+      display:flex;align-items:flex-start;gap:8px;
+      font-size:11px;font-family:var(--mono);padding:2px 0;color:var(--text3);
+    }
+    .result-row .dot{flex-shrink:0;margin-top:1px;}
+    .result-row.ok  .dot{color:var(--green);}
+    .result-row.fail .dot{color:var(--red);}
+    .result-row .msg-text{color:var(--text2);}
 
-    #project-info {
-      margin: 0 16px 16px;
-      font-size: 12px;
-      color: var(--text-dim);
-      line-height: 1.8;
-      display: none;
+    /* Disambiguation */
+    .disambig-card{
+      margin-top:2px;background:var(--surface2);
+      border:1px solid rgba(59,130,246,.35);border-radius:var(--r-md);overflow:hidden;
     }
-    #project-info.visible { display: block; }
-    #project-info .info-row { display: flex; justify-content: space-between; }
-    #project-info .info-val { color: var(--text); font-family: var(--mono); }
+    .disambig-header{
+      padding:9px 14px;background:var(--blue-bg);
+      border-bottom:1px solid rgba(59,130,246,.2);
+      font-size:11px;color:var(--blue);font-weight:600;
+      display:flex;align-items:center;gap:8px;
+    }
+    .disambig-header span{color:var(--text3);font-weight:400;}
+    .disambig-subtext{padding:7px 14px 3px;font-size:11px;color:var(--text3);font-style:italic;}
+    .disambig-table{width:100%;border-collapse:collapse;font-size:11px;}
+    .disambig-table th{
+      padding:6px 12px;text-align:left;font-size:9px;letter-spacing:.1em;
+      text-transform:uppercase;color:var(--text3);
+      border-bottom:1px solid var(--border);background:var(--surface3);font-weight:600;
+    }
+    .disambig-table td{
+      padding:7px 12px;border-bottom:1px solid var(--border);vertical-align:middle;
+    }
+    .disambig-table tr:last-child td{border-bottom:none;}
+    .disambig-table tr:hover td{background:rgba(255,255,255,.012);}
+    .disambig-table td:first-child{width:36px;}
+    .disambig-table input[type="checkbox"]{accent-color:var(--accent);cursor:pointer;}
+    .act-id{font-family:var(--mono);color:var(--accent);font-size:10px;font-weight:500;}
+    .act-wbs{font-size:10px;color:var(--text3);}
+    .act-status{
+      font-size:9px;padding:2px 7px;border-radius:10px;
+      display:inline-block;font-weight:600;letter-spacing:.04em;text-transform:uppercase;
+    }
+    .act-status.ns{background:rgba(34,197,94,.1);color:var(--green);}
+    .act-status.ip{background:rgba(245,158,11,.1);color:var(--orange);}
+    .act-status.cp{background:rgba(100,100,100,.1);color:var(--text3);}
+    .disambig-actions{
+      padding:9px 14px;display:flex;gap:8px;align-items:center;
+      border-top:1px solid var(--border);background:var(--surface);
+    }
+    .disambig-hint{font-size:10px;color:var(--text3);margin-left:auto;}
 
-    .sidebar-actions {
-      padding: 0 16px 16px;
-      display: flex;
-      flex-direction: column;
-      gap: 8px;
-      margin-top: auto;
+    /* Welcome */
+    .welcome{
+      flex:1;display:flex;flex-direction:column;align-items:center;
+      justify-content:center;padding:48px 40px;text-align:center;gap:0;
+    }
+    .welcome-glyph{
+      font-size:36px;margin-bottom:20px;opacity:.1;filter:grayscale(1);
+      user-select:none;
+    }
+    .welcome-title{
+      font-size:26px;font-weight:700;color:var(--text);
+      letter-spacing:-.025em;margin-bottom:10px;
+    }
+    .welcome-sub{
+      font-size:13px;color:var(--text2);max-width:400px;
+      line-height:1.75;margin-bottom:24px;
+    }
+    .welcome-hint{
+      font-size:11px;color:var(--text3);line-height:1.9;
+      max-width:460px;background:var(--surface2);
+      border:1px solid var(--border);border-radius:var(--r-md);
+      padding:14px 18px;text-align:left;margin-bottom:16px;
+    }
+    .welcome-hint strong{
+      color:var(--text2);display:block;font-size:9px;
+      letter-spacing:.12em;text-transform:uppercase;margin-bottom:8px;
+    }
+    .welcome-hint em{font-style:normal;color:var(--accent);font-family:var(--mono);font-size:10px;}
+    .examples{margin-top:0;}
+    .example-chip{
+      display:inline-flex;align-items:center;gap:6px;
+      background:var(--surface);border:1px solid var(--border);
+      border-radius:var(--r-sm);padding:8px 14px;
+      font-size:12px;color:var(--text2);cursor:pointer;
+      transition:border-color .15s,color .15s,background .15s;
+    }
+    .example-chip:hover{border-color:var(--accent2);color:var(--accent);background:var(--accent-glow2);}
+
+    /* Command input */
+    .input-bar{
+      padding:12px 20px 14px;background:var(--surface);
+      border-top:1px solid var(--border);flex-shrink:0;position:relative;
+    }
+    .input-bar::before{
+      content:'';position:absolute;top:0;left:0;right:0;height:1px;
+      background:linear-gradient(90deg,transparent,var(--accent2),transparent);
+      opacity:0;transition:opacity .3s;
+    }
+    .input-bar:focus-within::before{opacity:.4;}
+    .input-wrap{
+      display:flex;align-items:flex-end;gap:8px;
+      background:var(--surface2);border:1px solid var(--border2);
+      border-radius:var(--r-lg);padding:6px 6px 6px 14px;
+      transition:border-color .2s,box-shadow .2s;
+    }
+    .input-wrap:focus-within{
+      border-color:var(--accent2);
+      box-shadow:0 0 0 3px var(--accent-glow),0 0 20px rgba(0,207,255,.1);
+    }
+    #instruction-input{
+      flex:1;background:transparent;border:none;color:var(--text);
+      font-family:var(--font);font-size:13px;padding:6px 0;
+      resize:none;min-height:32px;max-height:150px;outline:none;line-height:1.55;
+    }
+    #instruction-input::placeholder{color:var(--text3);}
+    #send-btn{
+      width:36px;height:36px;border-radius:var(--r-md);background:var(--accent);
+      border:none;cursor:pointer;display:flex;align-items:center;justify-content:center;
+      flex-shrink:0;transition:background .15s,box-shadow .15s,opacity .15s;
+    }
+    #send-btn:disabled{opacity:.3;cursor:not-allowed;}
+    #send-btn:hover:not(:disabled){background:#1ad8ff;box-shadow:0 0 14px rgba(0,207,255,.4);}
+    #send-btn svg{width:16px;height:16px;fill:#000;}
+    .input-hint{font-size:10px;color:var(--text3);margin-top:6px;padding:0 4px;}
+
+    /* Modals */
+    .modal-overlay{
+      display:none;position:fixed;inset:0;
+      background:rgba(0,0,0,.72);backdrop-filter:blur(5px);
+      z-index:200;align-items:center;justify-content:center;
+    }
+    .modal-overlay.open{display:flex;}
+    .modal{
+      background:var(--surface);border:1px solid var(--border2);
+      border-radius:var(--r-xl);width:520px;max-width:96vw;
+      max-height:88vh;overflow:hidden;display:flex;flex-direction:column;
+      box-shadow:var(--shadow-lg),0 0 60px rgba(0,0,0,.5);
+    }
+    .modal.wide{width:640px;}
+    .modal-head{
+      padding:18px 22px 14px;border-bottom:1px solid var(--border);flex-shrink:0;
+    }
+    .modal-head h2{
+      font-size:14px;font-weight:600;color:var(--text);
+      display:flex;align-items:center;gap:9px;
+    }
+    .mh-icon{
+      width:26px;height:26px;border-radius:var(--r-sm);background:var(--surface3);
+      border:1px solid var(--border2);display:flex;align-items:center;
+      justify-content:center;font-size:13px;flex-shrink:0;
+    }
+    .modal-body{padding:18px 22px;overflow-y:auto;flex:1;}
+    .modal-foot{
+      padding:14px 22px;border-top:1px solid var(--border);
+      display:flex;gap:8px;justify-content:flex-end;
+      flex-shrink:0;background:var(--surface2);
+    }
+    .form-group{margin-bottom:15px;}
+    .form-group label{
+      display:block;font-size:9px;font-weight:600;letter-spacing:.12em;
+      text-transform:uppercase;color:var(--text3);margin-bottom:6px;
+    }
+    .form-group select,.form-group input,.form-group textarea{
+      width:100%;background:var(--surface2);border:1px solid var(--border2);
+      border-radius:var(--r-sm);color:var(--text);font-family:var(--font);
+      font-size:13px;padding:9px 12px;outline:none;
+      transition:border-color .2s,box-shadow .2s;
+    }
+    .form-group textarea{resize:vertical;min-height:90px;line-height:1.5;}
+    .form-group select:focus,.form-group input:focus,.form-group textarea:focus{
+      border-color:var(--accent2);box-shadow:0 0 0 3px var(--accent-glow);
+    }
+    .form-group select option{background:var(--surface2);}
+    .form-group .hint{font-size:11px;color:var(--text3);margin-top:5px;line-height:1.5;}
+    .modal-status{
+      font-size:12px;margin-top:12px;padding:8px 12px;border-radius:var(--r-sm);display:none;
+    }
+    .modal-status.ok  {background:var(--green-bg);color:var(--green);display:block;border:1px solid rgba(34,197,94,.2);}
+    .modal-status.err {background:var(--red-bg);color:var(--red);display:block;border:1px solid rgba(239,68,68,.2);}
+    .modal-status.info{background:var(--blue-bg);color:var(--blue);display:block;border:1px solid rgba(59,130,246,.2);}
+
+    /* Report modal */
+    .report-section{margin-bottom:14px;}
+    .report-section h3{
+      font-size:9px;text-transform:uppercase;letter-spacing:.1em;font-weight:600;
+      margin-bottom:6px;display:flex;align-items:center;gap:6px;
+    }
+    .rs-dot{width:5px;height:5px;border-radius:50%;flex-shrink:0;}
+    .report-section h3.hard{color:var(--red);}
+    .report-section h3.hard .rs-dot{background:var(--red);}
+    .report-section h3.soft{color:var(--orange);}
+    .report-section h3.soft .rs-dot{background:var(--orange);}
+    .report-section h3.open{color:var(--blue);}
+    .report-section h3.open .rs-dot{background:var(--blue);}
+    .report-list{
+      font-size:11px;color:var(--text2);font-family:var(--mono);
+      line-height:1.9;max-height:130px;overflow-y:auto;
+      background:var(--surface2);border:1px solid var(--border);
+      border-radius:var(--r-sm);padding:6px 10px;
+    }
+    .report-list .rl-row{display:flex;gap:10px;padding:1px 0;}
+    .rl-id{color:var(--accent);min-width:80px;}
+    .rl-wbs{color:var(--text3);font-size:10px;}
+    .health-bar-wrap{margin-bottom:18px;}
+    .health-score-row{display:flex;align-items:baseline;gap:8px;margin-bottom:8px;}
+    .health-score{font-size:34px;font-weight:700;font-family:var(--mono);line-height:1;}
+    .health-score.good{color:var(--green);}
+    .health-score.ok{color:var(--orange);}
+    .health-score.poor{color:var(--red);}
+    .health-lbl{font-size:12px;color:var(--text3);}
+    .health-bar{height:4px;background:var(--surface3);border-radius:2px;overflow:hidden;}
+    .health-bar-fill{height:100%;border-radius:2px;transition:width .6s cubic-bezier(.4,0,.2,1);}
+    #health-pct{font-size:11px;color:var(--text3);margin-top:5px;}
+
+    /* ── PROJECT LIST ────────────────────────────────────── */
+    #projects-section{display:none;}
+    #projects-section.visible{display:block;}
+    .proj-list{display:flex;flex-direction:column;gap:4px;}
+    .proj-item{
+      display:flex;align-items:center;gap:7px;
+      padding:7px 9px;border-radius:var(--r-sm);
+      border:1px solid var(--border);background:var(--surface2);
+      cursor:pointer;transition:border-color .15s,background .15s;
+      position:relative;
+    }
+    .proj-item:hover{border-color:var(--border2);background:var(--surface3);}
+    .proj-item.active{border-color:rgba(0,207,255,.35);background:var(--accent-glow2);}
+    .proj-dot{
+      width:6px;height:6px;border-radius:50%;flex-shrink:0;
+      background:var(--border2);
+    }
+    .proj-item.active .proj-dot{background:var(--accent);box-shadow:0 0 6px var(--accent);}
+    .proj-info{flex:1;min-width:0;}
+    .proj-name{
+      font-size:11px;font-weight:500;color:var(--text);
+      white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+    }
+    .proj-item.active .proj-name{color:var(--accent);}
+    .proj-meta{font-size:9px;color:var(--text3);font-family:var(--mono);margin-top:1px;}
+    .proj-del{
+      flex-shrink:0;width:18px;height:18px;border-radius:3px;
+      background:transparent;border:none;color:var(--text3);
+      cursor:pointer;font-size:13px;line-height:1;
+      display:flex;align-items:center;justify-content:center;
+      transition:color .15s,background .15s;
+    }
+    .proj-del:hover{color:var(--red);background:var(--red-bg);}
+
+    /* Undo badge */
+    #undo-btn{position:relative;}
+    .undo-badge{
+      background:var(--accent2);color:#000;font-size:9px;font-weight:700;
+      border-radius:8px;padding:1px 5px;font-family:var(--mono);
     }
 
-    /* ── Chat area ── */
-    .chat-area {
-      flex: 1;
-      display: flex;
-      flex-direction: column;
-      overflow: hidden;
+    /* Spinner */
+    .spinner{
+      display:inline-block;width:12px;height:12px;
+      border:1.5px solid var(--border2);border-top-color:var(--accent);
+      border-radius:50%;animation:spin .7s linear infinite;
+      vertical-align:middle;margin-right:6px;
     }
-    #messages {
-      flex: 1;
-      overflow-y: auto;
-      padding: 20px 24px;
-      display: flex;
-      flex-direction: column;
-      gap: 16px;
+    @keyframes spin{to{transform:rotate(360deg)}}
+    code{
+      font-family:var(--mono);font-size:10px;background:var(--surface3);
+      padding:1px 4px;border-radius:3px;color:var(--accent);
     }
-    #messages::-webkit-scrollbar { width: 4px; }
-    #messages::-webkit-scrollbar-track { background: transparent; }
-    #messages::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
 
-    .msg { max-width: 720px; animation: fadeIn 0.2s ease; }
-    @keyframes fadeIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
-    .msg.user { align-self: flex-end; }
-    .msg.system { align-self: flex-start; }
-    .msg-bubble {
-      padding: 12px 16px;
-      border-radius: 10px;
-      font-size: 14px;
-      line-height: 1.6;
+    /* ── TAB NAV ─────────────────────────────────────────── */
+    .tab-nav{
+      display:flex;align-items:center;gap:2px;
+      padding:0 20px;height:38px;flex-shrink:0;
+      background:var(--surface);border-bottom:1px solid var(--border);
+      position:relative;z-index:5;
     }
-    .msg.user .msg-bubble {
-      background: var(--accent-dim);
-      color: #fff;
-      border-bottom-right-radius: 3px;
+    .tab-btn{
+      display:inline-flex;align-items:center;gap:6px;
+      padding:6px 14px;border-radius:var(--r-sm) var(--r-sm) 0 0;
+      border:1px solid transparent;border-bottom:none;
+      background:transparent;color:var(--text3);
+      font-size:12px;font-weight:500;font-family:var(--font);
+      cursor:pointer;transition:color .15s,background .15s,border-color .15s;
+      position:relative;bottom:-1px;
     }
-    .msg.system .msg-bubble {
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-bottom-left-radius: 3px;
+    .tab-btn:hover{color:var(--text2);}
+    .tab-btn.active{
+      background:var(--bg);color:var(--accent);
+      border-color:var(--border);border-bottom-color:var(--bg);
+      font-weight:600;
     }
-    .msg-meta { font-size: 11px; color: var(--text-dim); margin-top: 4px; padding: 0 4px; }
-    .msg.user .msg-meta { text-align: right; }
+    .tab-pill{
+      font-size:9px;font-weight:700;font-family:var(--mono);
+      background:var(--surface3);color:var(--text3);
+      padding:1px 5px;border-radius:8px;
+    }
+    .tab-btn.active .tab-pill{background:var(--accent-glow);color:var(--accent);}
+    .tab-stale{
+      font-size:9px;color:var(--orange);margin-left:auto;
+      display:none;align-items:center;gap:4px;
+    }
+    .tab-stale.show{display:flex;}
 
-    .result-card {
-      margin-top: 10px;
-      background: #0d0d0d;
-      border: 1px solid var(--border);
-      border-radius: 6px;
-      overflow: hidden;
+    /* ── SCHEDULE PANEL ──────────────────────────────────── */
+    #panel-schedule{
+      flex:1;display:none;flex-direction:column;overflow:hidden;
     }
-    .result-card-header {
-      padding: 8px 12px;
-      font-size: 11px;
-      font-weight: 600;
-      letter-spacing: 0.06em;
-      text-transform: uppercase;
-      border-bottom: 1px solid var(--border);
-    }
-    .result-card-header.success { color: var(--success); }
-    .result-card-header.error { color: var(--error); }
-    .result-card-header.warning { color: var(--warning); }
-    .result-card-body { padding: 10px 12px; }
-    .result-row {
-      display: flex;
-      align-items: flex-start;
-      gap: 8px;
-      font-size: 12px;
-      font-family: var(--mono);
-      padding: 3px 0;
-      color: var(--text-dim);
-    }
-    .result-row .dot { flex-shrink: 0; margin-top: 2px; }
-    .result-row.ok .dot { color: var(--success); }
-    .result-row.fail .dot { color: var(--error); }
-    .result-row .msg-text { color: var(--text); }
+    #panel-schedule.active{display:flex;}
 
-    /* ── Input bar ── */
-    .input-bar {
-      padding: 16px 24px;
-      border-top: 1px solid var(--border);
-      background: var(--surface);
-      display: flex;
-      gap: 10px;
-      align-items: flex-end;
-      flex-shrink: 0;
+    .sched-toolbar{
+      padding:8px 16px;display:flex;align-items:center;gap:8px;
+      background:var(--surface);border-bottom:1px solid var(--border);
+      flex-shrink:0;flex-wrap:wrap;
     }
-    #instruction-input {
-      flex: 1;
-      background: #0d0d0d;
-      border: 1px solid var(--border);
-      border-radius: 8px;
-      color: var(--text);
-      font-family: var(--font);
-      font-size: 14px;
-      padding: 12px 14px;
-      resize: none;
-      min-height: 46px;
-      max-height: 160px;
-      outline: none;
-      transition: border-color 0.2s;
-      line-height: 1.5;
+    .sched-toolbar-label{
+      font-size:9px;font-weight:600;letter-spacing:.1em;
+      text-transform:uppercase;color:var(--text3);margin-right:4px;
     }
-    #instruction-input:focus { border-color: var(--accent); }
-    #instruction-input::placeholder { color: var(--text-dim); }
-    #send-btn {
-      width: 46px;
-      height: 46px;
-      border-radius: 8px;
-      background: var(--accent);
-      border: none;
-      cursor: pointer;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      flex-shrink: 0;
-      transition: opacity 0.15s;
+    .col-toggle{
+      font-size:10px;padding:3px 9px;border-radius:10px;
+      border:1px solid var(--border2);background:var(--surface2);
+      color:var(--text3);cursor:pointer;font-family:var(--font);
+      transition:all .15s;
     }
-    #send-btn:disabled { opacity: 0.35; cursor: not-allowed; }
-    #send-btn:hover:not(:disabled) { opacity: 0.85; }
-    #send-btn svg { width: 18px; height: 18px; fill: #000; }
+    .col-toggle.on{
+      background:var(--accent-glow);color:var(--accent);
+      border-color:rgba(0,207,255,.3);
+    }
+    .sched-refresh{margin-left:auto;}
+    .sched-empty{
+      flex:1;display:flex;align-items:center;justify-content:center;
+      flex-direction:column;gap:10px;color:var(--text3);font-size:13px;
+    }
 
-    /* ── Welcome ── */
-    .welcome {
-      flex: 1;
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      justify-content: center;
-      gap: 12px;
-      color: var(--text-dim);
-      text-align: center;
-      padding: 40px;
+    /* Schedule table */
+    .sched-wrap{flex:1;overflow:auto;}
+    .sched-table{
+      width:100%;border-collapse:collapse;font-size:11px;
+      min-width:900px;
     }
-    .welcome .title { font-size: 22px; font-weight: 700; color: var(--text); }
-    .welcome .sub { font-size: 14px; max-width: 420px; line-height: 1.7; }
-    .welcome .examples { margin-top: 16px; display: flex; flex-direction: column; gap: 8px; width: 100%; max-width: 480px; }
-    .example-chip {
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: 6px;
-      padding: 10px 14px;
-      font-size: 13px;
-      color: var(--text-dim);
-      cursor: pointer;
-      text-align: left;
-      transition: border-color 0.15s, color 0.15s;
+    .sched-table thead th{
+      position:sticky;top:0;z-index:3;
+      padding:7px 10px;text-align:left;
+      font-size:9px;font-weight:600;letter-spacing:.09em;
+      text-transform:uppercase;color:var(--text3);
+      background:var(--surface2);border-bottom:1px solid var(--border);
+      white-space:nowrap;
     }
-    .example-chip:hover { border-color: var(--accent); color: var(--text); }
+    .sched-table thead th:first-child{padding-left:16px;}
+    .sched-table tbody tr{
+      border-bottom:1px solid rgba(30,42,58,.6);
+      transition:background .1s;
+    }
+    .sched-table tbody tr:hover{background:rgba(255,255,255,.018);}
+    .sched-table td{
+      padding:6px 10px;vertical-align:middle;
+      color:var(--text2);white-space:nowrap;
+    }
+    .sched-table td:first-child{padding-left:16px;}
+
+    /* WBS header row */
+    .sched-wbs-row td{
+      background:var(--surface2);color:var(--text);
+      font-weight:600;font-size:10px;letter-spacing:.04em;
+      border-bottom:1px solid var(--border);
+      padding-top:8px;padding-bottom:8px;
+    }
+    .sched-wbs-toggle{
+      display:inline-flex;align-items:center;gap:7px;
+      cursor:pointer;user-select:none;width:100%;
+    }
+    .sched-wbs-arrow{
+      font-size:9px;color:var(--text3);transition:transform .15s;display:inline-block;
+    }
+    .sched-wbs-row.collapsed .sched-wbs-arrow{transform:rotate(-90deg);}
+    .sched-wbs-code{
+      font-family:var(--mono);color:var(--text3);font-size:9px;font-weight:500;margin-left:2px;
+    }
+    .sched-wbs-count{
+      margin-left:auto;font-size:9px;font-weight:400;color:var(--text3);
+      font-family:var(--mono);
+    }
+
+    /* Activity rows */
+    .sched-act-row td{color:var(--text2);}
+    .sched-act-row.critical td{border-left:2px solid var(--red) !important;}
+    .sched-act-row.critical .sched-id{color:var(--red);}
+    .sched-id{font-family:var(--mono);color:var(--accent);font-size:10px;font-weight:500;}
+    .sched-name{color:var(--text);max-width:280px;overflow:hidden;text-overflow:ellipsis;}
+    .sched-dur{font-family:var(--mono);text-align:right;color:var(--text2);}
+    .sched-date{font-family:var(--mono);font-size:10px;color:var(--text3);}
+    .sched-links{
+      font-family:var(--mono);font-size:10px;color:var(--text3);
+      max-width:160px;overflow:hidden;text-overflow:ellipsis;
+    }
+    .sched-links .link-chip{
+      display:inline-block;background:var(--surface3);
+      border:1px solid var(--border);border-radius:3px;
+      padding:1px 5px;margin:1px 2px 1px 0;color:var(--text2);
+      font-size:9px;white-space:nowrap;
+    }
+    .sched-status{
+      font-size:9px;padding:2px 7px;border-radius:10px;
+      font-weight:600;letter-spacing:.04em;text-transform:uppercase;white-space:nowrap;
+    }
+    .sched-status.ns{background:rgba(148,163,184,.08);color:var(--text3);}
+    .sched-status.ip{background:var(--orange-bg);color:var(--orange);}
+    .sched-status.cp{background:var(--green-bg);color:var(--green);}
+    .sched-float{font-family:var(--mono);font-size:10px;text-align:right;}
+    .sched-float.zero{color:var(--red);}
+    .sched-float.low{color:var(--orange);}
+    .sched-float.ok{color:var(--text3);}
+
+    /* Milestone row */
+    .sched-milestone-row td{background:rgba(0,207,255,.025);}
+    .sched-milestone-row .sched-name::before{
+      content:'◆ ';color:var(--accent);font-size:9px;
+    }
+    .sched-milestone-row .sched-dur{color:var(--text3);}
+
+    /* Critical badge */
+    .crit-badge{
+      display:inline-block;font-size:8px;font-weight:700;
+      background:var(--red-bg);color:var(--red);
+      border-radius:3px;padding:1px 5px;letter-spacing:.06em;
+      text-transform:uppercase;margin-left:5px;border:1px solid rgba(239,68,68,.2);
+    }
+    .lp-badge{
+      display:inline-block;font-size:8px;font-weight:700;
+      background:rgba(245,158,11,.08);color:var(--orange);
+      border-radius:3px;padding:1px 5px;letter-spacing:.06em;
+      text-transform:uppercase;margin-left:5px;border:1px solid rgba(245,158,11,.2);
+    }
   </style>
 </head>
 <body>
 
-<!-- Settings Modal -->
-<div class="modal-overlay" id="settings-modal" onclick="closeSettingsOnOverlay(event)">
+<!-- ══ SETTINGS MODAL ══════════════════════════════════════ -->
+<div class="modal-overlay" id="settings-modal" onclick="closeModal('settings-modal',event)">
   <div class="modal">
-    <h2>⚙ Model Settings</h2>
-
-    <div class="form-group">
-      <label>AI Model</label>
-      <select id="model-select">
-        <option value="gpt-5.4-mini">GPT-5.4 Mini (OpenAI) — Recommended</option>
-        <option value="gpt-4.1-mini">GPT-4.1 Mini (OpenAI)</option>
-        <option value="gpt-4.1-nano">GPT-4.1 Nano (OpenAI)</option>
-        <option value="claude">Claude (Anthropic)</option>
-      </select>
-      <div class="hint">GPT-5.4 Mini is the recommended model (400K context, released March 2026). Claude requires an Anthropic API key.</div>
+    <div class="modal-head">
+      <h2><span class="mh-icon">⚙</span> Model Settings</h2>
     </div>
-
-    <div class="form-group">
-      <label>API Key</label>
-      <input type="password" id="api-key-input" placeholder="Paste your API key here..." autocomplete="off" />
-      <div class="hint">
-        Your key is stored in memory only — never saved to disk or sent anywhere except the selected model's API.
-        Leave blank to use the <code>OPENAI_API_KEY</code> or <code>ANTHROPIC_API_KEY</code> environment variable.
+    <div class="modal-body">
+      <div class="form-group">
+        <label>AI Model</label>
+        <select id="model-select">
+          <option value="gpt-5.4-mini">GPT-5.4 Mini (OpenAI) — Recommended</option>
+          <option value="gpt-4.1-mini">GPT-4.1 Mini (OpenAI)</option>
+          <option value="gpt-4.1-nano">GPT-4.1 Nano (OpenAI)</option>
+          <option value="claude">Claude (Anthropic)</option>
+        </select>
+        <div class="hint">GPT-5.4 Mini recommended for most use cases.</div>
       </div>
+      <div class="form-group">
+        <label>API Key</label>
+        <input type="password" id="api-key-input" placeholder="Paste your API key here…" autocomplete="off" />
+        <div class="hint">Stored in memory only — never saved to disk. Leave blank to use <code>OPENAI_API_KEY</code> / <code>ANTHROPIC_API_KEY</code> env var.</div>
+      </div>
+      <div id="settings-status" class="modal-status"></div>
     </div>
-
-    <div id="settings-status"></div>
-
-    <div class="modal-actions">
-      <button class="btn btn-ghost" onclick="closeSettings()">Cancel</button>
-      <button class="btn btn-primary" onclick="saveSettings()">Save</button>
+    <div class="modal-foot">
+      <button class="btn btn-ghost" onclick="closeModal('settings-modal')">Cancel</button>
+      <button class="btn btn-primary" onclick="saveSettings()">Save Settings</button>
     </div>
   </div>
 </div>
 
-<header>
-  <div class="logo">Six Terminal <span>Live</span></div>
-  <div class="header-right">
-    <div id="model-indicator" class="no-key">No key set</div>
-    <button id="settings-btn" onclick="openSettings()">⚙ Settings</button>
+<!-- ══ NEW PROJECT MODAL ══════════════════════════════════ -->
+<div class="modal-overlay" id="create-modal" onclick="closeModal('create-modal',event)">
+  <div class="modal">
+    <div class="modal-head">
+      <h2><span class="mh-icon">✦</span> New Project from Description</h2>
+    </div>
+    <div class="modal-body">
+      <div class="form-group">
+        <label>Describe Your Project</label>
+        <textarea id="create-description" placeholder="e.g. 4-story office building, steel frame, NTP through TCO. Include MEP, finishes, and commissioning phases. Planned start June 2026." rows="5"></textarea>
+        <div class="hint">Be specific: building type, number of floors, key phases, start date, phasing or sequencing notes. The more detail, the better the schedule.</div>
+      </div>
+      <div id="create-status" class="modal-status"></div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn btn-ghost" onclick="closeModal('create-modal')">Cancel</button>
+      <button class="btn btn-primary" id="create-submit-btn" onclick="submitCreateProject()">Generate Schedule</button>
+    </div>
+  </div>
+</div>
+
+<!-- ══ REPORT MODAL ════════════════════════════════════════ -->
+<div class="modal-overlay" id="report-modal" onclick="closeModal('report-modal',event)">
+  <div class="modal wide">
+    <div class="modal-head">
+      <h2><span class="mh-icon">📊</span> Schedule QC Report</h2>
+    </div>
+    <div class="modal-body">
+      <div class="health-bar-wrap">
+        <div class="health-score-row">
+          <div class="health-score" id="health-score-big">—</div>
+          <div class="health-lbl">Schedule Health Score</div>
+        </div>
+        <div class="health-bar"><div class="health-bar-fill" id="health-fill" style="width:0%"></div></div>
+        <div id="health-pct">—</div>
+      </div>
+      <div class="report-section" id="report-hard-section">
+        <h3 class="hard"><span class="rs-dot"></span>Hard Constraints (<span id="report-hard-count">0</span>)</h3>
+        <div class="report-list" id="report-hard-list"></div>
+      </div>
+      <div class="report-section" id="report-soft-section">
+        <h3 class="soft"><span class="rs-dot"></span>Soft Constraints (<span id="report-soft-count">0</span>)</h3>
+        <div class="report-list" id="report-soft-list"></div>
+      </div>
+      <div class="report-section" id="report-open-start-section">
+        <h3 class="open"><span class="rs-dot"></span>Open Start — No Predecessors (<span id="report-open-start-count">0</span>)</h3>
+        <div class="report-list" id="report-open-start-list"></div>
+      </div>
+      <div class="report-section" id="report-open-finish-section">
+        <h3 class="open"><span class="rs-dot"></span>Open Finish — No Successors (<span id="report-open-finish-count">0</span>)</h3>
+        <div class="report-list" id="report-open-finish-list"></div>
+      </div>
+      <div id="report-all-clear" style="display:none;text-align:center;padding:20px 0;color:var(--green);font-size:13px;font-weight:600;">
+        ✓ Schedule looks clean — no hard constraints or open ends found.
+      </div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn btn-ghost" onclick="closeModal('report-modal')">Go Back &amp; Fix</button>
+      <button class="btn btn-primary" onclick="proceedDownload()">Export XML Anyway</button>
+    </div>
+  </div>
+</div>
+
+<!-- ══ TOP BAR ════════════════════════════════════════════ -->
+<div class="topbar">
+  <div class="logo-block">
+    <div class="logo-icon">6T</div>
+    <div class="logo-text">Six Terminal <span>Live</span></div>
+  </div>
+  <div class="topbar-center">
     <div id="project-badge">No schedule loaded</div>
   </div>
-</header>
+  <div class="topbar-right">
+    <div id="model-indicator" class="no-key">—</div>
+    <button id="settings-btn" onclick="openModal('settings-modal')">⚙ Settings</button>
+  </div>
+</div>
 
-<div class="main">
-  <!-- Sidebar -->
-  <div class="sidebar">
-    <div id="drop-zone" onclick="document.getElementById('file-input').click()">
-      <div class="icon">📂</div>
-      <div class="label"><strong>Drop XER or XML here</strong><br/>or click to browse</div>
-      <input type="file" id="file-input" accept=".xer,.xml" />
+<!-- ══ SHELL ══════════════════════════════════════════════ -->
+<div class="shell">
+
+  <!-- SIDEBAR -->
+  <aside class="sidebar">
+    <!-- Loaded projects — shown at top so always visible -->
+    <div class="sidebar-section" id="projects-section">
+      <div class="sidebar-label">Loaded Projects</div>
+      <div class="proj-list" id="proj-list"></div>
     </div>
 
-    <div id="project-info">
-      <div class="info-row"><span>Activities</span><span class="info-val" id="info-acts">—</span></div>
-      <div class="info-row"><span>WBS Nodes</span><span class="info-val" id="info-wbs">—</span></div>
-      <div class="info-row"><span>Relations</span><span class="info-val" id="info-rels">—</span></div>
-      <div class="info-row"><span>Data Date</span><span class="info-val" id="info-date">—</span></div>
-      <div class="info-row"><span>Edits Applied</span><span class="info-val" id="info-edits">0</span></div>
-    </div>
-
-    <div class="sidebar-actions">
-      <button class="btn btn-primary" id="download-btn" disabled onclick="downloadXML()">
-        ⬇ Download Edited XML
+    <div class="sidebar-section">
+      <div class="sidebar-label">Schedule File</div>
+      <div id="drop-zone" onclick="document.getElementById('file-input').click()">
+        <div class="dz-icon">📂</div>
+        <div class="dz-label"><strong>Drop XER or XML</strong>click to browse</div>
+        <div class="dz-sub">.xer &nbsp;·&nbsp; .xml &nbsp;·&nbsp; P6 format</div>
+        <input type="file" id="file-input" accept=".xer,.xml" />
+      </div>
+      <button id="new-project-btn" onclick="openModal('create-modal')">
+        <span>✦</span> New from Description
       </button>
-      <button class="btn btn-ghost" id="clear-btn" onclick="clearSession()">
+    </div>
+
+    <div class="sidebar-section" id="project-info">
+      <div class="sidebar-label">Project Metrics</div>
+      <div class="metric-grid">
+        <div class="metric-card accent">
+          <div class="metric-val" id="info-acts">—</div>
+          <div class="metric-label">Activities</div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-val" id="info-wbs">—</div>
+          <div class="metric-label">WBS Nodes</div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-val" id="info-rels">—</div>
+          <div class="metric-label">Relations</div>
+        </div>
+        <div class="metric-card green">
+          <div class="metric-val" id="info-edits">0</div>
+          <div class="metric-label">Edits</div>
+        </div>
+      </div>
+      <div class="info-date-row">
+        <span>Data Date</span>
+        <span id="info-date">—</span>
+      </div>
+    </div>
+
+    <div class="sidebar-bottom">
+      <button class="btn btn-primary btn-full" id="download-btn" disabled onclick="startDownload()">
+        ↓ Export XML
+      </button>
+      <button class="btn btn-ghost btn-full" id="undo-btn" disabled onclick="doUndo()">
+        ↩ Undo <span class="undo-badge" id="undo-badge" style="display:none">0</span>
+      </button>
+      <button class="btn btn-ghost btn-full" id="redo-btn" disabled onclick="doRedo()">
+        ↪ Redo <span class="undo-badge" id="redo-badge" style="display:none">0</span>
+      </button>
+      <button class="btn btn-ghost btn-full" id="clear-btn" onclick="clearSession()">
         Clear Session
       </button>
     </div>
-  </div>
+  </aside>
 
-  <!-- Chat -->
-  <div class="chat-area">
-    <div id="messages">
-      <div class="welcome" id="welcome-screen">
-        <div class="title">Six Terminal Live</div>
-        <div class="sub">Load a schedule file, then describe your edits in plain English. The engine will apply them and give you a clean P6 XML to import.</div>
-        <div class="examples">
-          <div class="example-chip" onclick="fillExample(this)">Change the duration of Install Drywall to 5 days</div>
-          <div class="example-chip" onclick="fillExample(this)">Rename WBS node "Structure" to "Structural Steel & Concrete"</div>
-          <div class="example-chip" onclick="fillExample(this)">Add a FS relationship from "Pour Slab Level 2" to "Frame Walls Level 2"</div>
-          <div class="example-chip" onclick="fillExample(this)">Add a new activity A1099 "Owner Punch Walk" under Closeout, 3 days</div>
+  <!-- WORKSPACE -->
+  <div class="workspace">
+
+    <!-- Tab navigation -->
+    <div class="tab-nav">
+      <button class="tab-btn active" id="tab-btn-editor" onclick="switchTab('editor')">
+        ◈ Editor
+      </button>
+      <button class="tab-btn" id="tab-btn-schedule" onclick="switchTab('schedule')">
+        ⊞ Schedule <span class="tab-pill" id="sched-count-pill">—</span>
+      </button>
+      <span class="tab-stale" id="sched-stale-notice">⚑ Changes pending — refresh to update</span>
+    </div>
+
+    <!-- Tab panels (flex:1 area above persistent input bar) -->
+    <div id="tab-panels">
+
+      <!-- Editor panel -->
+      <div id="panel-editor">
+        <div id="messages">
+          <div class="welcome" id="welcome-screen">
+            <div class="welcome-glyph">⬡</div>
+            <div class="welcome-title">Six Terminal Live</div>
+            <div class="welcome-sub">Load an XER or XML file — or generate a new schedule from a plain-English description. Then type your edits below.</div>
+            <div class="welcome-hint">
+              <strong>What you can say</strong>
+              <em>add an activity</em> &nbsp;·&nbsp; <em>add an FS relationship from X to Y</em> &nbsp;·&nbsp; <em>change the duration of [activity] to N days</em> &nbsp;·&nbsp; <em>rename WBS node X to Y</em> &nbsp;·&nbsp; <em>delete activity [ID]</em> &nbsp;·&nbsp; <em>set a Start On Or After constraint on [activity]</em> &nbsp;·&nbsp; <em>bulk update durations matching [pattern]</em>
+            </div>
+            <div class="examples">
+              <div class="example-chip" onclick="openModal('create-modal')"><span>✦</span> Create a new project from scratch…</div>
+            </div>
+          </div>
         </div>
+      </div>
+
+    <!-- Schedule panel -->
+    <div id="panel-schedule">
+      <!-- Toolbar: optional column toggles -->
+      <div class="sched-toolbar">
+        <span class="sched-toolbar-label">Columns</span>
+        <button class="col-toggle on"  data-col="status"    onclick="toggleCol('status')">Status</button>
+        <button class="col-toggle on"  data-col="pct"       onclick="toggleCol('pct')">% Complete</button>
+        <button class="col-toggle on"  data-col="float"     onclick="toggleCol('float')">Total Float</button>
+        <button class="col-toggle"     data-col="earlystart" onclick="toggleCol('earlystart')">Early Start</button>
+        <button class="col-toggle"     data-col="earlyfinish" onclick="toggleCol('earlyfinish')">Early Finish</button>
+        <button class="col-toggle"     data-col="latestart"  onclick="toggleCol('latestart')">Late Start</button>
+        <button class="col-toggle"     data-col="latefinish"  onclick="toggleCol('latefinish')">Late Finish</button>
+        <button class="col-toggle"     data-col="constraint" onclick="toggleCol('constraint')">Constraint</button>
+        <button class="col-toggle"     data-col="type"       onclick="toggleCol('type')">Activity Type</button>
+        <button class="btn btn-ghost btn-sm sched-refresh" onclick="loadSchedule()">↺ Refresh</button>
+      </div>
+
+      <!-- Table or empty state -->
+      <div id="sched-content" class="sched-wrap">
+        <div class="sched-empty" id="sched-empty">
+          <span style="font-size:28px;opacity:.15;">⊞</span>
+          Load a schedule to see the activity breakdown.
+        </div>
+        <table class="sched-table" id="sched-table" style="display:none;">
+          <thead>
+            <tr>
+              <th>ID</th>
+              <th>Activity Name</th>
+              <th style="text-align:right;">Duration</th>
+              <th>Start</th>
+              <th>Finish</th>
+              <th data-col="earlystart"  class="col-earlystart"  style="display:none;">Early Start</th>
+              <th data-col="earlyfinish" class="col-earlyfinish" style="display:none;">Early Finish</th>
+              <th data-col="latestart"   class="col-latestart"   style="display:none;">Late Start</th>
+              <th data-col="latefinish"  class="col-latefinish"  style="display:none;">Late Finish</th>
+              <th>Predecessors</th>
+              <th>Successors</th>
+              <th data-col="status"    class="col-status">Status</th>
+              <th data-col="pct"       class="col-pct"    style="text-align:right;">% Done</th>
+              <th data-col="float"     class="col-float"  style="text-align:right;">Float (d)</th>
+              <th data-col="constraint" class="col-constraint" style="display:none;">Constraint</th>
+              <th data-col="type"       class="col-type"       style="display:none;">Type</th>
+            </tr>
+          </thead>
+          <tbody id="sched-tbody"></tbody>
+        </table>
       </div>
     </div>
 
-    <div class="input-bar">
-      <textarea id="instruction-input" placeholder="Describe your schedule edit..." rows="1"
-        onkeydown="handleKey(event)" oninput="autoResize(this)"></textarea>
-      <button id="send-btn" onclick="sendInstruction()" disabled>
-        <svg viewBox="0 0 24 24"><path d="M2 21l21-9L2 3v7l15 2-15 2z"/></svg>
-      </button>
-    </div>
   </div>
+
+    <!-- Input bar — always visible on Editor and Schedule tabs -->
+    <div class="input-bar">
+      <div class="input-wrap">
+        <textarea id="instruction-input" placeholder="Type an edit or just chat…" rows="1"
+          onkeydown="handleKey(event)" oninput="autoResize(this)"></textarea>
+        <button id="send-btn" onclick="sendInstruction()" disabled title="Send">
+          <svg viewBox="0 0 24 24"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
+        </button>
+      </div>
+      <div class="input-hint">Enter to send &nbsp;&middot;&nbsp; Shift+Enter for new line</div>
+    </div>
+
 </div>
 
 <script>
-  let editCount = 0;
+// ═══════════════════════════════════════════════════
+//  State
+// ═══════════════════════════════════════════════════
+let editCount = 0;
+let undoCount = 0;
+let pendingClarifyInstruction = null; // stores original instruction while waiting for clarification
 
-  // ── Init: load current settings from server ──
-  async function initSettings() {
-    try {
-      const res = await fetch('/api/settings');
-      const data = await res.json();
-      updateModelIndicator(data.model_key, data.api_key_set);
-      document.getElementById('model-select').value = data.model_key;
-    } catch(e) { /* silent */ }
-  }
-  initSettings();
+// ═══════════════════════════════════════════════════
+//  Modal helpers
+// ═══════════════════════════════════════════════════
+function openModal(id) { document.getElementById(id).classList.add('open'); }
+function closeModal(id, e) {
+  if (e && e.target !== document.getElementById(id)) return;
+  document.getElementById(id).classList.remove('open');
+}
 
-  function updateModelIndicator(modelKey, keySet) {
-    const el = document.getElementById('model-indicator');
-    const labels = {
-      'gpt-4.1-mini': 'GPT-4.1 Mini',
-      'gpt-4.1-nano': 'GPT-4.1 Nano',
-      'claude': 'Claude',
-    };
-    const label = labels[modelKey] || modelKey;
-    if (keySet) {
-      el.textContent = `${label} · Key set`;
-      el.className = 'key-set';
-    } else {
-      el.textContent = `${label} · No key`;
-      el.className = 'no-key';
-    }
-  }
+// ═══════════════════════════════════════════════════
+//  Init
+// ═══════════════════════════════════════════════════
+async function initSettings() {
+  try {
+    const d = await fetch('/api/settings').then(r => r.json());
+    updateModelIndicator(d.model_key, d.api_key_set);
+    document.getElementById('model-select').value = d.model_key;
+  } catch(e) {}
+}
+initSettings();
 
-  // ── Settings modal ──
-  function openSettings() {
-    document.getElementById('settings-status').className = '';
-    document.getElementById('settings-status').textContent = '';
-    document.getElementById('api-key-input').value = '';
-    document.getElementById('settings-modal').classList.add('open');
-  }
-
-  function closeSettings() {
-    document.getElementById('settings-modal').classList.remove('open');
-  }
-
-  function closeSettingsOnOverlay(e) {
-    if (e.target === document.getElementById('settings-modal')) closeSettings();
-  }
-
-  async function saveSettings() {
-    const modelKey = document.getElementById('model-select').value;
-    const apiKey = document.getElementById('api-key-input').value.trim();
-    const statusEl = document.getElementById('settings-status');
-
-    try {
-      const res = await fetch('/api/settings', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model_key: modelKey, api_key: apiKey }),
-      });
-      const data = await res.json();
-      if (data.error) {
-        statusEl.textContent = '✕ ' + data.error;
-        statusEl.className = 'err';
-        return;
-      }
-      statusEl.textContent = `✓ Saved — using ${data.model_label}${data.api_key_set ? ' with your key' : ' (env key)'}`;
-      statusEl.className = 'ok';
-      updateModelIndicator(data.model_key, data.api_key_set);
-      setTimeout(closeSettings, 1200);
-    } catch(e) {
-      statusEl.textContent = '✕ Failed to save: ' + e.message;
-      statusEl.className = 'err';
-    }
-  }
-
-  // ── Drag & drop ──
-  const dropZone = document.getElementById('drop-zone');
-  const fileInput = document.getElementById('file-input');
-
-  dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('drag-over'); });
-  dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag-over'));
-  dropZone.addEventListener('drop', e => {
-    e.preventDefault();
-    dropZone.classList.remove('drag-over');
-    const file = e.dataTransfer.files[0];
-    if (file) uploadFile(file);
-  });
-  fileInput.addEventListener('change', () => {
-    if (fileInput.files[0]) uploadFile(fileInput.files[0]);
-  });
-
-  async function uploadFile(file) {
-    const fd = new FormData();
-    fd.append('file', file);
-    addMessage('system', `Loading <strong>${file.name}</strong>...`);
-    try {
-      const res = await fetch('/api/upload', { method: 'POST', body: fd });
-      const data = await res.json();
-      if (data.error) {
-        addMessage('system', `<span style="color:var(--error)">❌ ${data.error}</span>`);
-        return;
-      }
-      updateProjectInfo(data);
-      document.getElementById('welcome-screen').style.display = 'none';
-      addMessage('system',
-        `<strong>${data.project_name}</strong> loaded successfully.<br/>` +
-        `${data.activity_count} activities · ${data.wbs_count} WBS nodes · ${data.relation_count} relations · Data date: ${data.data_date || 'N/A'}`
-      );
+// Restore project state + chat history after a browser refresh
+async function checkExistingSession() {
+  try {
+    const [s, msgs] = await Promise.all([
+      fetch('/api/status').then(r => r.json()),
+      fetch('/api/messages').then(r => r.json()),
+    ]);
+    if (s.projects && s.projects.length) renderProjectList(s.projects);
+    if (s.loaded) {
+      document.getElementById('info-acts').textContent = s.activity_count ?? '—';
+      document.getElementById('info-wbs').textContent  = s.wbs_count     ?? '—';
+      document.getElementById('info-rels').textContent = s.relation_count ?? '—';
+      document.getElementById('info-date').textContent = s.data_date      ?? '—';
+      document.getElementById('project-info').classList.add('visible');
+      document.getElementById('project-badge').textContent = s.project_name;
+      document.getElementById('project-badge').classList.add('loaded');
+      document.getElementById('download-btn').disabled = false;
       document.getElementById('send-btn').disabled = false;
-    } catch(e) {
-      addMessage('system', `<span style="color:var(--error)">❌ Upload failed: ${e.message}</span>`);
+      document.getElementById('welcome-screen').style.display = 'none';
+      document.getElementById('sched-count-pill').textContent = s.activity_count ?? '—';
+      editCount = s.edit_count || 0;
+      undoCount = s.undo_count || 0;
+      redoCount = s.redo_count || 0;
+      document.getElementById('info-edits').textContent = editCount;
+      updateUndoBtn();
     }
+    for (const m of (msgs.messages || [])) {
+      if (m.role === 'user')               addMsg('user',      escHtml(m.text));
+      else if (m.role === 'assistant')     addMsg('assistant', escHtml(m.text));
+      else if (m.role === 'system_result') addMsg('system',    escHtml(m.text));
+    }
+    if (s.loaded) loadSchedule();
+  } catch(e) {}
+}
+checkExistingSession();
+
+function updateModelIndicator(key, keySet) {
+  const el = document.getElementById('model-indicator');
+  const labels = {'gpt-4.1-mini':'GPT-4.1 Mini','gpt-4.1-nano':'GPT-4.1 Nano','gpt-5.4-mini':'GPT-5.4 Mini','claude':'Claude'};
+  const label = labels[key] || key;
+  el.textContent = keySet ? `${label} · key set` : `${label} · no key`;
+  el.className = keySet ? 'key-set' : 'no-key';
+}
+
+// ═══════════════════════════════════════════════════
+//  Settings
+// ═══════════════════════════════════════════════════
+async function saveSettings() {
+  const modelKey = document.getElementById('model-select').value;
+  const apiKey = document.getElementById('api-key-input').value.trim();
+  const st = document.getElementById('settings-status');
+  try {
+    const d = await fetch('/api/settings', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({model_key: modelKey, api_key: apiKey})
+    }).then(r => r.json());
+    if (d.error) { setStatus(st, d.error, 'err'); return; }
+    setStatus(st, `✓ Saved — ${d.model_label}${d.api_key_set?' · key set':''}`, 'ok');
+    updateModelIndicator(d.model_key, d.api_key_set);
+    setTimeout(() => closeModal('settings-modal'), 1200);
+  } catch(e) { setStatus(st, e.message, 'err'); }
+}
+
+// ═══════════════════════════════════════════════════
+//  File upload
+// ═══════════════════════════════════════════════════
+const dropZone = document.getElementById('drop-zone');
+const fileInput = document.getElementById('file-input');
+dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('drag-over'); });
+dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag-over'));
+dropZone.addEventListener('drop', e => {
+  e.preventDefault(); dropZone.classList.remove('drag-over');
+  if (e.dataTransfer.files[0]) uploadFile(e.dataTransfer.files[0]);
+});
+fileInput.addEventListener('change', () => { if (fileInput.files[0]) uploadFile(fileInput.files[0]); });
+
+async function uploadFile(file) {
+  const fd = new FormData();
+  fd.append('file', file);
+  // Show loading in a temp overlay — don't pollute any project's chat
+  const loadingDiv = document.createElement('div');
+  loadingDiv.id = 'upload-loading';
+  loadingDiv.style.cssText = 'position:fixed;bottom:80px;left:50%;transform:translateX(-50%);background:var(--surface2);border:1px solid var(--border2);border-radius:var(--r-md);padding:10px 18px;font-size:12px;color:var(--text2);z-index:50;display:flex;align-items:center;gap:8px;';
+  loadingDiv.innerHTML = `<span class="spinner"></span> Loading <strong style="color:var(--text)">${escHtml(file.name)}</strong>…`;
+  document.body.appendChild(loadingDiv);
+  try {
+    const d = await fetch('/api/upload', {method:'POST', body: fd}).then(r => r.json());
+    document.getElementById('upload-loading')?.remove();
+    if (d.error) { addMsg('system', errorCard(d.error)); return; }
+    // Clear messages — each project gets its own fresh chat
+    clearMessages();
+    onProjectLoaded(d);
+    addMsg('system',
+      `<strong>${d.project_name}</strong> loaded — ${d.activity_count} activities &middot; ${d.wbs_count} WBS &middot; ${d.relation_count} relations &middot; Data date: ${d.data_date||'N/A'}`
+    );
+  } catch(e) { document.getElementById('upload-loading')?.remove(); addMsg('system', errorCard(e.message)); }
+}
+
+// ═══════════════════════════════════════════════════
+//  New project creation
+// ═══════════════════════════════════════════════════
+async function submitCreateProject() {
+  const desc = document.getElementById('create-description').value.trim();
+  const btn = document.getElementById('create-submit-btn');
+  const st = document.getElementById('create-status');
+  if (!desc) { setStatus(st, 'Please enter a project description.', 'err'); return; }
+  btn.disabled = true;
+  setStatus(st, '<span class="spinner"></span>Generating schedule — this may take 10–20 seconds…', 'info');
+  try {
+    const d = await fetch('/api/create', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({description: desc})
+    }).then(r => r.json());
+    if (d.error) { setStatus(st, d.error, 'err'); btn.disabled = false; return; }
+    closeModal('create-modal');
+    clearMessages();
+    onProjectLoaded(d);
+    addMsg('system',
+      `<strong>${d.project_name}</strong> created — ${d.activity_count} activities &middot; ${d.wbs_count} WBS nodes &middot; ${d.relation_count} relations`
+    );
+    document.getElementById('create-description').value = '';
+  } catch(e) { setStatus(st, e.message, 'err'); }
+  btn.disabled = false;
+}
+
+// ═══════════════════════════════════════════════════
+//  Send instruction
+// ═══════════════════════════════════════════════════
+async function sendInstruction() {
+  const input = document.getElementById('instruction-input');
+  const reply = input.value.trim();
+  if (!reply) return;
+
+  // If we're in a clarify loop, combine original instruction + user's reply
+  let instruction;
+  if (pendingClarifyInstruction) {
+    instruction = pendingClarifyInstruction + ' — ' + reply;
+    pendingClarifyInstruction = null;
+    updateInputHint(null);
+  } else {
+    instruction = reply;
   }
 
-  function updateProjectInfo(data) {
-    document.getElementById('info-acts').textContent = data.activity_count ?? '—';
-    document.getElementById('info-wbs').textContent = data.wbs_count ?? '—';
-    document.getElementById('info-rels').textContent = data.relation_count ?? '—';
-    document.getElementById('info-date').textContent = data.data_date ?? '—';
-    document.getElementById('project-info').classList.add('visible');
-    document.getElementById('project-badge').textContent = data.project_name;
+  addMsg('user', reply);
+  input.value = ''; autoResize(input);
+  setSendDisabled(true);
+  addMsg('system', '<span class="spinner"></span><em style="color:var(--text3)">Interpreting…</em>', 'pending');
+  try {
+    const d = await fetch('/api/edit', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({instruction})
+    }).then(r => r.json());
+    removePending();
+    if (d.error)                          { addMsg('system', errorCard(d.error)); }
+    else if (d.type === 'chat')           { addMsg('assistant', escHtml(d.message)); }
+    else if (d.type === 'clarify')        { handleClarify(d); }
+    else if (d.type === 'disambiguation') { addMsg('system', disambigCard(d)); }
+    else                                  { handleResult(d); }
+  } catch(e) { removePending(); addMsg('system', errorCard(e.message)); }
+  setSendDisabled(false);
+}
+
+function handleClarify(d) {
+  pendingClarifyInstruction = d.instruction;
+  updateInputHint('Replying to: ' + d.instruction);
+  addMsg('assistant', escHtml(d.question));
+  document.getElementById('instruction-input').focus();
+}
+
+function updateInputHint(text) {
+  const hint = document.querySelector('.input-hint');
+  if (!hint) return;
+  if (text) {
+    hint.innerHTML = '<span style="color:var(--accent2);">' + escHtml(text) + '</span>';
+  } else {
+    hint.innerHTML = 'Enter to send &nbsp;&middot;&nbsp; Shift+Enter for new line';
+  }
+}
+
+// ═══════════════════════════════════════════════════
+//  Disambiguation
+// ═══════════════════════════════════════════════════
+function disambigCard(data) {
+  const field = data.field;
+  const term = data.search_term;
+  const matches = data.matches;
+  const commands = data.commands;
+  const cmdIdx = data.command_index;
+  const instruction = data.instruction;
+  const fieldLabel = field === 'predecessor_name' ? 'predecessor'
+                   : field === 'successor_name'   ? 'successor'
+                   : 'target';
+  const cardId = 'disambig-' + Date.now();
+  let rows = matches.map((a, i) => `
+    <tr>
+      <td><input type="checkbox" class="disambig-cb" data-uid="${a.uid}" data-id="${a.activity_id}" id="cb-${cardId}-${i}"/></td>
+      <td><label for="cb-${cardId}-${i}" class="act-id">${a.activity_id}</label></td>
+      <td><label for="cb-${cardId}-${i}">${a.name}</label></td>
+      <td class="act-wbs">${a.wbs_path || '—'}</td>
+      <td>${a.planned_start || '—'}</td>
+      <td><span class="act-status ${statusClass(a.status)}">${a.status}</span></td>
+    </tr>`).join('');
+  return `<div class="disambig-card" id="${cardId}">
+    <div class="disambig-header">
+      ⇆ Multiple matches for ${fieldLabel} &ldquo;${escHtml(term)}&rdquo;
+      <span>&nbsp;—&nbsp;${matches.length} activities found. Pick which to edit.</span>
+    </div>
+    <div class="disambig-subtext">Instruction: <em>${escHtml(instruction)}</em></div>
+    <table class="disambig-table">
+      <thead><tr><th></th><th>ID</th><th>Activity Name</th><th>WBS Path</th><th>Start</th><th>Status</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+    <div class="disambig-actions">
+      <button class="btn btn-primary btn-sm" onclick="applyDisambig('${cardId}','${escAttr(instruction)}',${JSON.stringify(commands).replace(/'/g,"&#39;")},${cmdIdx},'${field}',false)">
+        Apply to Selected
+      </button>
+      <button class="btn btn-ghost btn-sm" onclick="applyDisambig('${cardId}','${escAttr(instruction)}',${JSON.stringify(commands).replace(/'/g,"&#39;")},${cmdIdx},'${field}',true)">
+        Apply to All ${matches.length}
+      </button>
+      <span class="disambig-hint">Select rows then click Apply, or use Apply to All</span>
+    </div>
+  </div>`;
+}
+
+async function applyDisambig(cardId, instruction, commands, cmdIdx, field, applyAll) {
+  const card = document.getElementById(cardId);
+  if (!card) return;
+  const cmd = commands[cmdIdx];
+  let resolvedCommands;
+  if (applyAll) {
+    const updated = Object.assign({}, cmd, {apply_to_all: true});
+    commands[cmdIdx] = updated;
+    resolvedCommands = commands;
+  } else {
+    const checked = card.querySelectorAll('.disambig-cb:checked');
+    if (checked.length === 0) {
+      card.style.borderColor = 'var(--red)';
+      setTimeout(() => card.style.borderColor = 'rgba(59,130,246,.35)', 800);
+      return;
+    }
+    const selectedIds = Array.from(checked).map(cb => cb.dataset.id);
+    const expanded = selectedIds.map(actId => {
+      const c = Object.assign({}, cmd);
+      if (field === 'target_name')      { delete c.target_name;      c.activity_id   = actId; }
+      else if (field === 'predecessor_name') { delete c.predecessor_name; c.predecessor_id = actId; }
+      else if (field === 'successor_name')   { delete c.successor_name;   c.successor_id   = actId; }
+      return c;
+    });
+    resolvedCommands = [...commands.slice(0, cmdIdx), ...expanded, ...commands.slice(cmdIdx + 1)];
+  }
+  card.querySelectorAll('button').forEach(b => b.disabled = true);
+  try {
+    const d = await fetch('/api/edit', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({instruction, force_commands: resolvedCommands})
+    }).then(r => r.json());
+    const wrapper = card.closest('.msg') || card;
+    const bubble = wrapper.querySelector('.msg-bubble') || wrapper;
+    if (d.error) { bubble.innerHTML = errorCard(d.error); }
+    else { bubble.innerHTML = resultCard(d); handleResult(d); }
+  } catch(e) {
+    card.querySelectorAll('button').forEach(b => b.disabled = false);
+    addMsg('system', errorCard(e.message));
+  }
+}
+
+function statusClass(s) {
+  if (s === 'Not Started') return 'ns';
+  if (s === 'In Progress')  return 'ip';
+  return 'cp';
+}
+
+// ═══════════════════════════════════════════════════
+//  Result handling
+// ═══════════════════════════════════════════════════
+function handleResult(d) {
+  // Always sync from server — edit_count = number of batches that changed the schedule
+  if (d.edit_count !== undefined) editCount = d.edit_count;
+  undoCount = d.undo_count || 0;
+  redoCount = d.redo_count || 0;
+  document.getElementById('info-edits').textContent = editCount;
+  updateUndoBtn();
+  if (d.chat_message) addMsg('assistant', escHtml(d.chat_message));
+  const editsDone = (d.commands_applied || 0) + (d.commands_failed || 0);
+  if (editsDone > 0) addMsg('system', resultCard(d));
+  // Fallback: if nothing rendered at all, show raw result summary
+  if (!d.chat_message && editsDone === 0) {
+    addMsg('assistant', 'Done.');
+  }
+  if ((d.commands_applied || 0) > 0) markScheduleStale();
+  fetch('/api/status').then(r => r.json()).then(s => {
+    if (s.loaded) {
+      document.getElementById('info-acts').textContent = s.activity_count;
+      document.getElementById('info-rels').textContent = s.relation_count;
+      document.getElementById('sched-count-pill').textContent = s.activity_count;
+    }
+  });
+}
+
+function resultCard(data) {
+  const overall = data.success ? 'success' : (data.commands_failed > 0 ? 'warning' : 'error');
+  const label = data.success
+    ? `✓ ${data.commands_applied} edit${data.commands_applied!==1?'s':''} applied`
+    : `${data.commands_applied} applied · ${data.commands_failed} failed`;
+  let rows = '';
+  for (const r of (data.results||[])) {
+    rows += `<div class="result-row ${r.success?'ok':'fail'}">
+      <span class="dot">${r.success?'●':'✕'}</span>
+      <span class="msg-text">[${r.action}] ${escHtml(r.message)}</span>
+    </div>`;
+  }
+  return `<div class="result-card">
+    <div class="result-card-header ${overall}">${label}</div>
+    <div class="result-card-body">${rows}</div>
+  </div>`;
+}
+
+function errorCard(msg) {
+  return `<div class="result-card">
+    <div class="result-card-header error">✕ Error</div>
+    <div class="result-card-body"><div class="result-row fail"><span class="dot">✕</span><span class="msg-text">${escHtml(String(msg))}</span></div></div>
+  </div>`;
+}
+
+// ═══════════════════════════════════════════════════
+//  Undo
+// ═══════════════════════════════════════════════════
+async function doUndo() {
+  try {
+    const d = await fetch('/api/undo', {method:'POST'}).then(r => r.json());
+    if (d.error) { addMsg('system', errorCard(d.error)); return; }
+    editCount = d.edit_count || 0;
+    undoCount = d.undo_count || 0;
+    redoCount = d.redo_count || 0;
+    document.getElementById('info-edits').textContent = editCount;
+    document.getElementById('info-acts').textContent = d.activity_count;
+    document.getElementById('info-rels').textContent = d.relation_count;
+    updateUndoBtn();
+    addMsg('system',
+      `<div class="result-card">
+        <div class="result-card-header info">↩ Undone: ${escHtml(d.undone_label)}</div>
+        <div class="result-card-body"><div class="result-row ok"><span class="dot">●</span>
+        <span class="msg-text">Project restored to previous state. ${undoCount} undo step${undoCount!==1?'s':''} remaining.</span>
+        </div></div></div>`
+    );
+    markScheduleStale();
+  } catch(e) { addMsg('system', errorCard(e.message)); }
+}
+
+async function doRedo() {
+  try {
+    const d = await fetch('/api/redo', {method:'POST'}).then(r => r.json());
+    if (d.error) { addMsg('system', errorCard(d.error)); return; }
+    editCount = d.edit_count || 0;
+    undoCount = d.undo_count || 0;
+    redoCount = d.redo_count || 0;
+    document.getElementById('info-edits').textContent = editCount;
+    document.getElementById('info-acts').textContent = d.activity_count;
+    document.getElementById('info-rels').textContent = d.relation_count;
+    updateUndoBtn();
+    addMsg('system',
+      `<div class="result-card">
+        <div class="result-card-header success">↪ Redone: ${escHtml(d.redone_label)}</div>
+        <div class="result-card-body"><div class="result-row ok"><span class="dot">●</span>
+        <span class="msg-text">Edit reapplied. ${redoCount} redo step${redoCount!==1?'s':''} remaining.</span>
+        </div></div></div>`
+    );
+    markScheduleStale();
+  } catch(e) { addMsg('system', errorCard(e.message)); }
+}
+
+let redoCount = 0;
+
+// ═══════════════════════════════════════════════════
+//  Project list
+// ═══════════════════════════════════════════════════
+function renderProjectList(projects) {
+  const section = document.getElementById('projects-section');
+  const list    = document.getElementById('proj-list');
+  if (!projects || !projects.length) { section.classList.remove('visible'); return; }
+  section.classList.add('visible');
+  list.innerHTML = projects.map(p => `
+    <div class="proj-item${p.is_active ? ' active' : ''}" id="proj-${p.id}" onclick="switchProject('${p.id}')">
+      <div class="proj-dot"></div>
+      <div class="proj-info">
+        <div class="proj-name" title="${escHtml(p.source_name)}">${escHtml(p.source_name)}</div>
+        <div class="proj-meta">${p.activity_count} act &middot; ${p.data_date || '—'}</div>
+      </div>
+      <button class="proj-del" title="Remove project" onclick="deleteProject('${p.id}',event)">&#x2715;</button>
+    </div>`).join('');
+}
+
+async function switchProject(pid) {
+  try {
+    const d = await fetch('/api/projects/switch', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({project_id: pid})
+    }).then(r => r.json());
+    if (d.error) { addMsg('system', errorCard(d.error)); return; }
+    // Update sidebar state
+    document.getElementById('info-acts').textContent  = d.activity_count ?? '—';
+    document.getElementById('info-wbs').textContent   = d.wbs_count ?? '—';
+    document.getElementById('info-rels').textContent  = d.relation_count ?? '—';
+    document.getElementById('info-date').textContent  = d.data_date ?? '—';
+    document.getElementById('project-badge').textContent = d.project_name;
     document.getElementById('project-badge').classList.add('loaded');
+    document.getElementById('project-info').classList.add('visible');
     document.getElementById('download-btn').disabled = false;
-  }
-
-  // ── Send instruction ──
-  async function sendInstruction() {
-    const input = document.getElementById('instruction-input');
-    const instruction = input.value.trim();
-    if (!instruction) return;
-
-    addMessage('user', instruction);
-    input.value = '';
-    autoResize(input);
-    document.getElementById('send-btn').disabled = true;
-
-    addMessage('system', '<em style="color:var(--text-dim)">Interpreting and applying edits...</em>', 'pending');
-
-    try {
-      const res = await fetch('/api/edit', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ instruction }),
-      });
-      const data = await res.json();
-      removePending();
-
-      if (data.error) {
-        addMessage('system', buildErrorCard(data.error));
-      } else {
-        editCount += data.commands_applied || 0;
-        document.getElementById('info-edits').textContent = editCount;
-        addMessage('system', buildResultCard(data));
-        const status = await fetch('/api/status').then(r => r.json());
-        if (status.loaded) {
-          document.getElementById('info-acts').textContent = status.activity_count;
-          document.getElementById('info-rels').textContent = status.relation_count;
-        }
-      }
-    } catch(e) {
-      removePending();
-      addMessage('system', buildErrorCard(e.message));
-    }
-
     document.getElementById('send-btn').disabled = false;
-  }
-
-  function buildResultCard(data) {
-    const overall = data.success ? 'success' : (data.commands_failed > 0 ? 'warning' : 'error');
-    const label = data.success
-      ? `✓ ${data.commands_applied} edit${data.commands_applied !== 1 ? 's' : ''} applied`
-      : `${data.commands_applied} applied · ${data.commands_failed} failed`;
-
-    let rows = '';
-    for (const r of (data.results || [])) {
-      const cls = r.success ? 'ok' : 'fail';
-      const dot = r.success ? '●' : '✕';
-      rows += `<div class="result-row ${cls}"><span class="dot">${dot}</span><span class="msg-text">[${r.action}] ${r.message}</span></div>`;
+    document.getElementById('sched-count-pill').textContent = d.activity_count ?? '—';
+    editCount = d.edit_count || 0;
+    undoCount = d.undo_count || 0;
+    redoCount = d.redo_count || 0;
+    document.getElementById('info-edits').textContent = editCount;
+    updateUndoBtn();
+    renderProjectList(d.projects);
+    // Restore this project's chat
+    clearMessages();
+    const restoredMsgs = d.messages || [];
+    if (restoredMsgs.length > 0) {
+      document.getElementById('welcome-screen').style.display = 'none';
+      for (const m of restoredMsgs) {
+        if (m.role === 'user')               addMsg('user',      escHtml(m.text));
+        else if (m.role === 'assistant')     addMsg('assistant', escHtml(m.text));
+        else if (m.role === 'system_result') addMsg('system',    escHtml(m.text));
+      }
     }
+    switchTab('editor');
+    markScheduleStale();
+  } catch(e) { addMsg('system', errorCard(e.message)); }
+}
 
-    return `<div class="result-card">
-      <div class="result-card-header ${overall}">${label}</div>
-      <div class="result-card-body">${rows}</div>
-    </div>`;
+async function deleteProject(pid, e) {
+  e.stopPropagation();
+  if (!confirm('Remove this project from the session?')) return;
+  try {
+    const d = await fetch('/api/projects/delete', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({project_id: pid})
+    }).then(r => r.json());
+    if (d.error) { addMsg('system', errorCard(d.error)); return; }
+    renderProjectList(d.projects);
+    if (d.active_id) {
+      // Switch to the new active project
+      switchProject(d.active_id);
+    } else {
+      // No projects left — reset UI
+      document.getElementById('project-badge').textContent = 'No schedule loaded';
+      document.getElementById('project-badge').classList.remove('loaded');
+      document.getElementById('project-info').classList.remove('visible');
+      document.getElementById('download-btn').disabled = true;
+      document.getElementById('send-btn').disabled = true;
+      document.getElementById('messages').innerHTML = '';
+      editCount = 0; undoCount = 0; redoCount = 0;
+      document.getElementById('info-edits').textContent = '0';
+      updateUndoBtn();
+    }
+  } catch(e) { addMsg('system', errorCard(e.message)); }
+}
+
+function updateUndoBtn() {
+  const btn = document.getElementById('undo-btn');
+  const badge = document.getElementById('undo-badge');
+  btn.disabled = undoCount === 0;
+  if (undoCount > 0) { badge.textContent = undoCount; badge.style.display = 'inline-block'; }
+  else { badge.style.display = 'none'; }
+  const rbtn = document.getElementById('redo-btn');
+  const rbadge = document.getElementById('redo-badge');
+  rbtn.disabled = redoCount === 0;
+  if (redoCount > 0) { rbadge.textContent = redoCount; rbadge.style.display = 'inline-block'; }
+  else { rbadge.style.display = 'none'; }
+}
+
+// ═══════════════════════════════════════════════════
+//  Pre-export constraint report
+// ═══════════════════════════════════════════════════
+async function startDownload() {
+  try {
+    const report = await fetch('/api/report').then(r => r.json());
+    if (report.error) { window.location.href = '/api/download'; return; }
+    const issues = report.hard_constraints.length + report.open_start.length + report.open_finish.length;
+    if (issues === 0 && report.soft_constraints.length === 0) {
+      window.location.href = '/api/download';
+      return;
+    }
+    populateReport(report);
+    openModal('report-modal');
+  } catch(e) { window.location.href = '/api/download'; }
+}
+
+function populateReport(r) {
+  const pct = r.health_pct || 0;
+  const bigEl = document.getElementById('health-score-big');
+  bigEl.textContent = pct + '%';
+  bigEl.className = 'health-score ' + (pct >= 85 ? 'good' : pct >= 60 ? 'ok' : 'poor');
+  document.getElementById('health-fill').style.width = pct + '%';
+  document.getElementById('health-fill').style.background =
+    pct >= 85 ? 'var(--green)' : pct >= 60 ? 'var(--orange)' : 'var(--red)';
+  document.getElementById('health-pct').textContent =
+    r.total_activities + ' activities · ' + r.total_relations + ' relations';
+
+  renderReportList('report-hard', r.hard_constraints, a => `
+    <div class="rl-row">
+      <span class="rl-id">${a.activity_id}</span>
+      <span>${escHtml(a.name)}</span>
+      <span class="rl-wbs">${escHtml(a.constraint_type)}${a.constraint_date?' · '+a.constraint_date:''}</span>
+    </div>`);
+  renderReportList('report-soft', r.soft_constraints, a => `
+    <div class="rl-row">
+      <span class="rl-id">${a.activity_id}</span>
+      <span>${escHtml(a.name)}</span>
+      <span class="rl-wbs">${escHtml(a.constraint_type)}${a.constraint_date?' · '+a.constraint_date:''}</span>
+    </div>`);
+  renderReportList('report-open-start', r.open_start, a => `
+    <div class="rl-row">
+      <span class="rl-id">${a.activity_id}</span>
+      <span>${escHtml(a.name)}</span>
+      <span class="rl-wbs">${escHtml(a.wbs_path)}</span>
+    </div>`);
+  renderReportList('report-open-finish', r.open_finish, a => `
+    <div class="rl-row">
+      <span class="rl-id">${a.activity_id}</span>
+      <span>${escHtml(a.name)}</span>
+      <span class="rl-wbs">${escHtml(a.wbs_path)}</span>
+    </div>`);
+
+  const allClear = r.hard_constraints.length + r.soft_constraints.length +
+                   r.open_start.length + r.open_finish.length === 0;
+  document.getElementById('report-all-clear').style.display = allClear ? 'block' : 'none';
+}
+
+function renderReportList(prefix, items, rowFn) {
+  document.getElementById(prefix + '-count').textContent = items.length;
+  document.getElementById(prefix + '-list').innerHTML = items.map(rowFn).join('');
+  document.getElementById(prefix + '-section').style.display = items.length > 0 ? 'block' : 'none';
+}
+
+function proceedDownload() { closeModal('report-modal'); window.location.href = '/api/download'; }
+
+// ═══════════════════════════════════════════════════
+//  Project loaded
+// ═══════════════════════════════════════════════════
+function onProjectLoaded(d) {
+  document.getElementById('info-acts').textContent = d.activity_count ?? '—';
+  document.getElementById('info-wbs').textContent  = d.wbs_count     ?? '—';
+  document.getElementById('info-rels').textContent = d.relation_count ?? '—';
+  document.getElementById('info-date').textContent = d.data_date      ?? '—';
+  document.getElementById('project-info').classList.add('visible');
+  document.getElementById('project-badge').textContent = d.project_name;
+  document.getElementById('project-badge').classList.add('loaded');
+  document.getElementById('download-btn').disabled = false;
+  document.getElementById('send-btn').disabled = false;
+  document.getElementById('welcome-screen').style.display = 'none';
+  document.getElementById('sched-count-pill').textContent = d.activity_count ?? '—';
+  editCount = 0; undoCount = 0; redoCount = 0;
+  document.getElementById('info-edits').textContent = '0';
+  updateUndoBtn();
+  if (d.projects) renderProjectList(d.projects);
+  scheduleStale = false;
+  document.getElementById('sched-stale-notice').classList.remove('show');
+  collapsedWbs.clear();
+  loadSchedule();
+}
+
+// ═══════════════════════════════════════════════════
+//  Clear session
+// ═══════════════════════════════════════════════════
+function clearSession() {
+  if (!confirm('Clear the current session? All unsaved edits will be lost.')) return;
+  fetch('/api/clear', {method:'POST'}).then(() => location.reload());
+}
+
+// ═══════════════════════════════════════════════════
+//  Message helpers
+// ═══════════════════════════════════════════════════
+function clearMessages() {
+  const msgs = document.getElementById('messages');
+  // Remove all children except the welcome screen
+  Array.from(msgs.children).forEach(c => { if (c.id !== 'welcome-screen') c.remove(); });
+}
+
+function addMsg(role, html, id) {
+  const ws = document.getElementById('welcome-screen');
+  if (ws) ws.style.display = 'none';
+  const msgs = document.getElementById('messages');
+  const div = document.createElement('div');
+  div.className = `msg ${role}`;
+  if (id) div.id = id;
+  div.innerHTML = `<div class="msg-bubble">${html}</div>`;
+  msgs.appendChild(div);
+  msgs.scrollTop = msgs.scrollHeight;
+  return div;
+}
+function removePending() { const el = document.getElementById('pending'); if (el) el.remove(); }
+function setSendDisabled(v) { document.getElementById('send-btn').disabled = v; }
+
+// ═══════════════════════════════════════════════════
+//  Input helpers
+// ═══════════════════════════════════════════════════
+function handleKey(e) { if (e.key==='Enter' && !e.shiftKey) { e.preventDefault(); sendInstruction(); } }
+function autoResize(el) { el.style.height='auto'; el.style.height=Math.min(el.scrollHeight,150)+'px'; }
+function fillExample(el) {
+  const input = document.getElementById('instruction-input');
+  input.value = el.textContent.trim(); autoResize(input); input.focus();
+}
+
+// ═══════════════════════════════════════════════════
+//  Utilities
+// ═══════════════════════════════════════════════════
+function setStatus(el, msg, cls) { el.innerHTML = msg; el.className = 'modal-status ' + cls; }
+function escHtml(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+function escAttr(s) { return String(s).replace(/'/g,'&#39;').replace(/"/g,'&quot;'); }
+
+// ═══════════════════════════════════════════════════
+//  Tab navigation
+// ═══════════════════════════════════════════════════
+let currentTab = 'editor';
+
+function switchTab(name) {
+  currentTab = name;
+  document.getElementById('tab-btn-editor').classList.toggle('active', name === 'editor');
+  document.getElementById('tab-btn-schedule').classList.toggle('active', name === 'schedule');
+  document.getElementById('panel-editor').classList.toggle('hidden', name !== 'editor');
+  document.getElementById('panel-schedule').classList.toggle('active', name === 'schedule');
+  if (name === 'schedule') {
+    // Auto-load if empty or stale
+    const tbody = document.getElementById('sched-tbody');
+    if (!tbody.children.length || document.getElementById('sched-stale-notice').classList.contains('show')) {
+      loadSchedule();
+    }
+  }
+}
+
+// ═══════════════════════════════════════════════════
+//  Schedule view
+// ═══════════════════════════════════════════════════
+let scheduleStale = false;
+// Columns: key -> default visible
+const SCHED_COLS = {
+  status:      true,
+  pct:         true,
+  float:       true,
+  earlystart:  false,
+  earlyfinish: false,
+  latestart:   false,
+  latefinish:  false,
+  constraint:  false,
+  type:        false,
+};
+// Track collapsed WBS sections
+const collapsedWbs = new Set();
+
+function markScheduleStale() {
+  scheduleStale = true;
+  document.getElementById('sched-stale-notice').classList.add('show');
+}
+
+async function loadSchedule() {
+  scheduleStale = false;
+  document.getElementById('sched-stale-notice').classList.remove('show');
+  const tbody = document.getElementById('sched-tbody');
+  const table = document.getElementById('sched-table');
+  const empty = document.getElementById('sched-empty');
+  tbody.innerHTML = '<tr><td colspan="20" style="text-align:center;padding:32px;color:var(--text3);"><span class="spinner"></span> Loading…</td></tr>';
+  table.style.display = 'table';
+  empty.style.display = 'none';
+  try {
+    const d = await fetch('/api/schedule').then(r => r.json());
+    if (d.error) {
+      tbody.innerHTML = `<tr><td colspan="20" style="text-align:center;padding:32px;color:var(--red);">${escHtml(d.error)}</td></tr>`;
+      return;
+    }
+    document.getElementById('sched-count-pill').textContent = d.activity_count ?? '—';
+    renderSchedule(d);
+  } catch(e) {
+    tbody.innerHTML = `<tr><td colspan="20" style="text-align:center;padding:32px;color:var(--red);">${escHtml(e.message)}</td></tr>`;
+  }
+}
+
+function renderSchedule(data) {
+  const tbody = document.getElementById('sched-tbody');
+  const rows = [];
+  for (const wbs of data.wbs_sections) {
+    if (!wbs.activities.length) continue;
+    const indent = ' '.repeat(wbs.depth * 4);
+    const isCollapsed = collapsedWbs.has(wbs.uid);
+    rows.push(`
+      <tr class="sched-wbs-row${isCollapsed ? ' collapsed' : ''}" id="wbs-hdr-${wbs.uid}"
+          onclick="toggleWbs('${wbs.uid}')">
+        <td colspan="20">
+          <span class="sched-wbs-toggle">
+            ${indent}<span class="sched-wbs-arrow">▾</span>
+            &nbsp;${escHtml(wbs.name)}
+            <span class="sched-wbs-code">${escHtml(wbs.code)}</span>
+            <span class="sched-wbs-count">${wbs.activities.length} act.</span>
+          </span>
+        </td>
+      </tr>`);
+    for (const a of wbs.activities) {
+      rows.push(renderActivityRow(a, wbs.uid, isCollapsed));
+    }
+  }
+  tbody.innerHTML = rows.join('');
+  updateColVisibility();
+}
+
+function renderActivityRow(a, wbsUid, hidden) {
+  const isMilestone = a.is_milestone;
+  const isCritical  = a.is_critical;
+  const isLP        = a.is_longest_path;
+
+  // Status chip class
+  const stCls = a.status === 'Not Started' ? 'ns' : a.status === 'In Progress' ? 'ip' : 'cp';
+
+  // Duration display
+  const dur = isMilestone ? '◆' : (a.duration_days > 0 ? a.duration_days + 'd' : '—');
+
+  // Predecessors / successors as chips
+  const predChips = (a.predecessors || []).map(p => {
+    const lag = p.lag ? (p.lag > 0 ? `+${Math.round(p.lag/8)}d` : `${Math.round(p.lag/8)}d`) : '';
+    const abbr = p.type === 'Finish to Start' ? 'FS' : p.type === 'Start to Start' ? 'SS' : p.type === 'Finish to Finish' ? 'FF' : 'SF';
+    return `<span class="link-chip">${escHtml(p.activity_id)} ${abbr}${lag}</span>`;
+  }).join('');
+  const succChips = (a.successors || []).map(s => {
+    const abbr = s.type === 'Finish to Start' ? 'FS' : s.type === 'Start to Start' ? 'SS' : s.type === 'Finish to Finish' ? 'FF' : 'SF';
+    return `<span class="link-chip">${escHtml(s.activity_id)} ${abbr}</span>`;
+  }).join('');
+
+  // Float display
+  let floatHtml = '—';
+  if (a.total_float !== null && a.total_float !== undefined) {
+    const fc = a.total_float <= 0 ? 'zero' : a.total_float <= 5 ? 'low' : 'ok';
+    floatHtml = `<span class="sched-float ${fc}">${a.total_float}</span>`;
   }
 
-  function buildErrorCard(msg) {
-    return `<div class="result-card">
-      <div class="result-card-header error">✕ Error</div>
-      <div class="result-card-body"><div class="result-row fail"><span class="dot">✕</span><span class="msg-text">${msg}</span></div></div>
-    </div>`;
-  }
+  // Name with badges
+  let nameBadges = '';
+  if (isCritical) nameBadges += '<span class="crit-badge">CRIT</span>';
+  if (isLP && !isCritical) nameBadges += '<span class="lp-badge">LP</span>';
 
-  // ── Download ──
-  function downloadXML() { window.location.href = '/api/download'; }
+  // Constraint
+  const constraintTxt = a.constraint_type ? `${a.constraint_type}${a.constraint_date ? ' · ' + a.constraint_date : ''}` : '—';
 
-  // ── Clear session ──
-  function clearSession() {
-    if (!confirm('Clear the current session? All unsaved edits will be lost.')) return;
-    fetch('/api/clear', { method: 'POST' }).then(() => location.reload());
-  }
+  const rowClass = [
+    'sched-act-row',
+    isMilestone ? 'sched-milestone-row' : '',
+    isCritical  ? 'critical' : '',
+  ].filter(Boolean).join(' ');
 
-  // ── Message helpers ──
-  function addMessage(role, html, id) {
-    const welcome = document.getElementById('welcome-screen');
-    if (welcome) welcome.style.display = 'none';
-    const msgs = document.getElementById('messages');
-    const div = document.createElement('div');
-    div.className = `msg ${role}`;
-    if (id) div.id = id;
-    div.innerHTML = `<div class="msg-bubble">${html}</div>`;
-    msgs.appendChild(div);
-    msgs.scrollTop = msgs.scrollHeight;
-  }
+  const displayStyle = hidden ? 'display:none;' : '';
+  return `
+    <tr class="${rowClass}" data-wbs="${wbsUid}" style="${displayStyle}">
+      <td><span class="sched-id">${escHtml(a.activity_id)}</span></td>
+      <td><span class="sched-name" title="${escAttr(a.name)}">${escHtml(a.name)}</span>${nameBadges}</td>
+      <td class="sched-dur">${dur}</td>
+      <td class="sched-date">${a.planned_start || '—'}</td>
+      <td class="sched-date">${a.planned_finish || '—'}</td>
+      <td class="sched-date col-earlystart">${a.early_start || '—'}</td>
+      <td class="sched-date col-earlyfinish">${a.early_finish || '—'}</td>
+      <td class="sched-date col-latestart">${a.late_start || '—'}</td>
+      <td class="sched-date col-latefinish">${a.late_finish || '—'}</td>
+      <td class="sched-links">${predChips || '<span style="color:var(--text3)">—</span>'}</td>
+      <td class="sched-links">${succChips || '<span style="color:var(--text3)">—</span>'}</td>
+      <td class="col-status"><span class="sched-status ${stCls}">${escHtml(a.status)}</span></td>
+      <td class="col-pct" style="text-align:right;font-family:var(--mono);font-size:10px;">${a.percent_complete > 0 ? a.percent_complete + '%' : '—'}</td>
+      <td class="col-float">${floatHtml}</td>
+      <td class="col-constraint" style="font-size:10px;color:var(--text3);">${escHtml(constraintTxt)}</td>
+      <td class="col-type" style="font-size:10px;color:var(--text3);">${escHtml(a.activity_type)}</td>
+    </tr>`;
+}
 
-  function removePending() {
-    const el = document.getElementById('pending');
-    if (el) el.remove();
+function toggleWbs(uid) {
+  const hdr = document.getElementById('wbs-hdr-' + uid);
+  if (!hdr) return;
+  const isCollapsed = collapsedWbs.has(uid);
+  if (isCollapsed) {
+    collapsedWbs.delete(uid);
+    hdr.classList.remove('collapsed');
+    document.querySelectorAll(`tr.sched-act-row[data-wbs="${uid}"]`).forEach(r => r.style.display = '');
+  } else {
+    collapsedWbs.add(uid);
+    hdr.classList.add('collapsed');
+    document.querySelectorAll(`tr.sched-act-row[data-wbs="${uid}"]`).forEach(r => r.style.display = 'none');
   }
+}
 
-  // ── Input helpers ──
-  function handleKey(e) {
-    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendInstruction(); }
-  }
+// ═══════════════════════════════════════════════════
+//  Column toggles
+// ═══════════════════════════════════════════════════
+function toggleCol(col) {
+  SCHED_COLS[col] = !SCHED_COLS[col];
+  const btn = document.querySelector(`.col-toggle[data-col="${col}"]`);
+  if (btn) btn.classList.toggle('on', SCHED_COLS[col]);
+  updateColVisibility();
+}
 
-  function autoResize(el) {
-    el.style.height = 'auto';
-    el.style.height = Math.min(el.scrollHeight, 160) + 'px';
+function updateColVisibility() {
+  for (const [col, visible] of Object.entries(SCHED_COLS)) {
+    const disp = visible ? '' : 'none';
+    document.querySelectorAll(`.col-${col}, [data-col="${col}"]`).forEach(el => {
+      el.style.display = disp;
+    });
+    // For header th with data-col attribute
+    document.querySelectorAll(`th[data-col="${col}"]`).forEach(el => {
+      el.style.display = disp;
+    });
   }
-
-  function fillExample(el) {
-    const input = document.getElementById('instruction-input');
-    input.value = el.textContent.trim();
-    autoResize(input);
-    input.focus();
-  }
+}
 </script>
 </body>
 </html>
