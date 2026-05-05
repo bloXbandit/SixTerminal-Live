@@ -3,9 +3,9 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Six Terminal Live</title>
+  <title>Stelic Insights Live</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
   <style>
     :root {
       --bg:        #07090f;
@@ -27,6 +27,7 @@
       --text2: #94a3b8;
       --text3: #4a5568;
       --font: 'Inter','Segoe UI',system-ui,sans-serif;
+      --display: 'Space Grotesk','Inter','Segoe UI',system-ui,sans-serif;
       --mono: 'JetBrains Mono','Fira Code','Consolas',monospace;
       --r-sm:4px; --r-md:8px; --r-lg:12px; --r-xl:16px;
       --shadow-lg: 0 8px 32px rgba(0,0,0,.6);
@@ -51,7 +52,7 @@
 
     /* ── TOP BAR ─────────────────────────────────────────── */
     .topbar{
-      display:flex;align-items:center;height:46px;
+      display:flex;align-items:center;height:52px;
       border-bottom:1px solid var(--border);
       background:var(--surface);flex-shrink:0;
       position:relative;z-index:10;
@@ -59,26 +60,38 @@
     .topbar::after{
       content:'';position:absolute;bottom:-1px;left:0;right:0;height:1px;
       background:linear-gradient(90deg,var(--accent2) 0%,transparent 55%);
-      opacity:.35;
+      opacity:.4;
     }
+    /* ── LOGO ────────────────────────────────────────────── */
     .logo-block{
-      width:224px;flex-shrink:0;display:flex;align-items:center;gap:9px;
-      padding:0 16px;height:100%;border-right:1px solid var(--border);
+      width:240px;flex-shrink:0;display:flex;align-items:center;gap:10px;
+      padding:0 18px;height:100%;border-right:1px solid var(--border);
     }
-    .logo-icon{
-      width:26px;height:26px;border-radius:6px;flex-shrink:0;
-      background:linear-gradient(135deg,var(--accent2),var(--accent));
-      display:flex;align-items:center;justify-content:center;
-      font-size:11px;font-weight:700;color:#000;letter-spacing:-.01em;
+    .stelic-wordmark{
+      display:flex;flex-direction:column;gap:1px;line-height:1;
     }
-    .logo-text{font-size:13px;font-weight:600;color:var(--text);letter-spacing:.01em;}
-    .logo-text span{color:var(--text3);font-weight:400;}
+    .stelic-name{
+      font-family:var(--display);font-size:14px;font-weight:700;
+      color:var(--accent);letter-spacing:.14em;text-transform:uppercase;
+    }
+    .stelic-tag{
+      font-size:6.5px;font-weight:500;letter-spacing:.13em;
+      text-transform:uppercase;color:var(--text3);
+    }
+    .logo-live-pill{
+      font-family:var(--display);font-size:9px;font-weight:600;
+      letter-spacing:.18em;text-transform:uppercase;
+      color:var(--text3);border:1px solid var(--border2);
+      border-radius:3px;padding:2px 6px;align-self:flex-start;margin-top:2px;
+    }
     .topbar-center{flex:1;display:flex;align-items:center;padding:0 16px;gap:8px;overflow:hidden;}
     #project-badge{
-      font-size:12px;color:var(--text3);white-space:nowrap;
+      font-family:var(--display);font-size:11px;font-weight:500;
+      color:var(--text3);white-space:nowrap;
       overflow:hidden;text-overflow:ellipsis;max-width:440px;
+      letter-spacing:.04em;
     }
-    #project-badge.loaded{color:var(--text);font-weight:500;}
+    #project-badge.loaded{color:var(--text);font-weight:600;}
     #project-badge.loaded::before{
       content:'';display:inline-block;width:6px;height:6px;
       background:var(--green);border-radius:50%;margin-right:7px;
@@ -117,8 +130,12 @@
       padding:14px 12px;border-bottom:1px solid var(--border);
     }
     .sidebar-label{
-      font-size:9px;font-weight:600;letter-spacing:.12em;
-      text-transform:uppercase;color:var(--text3);margin-bottom:8px;padding:0 2px;
+      font-family:var(--display);font-size:8.5px;font-weight:600;letter-spacing:.18em;
+      text-transform:uppercase;color:var(--text3);margin-bottom:10px;padding:0 2px;
+      display:flex;align-items:center;gap:8px;
+    }
+    .sidebar-label::after{
+      content:'';flex:1;height:1px;background:var(--border);display:block;
     }
 
     /* Drop zone */
@@ -155,7 +172,7 @@
       font-size:20px;font-weight:700;font-family:var(--mono);
       color:var(--text);line-height:1;margin-bottom:3px;
     }
-    .metric-label{font-size:9px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--text3);}
+    .metric-label{font-family:var(--display);font-size:8.5px;font-weight:600;letter-spacing:.12em;text-transform:uppercase;color:var(--text3);}
     .metric-card.accent .metric-val{color:var(--accent);}
     .metric-card.green  .metric-val{color:var(--green);}
     .info-date-row{
@@ -296,43 +313,89 @@
     }
     .disambig-hint{font-size:10px;color:var(--text3);margin-left:auto;}
 
-    /* Welcome */
+    /* ── WELCOME SCREEN ──────────────────────────────────── */
     .welcome{
       flex:1;display:flex;flex-direction:column;align-items:center;
-      justify-content:center;padding:48px 40px;text-align:center;gap:0;
+      justify-content:center;padding:40px 40px;text-align:center;gap:0;
+      position:relative;
     }
-    .welcome-glyph{
-      font-size:36px;margin-bottom:20px;opacity:.1;filter:grayscale(1);
-      user-select:none;
+    /* Ambient grid lines in background */
+    .welcome::before{
+      content:'';position:absolute;inset:0;
+      background-image:
+        linear-gradient(var(--border) 1px,transparent 1px),
+        linear-gradient(90deg,var(--border) 1px,transparent 1px);
+      background-size:48px 48px;
+      opacity:.18;pointer-events:none;
+    }
+    .welcome-frame{
+      position:relative;display:flex;flex-direction:column;align-items:center;
+      text-align:center;padding:52px 64px 44px;
+      max-width:680px;width:100%;
+    }
+    /* Geometric corner brackets */
+    .welcome-frame::before,.welcome-frame::after,
+    .welcome-frame .wf-corner-bl,.welcome-frame .wf-corner-br{
+      content:'';position:absolute;width:22px;height:22px;
+      border-color:rgba(0,207,255,.35);border-style:solid;
+    }
+    .welcome-frame::before{top:0;left:0;border-width:1px 0 0 1px;}
+    .welcome-frame::after {top:0;right:0;border-width:1px 1px 0 0;}
+    .wf-corner-bl{position:absolute;width:22px;height:22px;bottom:0;left:0;border:solid rgba(0,207,255,.35);border-width:0 0 1px 1px;}
+    .wf-corner-br{position:absolute;width:22px;height:22px;bottom:0;right:0;border:solid rgba(0,207,255,.35);border-width:0 1px 1px 0;}
+
+    .welcome-eyebrow{
+      font-family:var(--display);font-size:9px;font-weight:600;
+      letter-spacing:.22em;text-transform:uppercase;
+      color:var(--accent2);margin-bottom:18px;
+      display:flex;align-items:center;gap:14px;
+    }
+    .welcome-eyebrow::before,.welcome-eyebrow::after{
+      content:'';height:1px;width:36px;
+      background:linear-gradient(90deg,transparent,rgba(0,207,255,.4));
+      display:block;
+    }
+    .welcome-eyebrow::after{
+      background:linear-gradient(90deg,rgba(0,207,255,.4),transparent);
     }
     .welcome-title{
-      font-size:26px;font-weight:700;color:var(--text);
-      letter-spacing:-.025em;margin-bottom:10px;
+      font-family:var(--display);
+      font-size:54px;font-weight:700;color:var(--text);
+      letter-spacing:-.03em;line-height:1.0;margin-bottom:4px;
     }
-    .welcome-sub{
-      font-size:13px;color:var(--text2);max-width:400px;
-      line-height:1.75;margin-bottom:24px;
+    .welcome-title span{color:var(--accent);}
+    .welcome-directive{
+      font-family:var(--display);font-size:10px;font-weight:500;
+      letter-spacing:.18em;text-transform:uppercase;
+      color:var(--accent2);margin-bottom:36px;opacity:.75;
     }
     .welcome-hint{
-      font-size:11px;color:var(--text3);line-height:1.9;
-      max-width:460px;background:var(--surface2);
+      font-size:11px;color:var(--text3);line-height:1.95;
+      max-width:520px;background:rgba(15,20,32,.8);
       border:1px solid var(--border);border-radius:var(--r-md);
-      padding:14px 18px;text-align:left;margin-bottom:16px;
+      padding:16px 20px;text-align:left;margin-bottom:20px;
+      backdrop-filter:blur(8px);
     }
     .welcome-hint strong{
-      color:var(--text2);display:block;font-size:9px;
-      letter-spacing:.12em;text-transform:uppercase;margin-bottom:8px;
+      font-family:var(--display);color:var(--text2);display:block;font-size:8.5px;
+      letter-spacing:.18em;text-transform:uppercase;margin-bottom:9px;
     }
     .welcome-hint em{font-style:normal;color:var(--accent);font-family:var(--mono);font-size:10px;}
     .examples{margin-top:0;}
     .example-chip{
-      display:inline-flex;align-items:center;gap:6px;
-      background:var(--surface);border:1px solid var(--border);
-      border-radius:var(--r-sm);padding:8px 14px;
-      font-size:12px;color:var(--text2);cursor:pointer;
-      transition:border-color .15s,color .15s,background .15s;
+      display:inline-flex;align-items:center;gap:7px;
+      background:transparent;border:1px solid var(--border2);
+      border-radius:var(--r-md);padding:10px 20px;
+      font-family:var(--display);font-size:12px;font-weight:500;
+      color:var(--text2);cursor:pointer;
+      transition:border-color .2s,color .2s,background .2s,box-shadow .2s;
+      letter-spacing:.02em;
     }
-    .example-chip:hover{border-color:var(--accent2);color:var(--accent);background:var(--accent-glow2);}
+    .example-chip:hover{
+      border-color:var(--accent2);color:var(--accent);
+      background:var(--accent-glow2);
+      box-shadow:0 0 20px rgba(0,207,255,.08);
+    }
 
     /* Command input */
     .input-bar{
@@ -389,7 +452,8 @@
       padding:18px 22px 14px;border-bottom:1px solid var(--border);flex-shrink:0;
     }
     .modal-head h2{
-      font-size:14px;font-weight:600;color:var(--text);
+      font-family:var(--display);font-size:13px;font-weight:600;
+      letter-spacing:.04em;color:var(--text);
       display:flex;align-items:center;gap:9px;
     }
     .mh-icon{
@@ -517,24 +581,24 @@
     /* ── TAB NAV ─────────────────────────────────────────── */
     .tab-nav{
       display:flex;align-items:center;gap:2px;
-      padding:0 20px;height:38px;flex-shrink:0;
+      padding:0 20px;height:40px;flex-shrink:0;
       background:var(--surface);border-bottom:1px solid var(--border);
       position:relative;z-index:5;
     }
     .tab-btn{
       display:inline-flex;align-items:center;gap:6px;
-      padding:6px 14px;border-radius:var(--r-sm) var(--r-sm) 0 0;
+      padding:6px 16px;border-radius:var(--r-sm) var(--r-sm) 0 0;
       border:1px solid transparent;border-bottom:none;
       background:transparent;color:var(--text3);
-      font-size:12px;font-weight:500;font-family:var(--font);
+      font-family:var(--display);font-size:11px;font-weight:600;
+      letter-spacing:.06em;
       cursor:pointer;transition:color .15s,background .15s,border-color .15s;
-      position:relative;bottom:-1px;
+      position:relative;bottom:-1px;text-transform:uppercase;
     }
     .tab-btn:hover{color:var(--text2);}
     .tab-btn.active{
       background:var(--bg);color:var(--accent);
       border-color:var(--border);border-bottom-color:var(--bg);
-      font-weight:600;
     }
     .tab-pill{
       font-size:9px;font-weight:700;font-family:var(--mono);
@@ -779,8 +843,11 @@
 <!-- ══ TOP BAR ════════════════════════════════════════════ -->
 <div class="topbar">
   <div class="logo-block">
-    <div class="logo-icon">6T</div>
-    <div class="logo-text">Six Terminal <span>Live</span></div>
+    <div class="stelic-wordmark">
+      <div class="stelic-name">Stelic</div>
+      <div class="stelic-tag">Insight &middot; Action &middot; Impact</div>
+    </div>
+    <div class="logo-live-pill">Live</div>
   </div>
   <div class="topbar-center">
     <div id="project-badge">No schedule loaded</div>
@@ -878,15 +945,21 @@
       <div id="panel-editor">
         <div id="messages">
           <div class="welcome" id="welcome-screen">
-            <div class="welcome-glyph">⬡</div>
-            <div class="welcome-title">Six Terminal Live</div>
-            <div class="welcome-sub">Load an XER or XML file — or generate a new schedule from a plain-English description. Then type your edits below.</div>
-            <div class="welcome-hint">
-              <strong>What you can say</strong>
-              <em>add an activity</em> &nbsp;·&nbsp; <em>add an FS relationship from X to Y</em> &nbsp;·&nbsp; <em>change the duration of [activity] to N days</em> &nbsp;·&nbsp; <em>rename WBS node X to Y</em> &nbsp;·&nbsp; <em>delete activity [ID]</em> &nbsp;·&nbsp; <em>set a Start On Or After constraint on [activity]</em> &nbsp;·&nbsp; <em>bulk update durations matching [pattern]</em>
-            </div>
-            <div class="examples">
-              <div class="example-chip" onclick="openModal('create-modal')"><span>✦</span> Create a new project from scratch…</div>
+            <div class="welcome-frame">
+              <div class="wf-corner-bl"></div>
+              <div class="wf-corner-br"></div>
+              <div class="welcome-eyebrow">Schedule Intelligence</div>
+              <div class="welcome-title">Stelic<span>.</span></div>
+              <div class="welcome-directive">Insights Live &nbsp;&mdash;&nbsp; Load a file or describe a project below</div>
+              <div class="welcome-hint">
+                <strong>What the agent can do</strong>
+                <em>add an activity</em> &nbsp;·&nbsp; <em>add FS relationship X → Y</em> &nbsp;·&nbsp; <em>change duration of [activity] to N days</em> &nbsp;·&nbsp; <em>rename WBS node</em> &nbsp;·&nbsp; <em>delete activity [ID]</em> &nbsp;·&nbsp; <em>set constraint on [activity]</em> &nbsp;·&nbsp; <em>find open ends and suggest logic ties</em> &nbsp;·&nbsp; <em>identify critical path risks</em>
+              </div>
+              <div class="examples">
+                <div class="example-chip" onclick="openModal('create-modal')">
+                  <span style="color:var(--accent);font-size:14px;">✦</span> Generate a new schedule from description
+                </div>
+              </div>
             </div>
           </div>
         </div>
@@ -964,6 +1037,21 @@
 let editCount = 0;
 let undoCount = 0;
 let pendingClarifyInstruction = null; // stores original instruction while waiting for clarification
+
+// ═══════════════════════════════════════════════════
+//  Date formatter — DD-Mon-YY (e.g. 21-Apr-26)
+// ═══════════════════════════════════════════════════
+const _MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+function fmtDate(s) {
+  if (!s || s === '—') return '—';
+  // Accept YYYY-MM-DD or YYYY-MM-DDTHH:MM
+  const m = String(s).match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (!m) return s;
+  const yy = m[1].slice(2);
+  const mon = _MONTHS[parseInt(m[2], 10) - 1] || m[2];
+  const dd  = m[3];
+  return `${dd}-${mon}-${yy}`;
+}
 
 // ═══════════════════════════════════════════════════
 //  Modal helpers
@@ -1185,7 +1273,7 @@ function disambigCard(data) {
       <td><label for="cb-${cardId}-${i}" class="act-id">${a.activity_id}</label></td>
       <td><label for="cb-${cardId}-${i}">${a.name}</label></td>
       <td class="act-wbs">${a.wbs_path || '—'}</td>
-      <td>${a.planned_start || '—'}</td>
+      <td>${fmtDate(a.planned_start)}</td>
       <td><span class="act-status ${statusClass(a.status)}">${a.status}</span></td>
     </tr>`).join('');
   return `<div class="disambig-card" id="${cardId}">
@@ -1743,12 +1831,12 @@ function renderActivityRow(a, wbsUid, hidden) {
       <td><span class="sched-id">${escHtml(a.activity_id)}</span></td>
       <td><span class="sched-name" title="${escAttr(a.name)}">${escHtml(a.name)}</span>${nameBadges}</td>
       <td class="sched-dur">${dur}</td>
-      <td class="sched-date">${a.planned_start || '—'}</td>
-      <td class="sched-date">${a.planned_finish || '—'}</td>
-      <td class="sched-date col-earlystart">${a.early_start || '—'}</td>
-      <td class="sched-date col-earlyfinish">${a.early_finish || '—'}</td>
-      <td class="sched-date col-latestart">${a.late_start || '—'}</td>
-      <td class="sched-date col-latefinish">${a.late_finish || '—'}</td>
+      <td class="sched-date">${fmtDate(a.planned_start)}</td>
+      <td class="sched-date">${fmtDate(a.planned_finish)}</td>
+      <td class="sched-date col-earlystart">${fmtDate(a.early_start)}</td>
+      <td class="sched-date col-earlyfinish">${fmtDate(a.early_finish)}</td>
+      <td class="sched-date col-latestart">${fmtDate(a.late_start)}</td>
+      <td class="sched-date col-latefinish">${fmtDate(a.late_finish)}</td>
       <td class="sched-links">${predChips || '<span style="color:var(--text3)">—</span>'}</td>
       <td class="sched-links">${succChips || '<span style="color:var(--text3)">—</span>'}</td>
       <td class="col-status"><span class="sched-status ${stCls}">${escHtml(a.status)}</span></td>
