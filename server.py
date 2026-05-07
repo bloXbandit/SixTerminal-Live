@@ -355,10 +355,50 @@ def edit():
                 edit_commands.append(cmd)
 
         if not edit_commands:
-            # Pure chat — do NOT add to edit_history; no schedule changes were made
-            msg = chat_message or "..."
-            _append_chat("assistant", msg)
-            return jsonify({"type": "chat", "message": msg, "raw_llm": raw_llm})
+            # Detect cold-start failure: first ever edit attempt returned pure chat.
+            # The LLM sometimes returns a conversational response instead of JSON commands
+            # on the very first API call when there is no session history yet.
+            # Retry once with an explicit JSON reminder injected into the instruction.
+            _edit_keywords = (
+                "add", "create", "delete", "remove", "move", "update", "change",
+                "rename", "set", "assign", "link", "split", "merge", "shift",
+                "extend", "shorten", "complete", "finish", "start", "schedule",
+                "import", "export", "bulk", "wbs", "activity", "resource",
+            )
+            is_likely_edit = any(kw in instruction.lower() for kw in _edit_keywords)
+            if is_likely_edit and not sess.get("edit_history"):
+                retry_instruction = (
+                    instruction
+                    + "\n\n[SYSTEM REMINDER: You MUST respond with a valid JSON array of "
+                    "command objects only — no prose, no markdown. If you are unsure, "
+                    "use [{\"action\": \"chat\", \"message\": \"...\"}].]"
+                )
+                commands2, raw_llm2 = interpret(
+                    retry_instruction,
+                    project_summary=project.llm_context(),
+                    edit_history=[],
+                    model_key=_settings["model_key"],
+                    api_key=_settings["api_key"],
+                )
+                raw_llm = raw_llm2
+                chat_message = None
+                edit_commands = []
+                for cmd in commands2:
+                    action = cmd.get("action")
+                    if action == "chat":
+                        if chat_message is None:
+                            chat_message = cmd.get("message", "")
+                    elif action == "clarify":
+                        if chat_message is None:
+                            chat_message = cmd.get("question", cmd.get("message", ""))
+                    else:
+                        edit_commands.append(cmd)
+
+            if not edit_commands:
+                # Pure chat — do NOT add to edit_history; no schedule changes were made
+                msg = chat_message or "..."
+                _append_chat("assistant", msg)
+                return jsonify({"type": "chat", "message": msg, "raw_llm": raw_llm})
 
         _push_undo(instruction)
         results = apply_commands(project, edit_commands)

@@ -507,12 +507,16 @@ def _add_wbs(project: Project, cmd: Dict) -> Tuple[bool, str]:
         parent = _find_wbs(project, cmd.get("parent_code"), cmd.get("parent_name"))
         if not parent:
             raise EditError(f"Parent WBS not found: {cmd.get('parent_code') or cmd.get('parent_name')}")
+    # Sequence number: sit AFTER the last existing sibling so P6 displays it last
+    parent_uid = parent.uid if parent else None
+    siblings = [w for w in project.wbs_nodes if w.parent_uid == parent_uid]
+    next_seq = (max(s.sequence_num for s in siblings) + 10) if siblings else 0
     new_wbs = WBSNode(
         uid=_new_uid(),
         name=name,
         code=code,
-        parent_uid=parent.uid if parent else None,
-        sequence_num=len(project.wbs_nodes),
+        parent_uid=parent_uid,
+        sequence_num=next_seq,
     )
     project.wbs_nodes.append(new_wbs)
     project.build_lookups()
@@ -693,7 +697,9 @@ def _bulk_create_wbs(project: Project, cmd: Dict) -> Tuple[bool, str]:
             raise EditError(f"Parent WBS not found: {cmd.get('parent_code') or cmd.get('parent_name')}")
 
     created = []
-    seq_start = len(project.wbs_nodes)
+    parent_uid_for_seq = parent.uid if parent else None
+    existing_siblings = [w for w in project.wbs_nodes if w.parent_uid == parent_uid_for_seq]
+    seq_base = (max(s.sequence_num for s in existing_siblings) + 10) if existing_siblings else 0
     for i, node_def in enumerate(nodes):
         name = str(node_def.get("name", "")).strip()
         code = str(node_def.get("code", name[:20])).strip() or name[:20]
@@ -704,7 +710,7 @@ def _bulk_create_wbs(project: Project, cmd: Dict) -> Tuple[bool, str]:
             name=name,
             code=code,
             parent_uid=parent.uid if parent else None,
-            sequence_num=seq_start + i,
+            sequence_num=seq_base + (i * 10),
         )
         project.wbs_nodes.append(new_wbs)
         created.append(f"'{code} — {name}'")
