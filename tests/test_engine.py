@@ -106,8 +106,6 @@ def test_delete_activity_removes_relations():
     ok, msg = apply_command(p, {"action": "delete_activity", "activity_id": "A1010"})
     assert ok, msg
     assert p.get_activity(activity_id="A1010") is None
-    # Relations involving A1010 should be gone
-    a1010_uid = None  # already deleted, check by original uid
     for r in p.relations:
         assert r.predecessor_uid != "101" and r.successor_uid != "101"
 

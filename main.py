@@ -40,12 +40,12 @@ def main():
 
     # Check for API key
     if not os.environ.get("ANTHROPIC_API_KEY") and not os.environ.get("OPENAI_API_KEY"):
-        print("\n⚠  WARNING: No LLM API key found.")
-        print("   Set ANTHROPIC_API_KEY or OPENAI_API_KEY in your environment.")
-        print("   File loading and editing will work, but natural language interpretation will fail.\n")
+        print("\n[!] WARNING: No LLM API key found.")
+        print("    Set ANTHROPIC_API_KEY or OPENAI_API_KEY in your environment.")
+        print("    File loading and editing will work, but natural language interpretation will fail.\n")
 
-    # Import app here (after path is set)
-    from ui.app import app
+    # Import server from project root (avoids importlib subdirectory traversal)
+    from server import app
 
     port = args.port
     url = f"http://localhost:{port}"
