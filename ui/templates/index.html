@@ -1165,6 +1165,12 @@
         <button class="col-toggle" id="trace-btn" onclick="startTrace()"
                 title="Trace logic — show only the activities driving a chosen activity">⤳ Trace</button>
         <span class="sched-sep"></span>
+        <span class="pick-legend">Calendar</span>
+        <select id="cal-select" onchange="setCalendar(this.value)"
+                title="Working pattern used to schedule dates and written into the P6 export"
+                style="background:var(--panel2,#0d1117);color:var(--text);border:1px solid var(--border2);border-radius:4px;font-family:inherit;font-size:11px;padding:3px 6px;outline:none;">
+        </select>
+        <span class="sched-sep"></span>
         <span class="sched-toolbar-label">Columns</span>
         <button class="col-toggle on"  data-col="status"    onclick="toggleCol('status')">Status</button>
         <button class="col-toggle on"  data-col="pct"       onclick="toggleCol('pct')">% Complete</button>
@@ -1849,6 +1855,42 @@ async function doUndo() {
 }
 
 // ═══════════════════════════════════════════════════
+//  Working calendar
+// ═══════════════════════════════════════════════════
+async function loadCalendarOptions() {
+  const sel = document.getElementById('cal-select');
+  if (!sel) return;
+  try {
+    const d = await fetch('/api/calendar').then(r => r.json());
+    if (d.error) return;
+    sel.innerHTML = (d.options || []).map(o =>
+      `<option value="${escAttr(o)}"${o === d.current ? ' selected' : ''}>${escHtml(o)}</option>`
+    ).join('');
+  } catch(e) { /* leave the picker empty if no schedule is loaded */ }
+}
+
+async function setCalendar(name) {
+  if (!name) return;
+  try {
+    const d = await fetch('/api/calendar', {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ name })
+    }).then(r => r.json());
+    if (d.error) { flashSched(d.error, true); await loadCalendarOptions(); return; }
+    undoCount = d.undo_count; redoCount = d.redo_count;
+    updateUndoBtn();
+    resetEditState();
+    await loadSchedule();
+    flashSched(`${name} — ${d.holiday_count} holidays${d.project_finish ? ' · finish ' + d.project_finish : ''}`, false);
+    addMsg('system',
+      `Calendar set to <strong>${escHtml(name)}</strong> — `
+      + `${d.work_days.length}-day week, ${d.holiday_count} federal holiday${d.holiday_count === 1 ? '' : 's'} observed`
+      + (d.project_finish ? ` · project finish <strong>${escHtml(d.project_finish)}</strong>` : '')
+      + `. This drives both the dates shown here and the calendar written into the P6 export.`);
+  } catch(e) { flashSched(e.message, true); }
+}
+
+// ═══════════════════════════════════════════════════
 //  Run the scheduler (CPM) — the P6 "F9" action
 // ═══════════════════════════════════════════════════
 async function runSchedule() {
@@ -2299,6 +2341,7 @@ async function loadSchedule() {
     }
     document.getElementById('sched-count-pill').textContent = d.activity_count ?? '—';
     renderSchedule(d);
+    loadCalendarOptions();
   } catch(e) {
     tbody.innerHTML = `<tr><td colspan="20" style="text-align:center;padding:32px;color:var(--red);">${escHtml(e.message)}</td></tr>`;
   }

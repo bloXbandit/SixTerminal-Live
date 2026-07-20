@@ -19,6 +19,10 @@ class Calendar:
     hours_per_month: float = 176.0
     hours_per_year: float = 2080.0
     type: str = "Global"  # Global | Project | Resource
+    # Working pattern. Defaults reproduce the previous hard-coded behaviour
+    # (Mon-Fri, works through holidays) so existing schedules are unaffected.
+    work_days: frozenset = field(default_factory=lambda: frozenset({0, 1, 2, 3, 4}))
+    holidays: frozenset = field(default_factory=frozenset)   # ISO date strings
 
 
 @dataclass
@@ -448,7 +452,7 @@ def compute_dates(project: "Project") -> None:
                                       (matches P6's "Start" / "Finish" column convention)
 
     Working calendar: Mon–Fri, hours_per_day from the first project calendar (default 8h).
-    Weekends are skipped; holidays are not modelled.
+    Weekends and holidays come from each activity's calendar.
     Completed activities are anchored to their actual dates (not recomputed).
     """
     from datetime import date as _date, timedelta as _td
@@ -457,10 +461,74 @@ def compute_dates(project: "Project") -> None:
     if not project.activities:
         return
 
-    # ── Calendar ────────────────────────────────────────────────────────────
-    hpd: float = 8.0
-    if project.calendars:
-        hpd = project.calendars[0].hours_per_day or 8.0
+    # ── Calendars ───────────────────────────────────────────────────────────
+    # Each activity is scheduled on its own calendar's working pattern. The
+    # defaults on Calendar reproduce the previous Mon-Fri / no-holiday
+    # behaviour, so schedules that never pick a calendar are unaffected.
+    _DEFAULT_WD = frozenset({0, 1, 2, 3, 4})
+    cal_by_uid = {c.uid: c for c in (project.calendars or [])}
+    default_cal = project.calendars[0] if project.calendars else None
+
+    def _wd_of(cal):
+        wd = getattr(cal, "work_days", None) if cal else None
+        return wd if wd else _DEFAULT_WD
+
+    def _hol_of(cal):
+        return (getattr(cal, "holidays", None) if cal else None) or frozenset()
+
+    def _hpd_of(cal):
+        return (getattr(cal, "hours_per_day", None) if cal else None) or 8.0
+
+    def _cal_of(act):
+        return cal_by_uid.get(getattr(act, "calendar_uid", None)) or default_cal
+
+    hpd: float = _hpd_of(default_cal)                 # project-level fallback
+    base_wd, base_hol = _wd_of(default_cal), _hol_of(default_cal)
+
+    # ── Helpers ──────────────────────────────────────────────────────────────
+    def _parse(s) -> Optional[_date]:
+        if not s:
+            return None
+        try:
+            return _date.fromisoformat(str(s)[:10])
+        except (ValueError, TypeError):
+            return None
+
+    def _is_work(d: _date, wd, hol) -> bool:
+        return d.weekday() in wd and d.isoformat() not in hol
+
+    def _snap(d: _date, wd, hol) -> _date:
+        """Advance to the next working day on this calendar."""
+        while not _is_work(d, wd, hol):
+            d += _td(days=1)
+        return d
+
+    def _add_wd(start: _date, days: float, wd, hol) -> _date:
+        """Add working days on this calendar. Negative days goes backward."""
+        d = _snap(start, wd, hol)
+        if days == 0:
+            return d
+        step = 1 if days > 0 else -1
+        remaining = abs(int(_math.ceil(abs(days))))
+        added = 0
+        while added < remaining:
+            d += _td(days=step)
+            if _is_work(d, wd, hol):
+                added += 1
+        return d
+
+    def _wd_between(d1: _date, d2: _date, wd, hol) -> float:
+        """Working-day count from d1 to d2 (positive when d2 > d1)."""
+        if d2 == d1:
+            return 0.0
+        sign = 1 if d2 > d1 else -1
+        count = 0
+        d, end = min(d1, d2), max(d1, d2)
+        while d < end:
+            d += _td(days=1)
+            if _is_work(d, wd, hol):
+                count += 1
+        return sign * float(count)
 
     # ── Origin date ──────────────────────────────────────────────────────────
     origin_str = (
@@ -474,52 +542,7 @@ def compute_dates(project: "Project") -> None:
         origin: _date = _date.fromisoformat(origin_str)
     except (ValueError, TypeError):
         return
-    # Advance to Monday if origin falls on a weekend
-    while origin.weekday() >= 5:
-        origin += _td(days=1)
-
-    # ── Helpers ──────────────────────────────────────────────────────────────
-    def _parse(s) -> Optional[_date]:
-        if not s:
-            return None
-        try:
-            return _date.fromisoformat(str(s)[:10])
-        except (ValueError, TypeError):
-            return None
-
-    def _snap(d: _date) -> _date:
-        """Advance to next working day if d is a weekend."""
-        while d.weekday() >= 5:
-            d += _td(days=1)
-        return d
-
-    def _add_wd(start: _date, days: float) -> _date:
-        """Add working days (Mon–Fri) to start.  Negative days goes backward."""
-        d = _snap(start)
-        if days == 0:
-            return d
-        step = 1 if days > 0 else -1
-        remaining = abs(int(_math.ceil(abs(days))))
-        added = 0
-        while added < remaining:
-            d += _td(days=step)
-            if d.weekday() < 5:
-                added += 1
-        return d
-
-    def _wd_between(d1: _date, d2: _date) -> float:
-        """Working-day count from d1 to d2 (positive when d2 > d1)."""
-        if d2 == d1:
-            return 0.0
-        sign = 1 if d2 > d1 else -1
-        count = 0
-        d = min(d1, d2)
-        end = max(d1, d2)
-        while d < end:
-            d += _td(days=1)
-            if d.weekday() < 5:
-                count += 1
-        return sign * float(count)
+    origin = _snap(origin, base_wd, base_hol)
 
     MILESTONE_TYPES = {"Start Milestone", "Finish Milestone"}
 
@@ -560,8 +583,10 @@ def compute_dates(project: "Project") -> None:
         if not act:
             continue
 
+        _cal = _cal_of(act)
+        wd, hol, a_hpd = _wd_of(_cal), _hol_of(_cal), _hpd_of(_cal)
         is_ms = act.activity_type in MILESTONE_TYPES
-        dur_d = 0.0 if is_ms else (act.planned_duration or 0.0) / hpd
+        dur_d = 0.0 if is_ms else (act.planned_duration or 0.0) / a_hpd
 
         # Completed → anchor to actual dates
         if act.status == "Completed" and act.actual_start and act.actual_finish:
@@ -571,7 +596,7 @@ def compute_dates(project: "Project") -> None:
 
         # In-progress → actual start is fixed
         if act.status == "In Progress" and act.actual_start:
-            es_date = _snap(_parse(act.actual_start) or origin)
+            es_date = _snap(_parse(act.actual_start) or origin, wd, hol)
         else:
             # Derive ES from predecessors
             es_date = origin
@@ -579,36 +604,36 @@ def compute_dates(project: "Project") -> None:
                 pef = ef.get(p_uid, origin)
                 pes = es.get(p_uid, origin)
                 if "Start to Start" in rel_type:
-                    cand = _add_wd(pes, lag_d)
+                    cand = _add_wd(pes, lag_d, wd, hol)
                 elif "Finish to Finish" in rel_type:
-                    cand = _add_wd(_add_wd(pef, lag_d), -dur_d)
+                    cand = _add_wd(_add_wd(pef, lag_d), -dur_d, wd, hol)
                 elif "Start to Finish" in rel_type:
-                    cand = _add_wd(pes, lag_d - dur_d)
+                    cand = _add_wd(pes, lag_d - dur_d, wd, hol)
                 else:  # Finish to Start (default)
-                    cand = _add_wd(pef, lag_d)
+                    cand = _add_wd(pef, lag_d, wd, hol)
                 if cand > es_date:
                     es_date = cand
-            es_date = _snap(es_date)
+            es_date = _snap(es_date, wd, hol)
 
             # Hard / soft constraints on start
             ct = act.constraint_type or ""
             cd = _parse(act.constraint_date)
             if ct in ("Must Start On", "Start On") and cd:
-                es_date = _snap(cd)
+                es_date = _snap(cd, wd, hol)
             elif ct in ("Start On Or After", "Start On Or Before") and cd:
                 if ct == "Start On Or After" and cd > es_date:
-                    es_date = _snap(cd)
+                    es_date = _snap(cd, wd, hol)
 
-        ef_date = _add_wd(es_date, dur_d) if dur_d > 0 else es_date
+        ef_date = _add_wd(es_date, dur_d, wd, hol) if dur_d > 0 else es_date
 
         # Hard constraints on finish
         ct = act.constraint_type or ""
         cd = _parse(act.constraint_date)
         if ct in ("Must Finish On", "Finish On") and cd:
-            ef_date = _snap(cd)
-            es_date = _add_wd(ef_date, -dur_d) if dur_d > 0 else ef_date
+            ef_date = _snap(cd, wd, hol)
+            es_date = _add_wd(ef_date, -dur_d, wd, hol) if dur_d > 0 else ef_date
         elif ct == "Finish On Or Before" and cd and cd < ef_date:
-            ef_date = _snap(cd)
+            ef_date = _snap(cd, wd, hol)
 
         es[uid] = es_date
         ef[uid] = ef_date
@@ -631,8 +656,10 @@ def compute_dates(project: "Project") -> None:
         act = act_by_uid.get(uid)
         if not act:
             continue
+        _cal = _cal_of(act)
+        wd, hol, a_hpd = _wd_of(_cal), _hol_of(_cal), _hpd_of(_cal)
         is_ms = act.activity_type in MILESTONE_TYPES
-        dur_d = 0.0 if is_ms else (act.planned_duration or 0.0) / hpd
+        dur_d = 0.0 if is_ms else (act.planned_duration or 0.0) / a_hpd
 
         if act.status == "Completed":
             ls[uid] = es.get(uid, origin)
@@ -644,17 +671,17 @@ def compute_dates(project: "Project") -> None:
             sls = ls.get(s_uid, project_lf)
             slf = lf.get(s_uid, project_lf)
             if "Start to Start" in rel_type:
-                cand = _add_wd(_add_wd(sls, -lag_d), dur_d)
+                cand = _add_wd(_add_wd(sls, -lag_d), dur_d, wd, hol)
             elif "Finish to Finish" in rel_type:
-                cand = _add_wd(slf, -lag_d)
+                cand = _add_wd(slf, -lag_d, wd, hol)
             elif "Start to Finish" in rel_type:
-                cand = _add_wd(_add_wd(slf, -lag_d), dur_d)
+                cand = _add_wd(_add_wd(slf, -lag_d), dur_d, wd, hol)
             else:  # Finish to Start
-                cand = _add_wd(sls, -lag_d)
+                cand = _add_wd(sls, -lag_d, wd, hol)
             if cand < lf_date:
                 lf_date = cand
 
-        ls_date = _add_wd(lf_date, -dur_d) if dur_d > 0 else lf_date
+        ls_date = _add_wd(lf_date, -dur_d, wd, hol) if dur_d > 0 else lf_date
         ls[uid] = ls_date
         lf[uid] = lf_date
 
@@ -676,10 +703,11 @@ def compute_dates(project: "Project") -> None:
         if lf_d:
             act.late_finish = lf_d.isoformat()
 
-        # Total float (working days → hours)
+        # Total float (working days → hours) on the activity's own calendar
+        _cal = _cal_of(act)
         if ls_d and es_d:
-            float_days = _wd_between(es_d, ls_d)
-            act.total_float = float_days * hpd
+            float_days = _wd_between(es_d, ls_d, _wd_of(_cal), _hol_of(_cal))
+            act.total_float = float_days * _hpd_of(_cal)
             act.is_critical = act.total_float <= 0
 
         # Update planned_start / planned_finish to match P6 "Start" / "Finish":

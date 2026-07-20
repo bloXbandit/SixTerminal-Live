@@ -395,6 +395,76 @@ def import_commit_route():
         return jsonify({"error": f"Import failed: {str(e)}", "trace": traceback.format_exc()}), 500
 
 
+@app.route("/api/calendar", methods=["GET", "POST"])
+def project_calendar():
+    """
+    Get or set the schedule's working calendar.
+
+    Defaults stay 5-DAY NO HOLIDAY so nothing shifts unless the user opts in.
+    Setting a calendar re-runs CPM, and is undoable like any other edit.
+    """
+    from engine.calendars import (CALENDAR_PRESETS, DEFAULT_CALENDAR_NAME,
+                                  preset_for, holiday_dates)
+    sess = _get_session()
+    if sess is None or sess["project"] is None:
+        return jsonify({"error": "No schedule loaded"}), 400
+    project = sess["project"]
+
+    if request.method == "GET":
+        # An imported calendar ("Standard", "P5-DAY NO HOL", ...) is reported as
+        # the preset it behaves like, so the picker shows a real selection.
+        current = DEFAULT_CALENDAR_NAME
+        if project.calendars:
+            cal = project.calendars[0]
+            if cal.name in CALENDAR_PRESETS:
+                current = cal.name
+            else:
+                wd  = frozenset(getattr(cal, "work_days", None) or {0, 1, 2, 3, 4})
+                hol = bool(getattr(cal, "holidays", None))
+                for nm, (pw, ph) in CALENDAR_PRESETS.items():
+                    if frozenset(pw) == wd and ph == hol:
+                        current = nm
+                        break
+        return jsonify({"current": current, "options": list(CALENDAR_PRESETS.keys())})
+
+    data = request.get_json() or {}
+    name = (data.get("name") or "").strip()
+    if name not in CALENDAR_PRESETS:
+        return jsonify({"error": f"Unknown calendar '{name}'. "
+                                 f"Options: {', '.join(CALENDAR_PRESETS)}"}), 400
+    try:
+        from engine.schedule_model import Calendar, compute_dates
+        work_days, honors_holidays = preset_for(name)
+        hols = frozenset(holiday_dates()) if honors_holidays else frozenset()
+
+        _push_undo(f"Calendar → {name}")
+        if not project.calendars:
+            project.calendars = [Calendar(uid="1", name=name)]
+        cal = project.calendars[0]
+        cal.name, cal.work_days, cal.holidays = name, work_days, hols
+        # every activity follows the project calendar unless it has its own
+        for a in project.activities:
+            if not a.calendar_uid:
+                a.calendar_uid = cal.uid
+        project.build_lookups()
+        try:
+            compute_dates(project)
+        except Exception:
+            pass
+
+        finishes = [str(a.early_finish or a.planned_finish)[:10]
+                    for a in project.activities if (a.early_finish or a.planned_finish)]
+        return jsonify({
+            "success": True, "calendar": name,
+            "work_days": sorted(work_days), "holiday_count": len(hols),
+            "project_finish": max(finishes) if finishes else None,
+            "undo_count": len(sess["undo_stack"]), "redo_count": len(sess["redo_stack"]),
+        })
+    except Exception as e:
+        return jsonify({"error": f"Calendar change failed: {str(e)}",
+                        "trace": traceback.format_exc()}), 500
+
+
 @app.route("/api/schedule/run", methods=["POST"])
 def run_schedule():
     """

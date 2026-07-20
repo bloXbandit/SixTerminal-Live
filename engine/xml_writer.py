@@ -50,6 +50,7 @@ _EPS_OID = "3063"    # Existing EPS parent in target P6 database
 _GCAL_5_NOHOL = "6590"
 _GCAL_7_NOHOL = "6591"
 _GCAL_5_HOL = "6592"
+_GCAL_6_HOL = "6593"     # G6-DAY WITH HOLIDAY — emitted only when a project uses it
 _GCAL_OID = _GCAL_5_NOHOL
 _RES_OID = "6899"
 _RRATE_OID = "7174"
@@ -70,6 +71,7 @@ _INT32_MAX = 2_147_483_647
 _PCAL_7_NOHOL = "6603"   # P7-DAY NO HOLIDAY, base global 6591
 _PCAL_5_NOHOL = "6604"   # P5-DAY NO HOL, base global 6590
 _PCAL_5_HOL = "6602"     # P5-DAY STANDARD HOL, base global 6592
+_PCAL_6_HOL = "6605"     # P6-DAY WITH HOLIDAY, base global 6593 — emitted on demand
 _DEFAULT_PROJECT_CALENDAR_OID = _PCAL_5_NOHOL
 
 
@@ -604,6 +606,8 @@ def _build_oid_map(items: list, attr: str, start: int) -> Dict[str, str]:
 
 def _calendar_target_from_name(name: str) -> str:
     lname = (name or "").lower()
+    if "6" in lname or "six" in lname:
+        return _PCAL_6_HOL
     if "7" in lname or "seven" in lname:
         return _PCAL_7_NOHOL
     if "standard hol" in lname or ("hol" in lname and "no hol" not in lname):
@@ -694,7 +698,40 @@ def _section_obs(root: ET.Element):
     _sub(o, "SequenceNumber", "0")
 
 
-def _global_calendar(root: ET.Element, oid: str, name: str, days_on: tuple):
+def _holiday_exceptions(parent: ET.Element, holidays):
+    """
+    Write non-working exception days. A HolidayOrException with no WorkTime
+    children is a full non-working day in P6.
+    """
+    if not holidays:
+        return
+    hx = _sub(parent, "HolidayOrExceptions")
+    for iso in sorted(holidays):
+        h = _sub(hx, "HolidayOrException")
+        _sub(h, "Date", f"{str(iso)[:10]}T00:00:00")
+
+
+def _project_uses(project, predicate) -> bool:
+    """True if any calendar on the project matches — used to gate optional output."""
+    for cal in (getattr(project, "calendars", None) or []):
+        try:
+            if predicate(cal):
+                return True
+        except Exception:
+            continue
+    return False
+
+
+def _cal_holidays(cal) -> frozenset:
+    return frozenset(getattr(cal, "holidays", None) or ())
+
+
+def _cal_is_6day(cal) -> bool:
+    wd = getattr(cal, "work_days", None)
+    return bool(wd) and len(wd) == 6
+
+
+def _global_calendar(root: ET.Element, oid: str, name: str, days_on: tuple, holidays=()):
     cal = _sub(root, "Calendar")
     _nil(cal, "BaseCalendarObjectId")
     _sub(cal, "HoursPerDay",   "8")
@@ -708,13 +745,33 @@ def _global_calendar(root: ET.Element, oid: str, name: str, days_on: tuple):
     _nil(cal, "ProjectObjectId")
     _sub(cal, "Type",          "Global")
     _workweek(cal, days_on)
+    _holiday_exceptions(cal, holidays)
 
 
-def _section_global_calendars(root: ET.Element):
-    # Same global calendar order/pattern as the clean native P6 XML.
-    _global_calendar(root, _GCAL_5_NOHOL, "G5-DAY NO HOLIDAY", ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday"))
-    _global_calendar(root, _GCAL_7_NOHOL, "G7-DAY NO HOLIDAY", ("Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"))
-    _global_calendar(root, _GCAL_5_HOL, "G5-DAY STANDARD HOL '25-'30", ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday"))
+def _section_global_calendars(root: ET.Element, project=None):
+    """
+    Same global calendar order/pattern as the clean native P6 XML.
+
+    Holiday exceptions and the 6-day calendar are emitted ONLY when the project
+    actually carries them, so a schedule that never picks a holiday calendar
+    produces byte-identical output to before this feature existed.
+    """
+    M_F = ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday")
+    ALL = ("Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday")
+    M_S = ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday")
+
+    hol = frozenset()
+    six = False
+    if project is not None:
+        for cal in (getattr(project, "calendars", None) or []):
+            hol |= _cal_holidays(cal)
+            six = six or _cal_is_6day(cal)
+
+    _global_calendar(root, _GCAL_5_NOHOL, "G5-DAY NO HOLIDAY", M_F)
+    _global_calendar(root, _GCAL_7_NOHOL, "G7-DAY NO HOLIDAY", ALL)
+    _global_calendar(root, _GCAL_5_HOL, "G5-DAY STANDARD HOL '25-'30", M_F, holidays=hol)
+    if six:
+        _global_calendar(root, _GCAL_6_HOL, "G6-DAY WITH HOLIDAY", M_S, holidays=hol)
 
 
 def _section_resource(root: ET.Element):
@@ -793,7 +850,7 @@ def _project_calendar(proj_el: ET.Element, cal: Calendar, proj_uid: str):
 
 
 
-def _fixed_project_calendar(proj_el: ET.Element, oid: str, base_oid: str, name: str, days_on: tuple, proj_uid: str):
+def _fixed_project_calendar(proj_el: ET.Element, oid: str, base_oid: str, name: str, days_on: tuple, proj_uid: str, holidays=()):
     c = _sub(proj_el, "Calendar")
     _sub(c, "BaseCalendarObjectId", base_oid)
     _sub(c, "HoursPerDay", "8")
@@ -807,10 +864,21 @@ def _fixed_project_calendar(proj_el: ET.Element, oid: str, base_oid: str, name: 
     _sub(c, "ProjectObjectId", proj_uid)
     _sub(c, "Type", "Project")
     _workweek(c, days_on)
+    _holiday_exceptions(c, holidays)
 
 
-def _section_project_calendars(proj_el: ET.Element, proj_uid: str):
-    """Always write the three project calendars present in the clean P6 XML."""
+def _section_project_calendars(proj_el: ET.Element, proj_uid: str, project=None):
+    """
+    The three project calendars present in the clean P6 XML, plus a 6-day one
+    when the project uses it. Holidays are attached only when present, keeping
+    output unchanged for schedules that do not use them.
+    """
+    hol = frozenset()
+    six = False
+    if project is not None:
+        for cal in (getattr(project, "calendars", None) or []):
+            hol |= _cal_holidays(cal)
+            six = six or _cal_is_6day(cal)
     _fixed_project_calendar(
         proj_el,
         _PCAL_7_NOHOL,
@@ -834,7 +902,18 @@ def _section_project_calendars(proj_el: ET.Element, proj_uid: str):
         "P5-DAY STANDARD HOL",
         ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday"),
         proj_uid,
+        holidays=hol,
     )
+    if six:
+        _fixed_project_calendar(
+            proj_el,
+            _PCAL_6_HOL,
+            _GCAL_6_HOL,
+            "P6-DAY WITH HOLIDAY",
+            ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"),
+            proj_uid,
+            holidays=hol,
+        )
 
 # ── WBS block ─────────────────────────────────────────────────────────────────
 
@@ -1263,7 +1342,7 @@ def _write_p6_xml_impl(project: Project, output_path: str) -> str:
     _section_currency(root)
     _section_udf_type(root)
     _section_obs(root)
-    _section_global_calendars(root)
+    _section_global_calendars(root, project)
 
     # Resource blocks are only written when assignments exist.
     # This avoids an orphan resource/resource-rate stub when the app has no assignment data.
@@ -1368,7 +1447,7 @@ def _write_p6_xml_impl(project: Project, output_path: str) -> str:
     _nil(proj_el, "WebSiteURL")
 
     # Always write all three project calendars from the clean XML pattern.
-    _section_project_calendars(proj_el, proj_uid)
+    _section_project_calendars(proj_el, proj_uid, project)
 
     for wbs in sorted_wbs:
         _write_wbs(proj_el, wbs, proj_uid, wbs_oid_map)
