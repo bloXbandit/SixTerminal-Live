@@ -90,20 +90,32 @@ def _next_activity_id(project: Project) -> str:
     prefix + 4-digit numbering (e.g. A1000 -> A1010), skipping any collisions.
     Used when add_activity / paste are called without an explicit ID.
     """
-    prefix = "A"
-    numeric_ids: List[int] = []
+    # Split each id into "everything before the trailing digits" + those digits.
+    # Stripping leading letters instead breaks every real-world scheme:
+    # "T-1000" -> -1000, "MILE-001" -> -1, "MDC1.MIL.1000" -> unparseable.
+    pat = re.compile(r"^(.*?)(\d+)$")
+    counts: Dict[str, int] = {}
+    parsed: List[Tuple[str, int, int]] = []      # (prefix, number, zero-pad width)
     for a in project.activities:
-        raw = a.activity_id.lstrip("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz")
-        try:
-            numeric_ids.append(int(raw))
-            if a.activity_id and a.activity_id[0].isalpha():
-                prefix = a.activity_id[0]
-        except ValueError:
-            pass
-    current = (((max(numeric_ids) // 10) + 1) * 10) if numeric_ids else 1000
-    while project.get_activity(activity_id=f"{prefix}{current:04d}"):
+        m = pat.match((a.activity_id or "").strip())
+        if not m:
+            continue
+        pre, digits = m.group(1), m.group(2)
+        counts[pre] = counts.get(pre, 0) + 1
+        parsed.append((pre, int(digits), len(digits)))
+
+    if parsed:
+        prefix = max(counts, key=counts.get)     # the project's dominant scheme
+        same   = [(n, w) for (p, n, w) in parsed if p == prefix]
+        top    = max(n for n, _ in same)
+        width  = max(w for _, w in same)
+        current = ((top // 10) + 1) * 10
+    else:
+        prefix, width, current = "A", 4, 1000
+
+    while project.get_activity(activity_id=f"{prefix}{current:0{width}d}"):
         current += 10
-    return f"{prefix}{current:04d}"
+    return f"{prefix}{current:0{width}d}"
 
 
 def _would_create_cycle(project: Project, pred_uid: str, succ_uid: str) -> bool:

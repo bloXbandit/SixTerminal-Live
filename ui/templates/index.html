@@ -678,7 +678,7 @@
     }
     .sched-wbs-toggle{
       display:inline-flex;align-items:center;gap:7px;
-      cursor:pointer;user-select:none;width:100%;
+      cursor:pointer;user-select:none;width:auto;
     }
     .sched-wbs-arrow{
       font-size:9px;color:var(--text3);transition:transform .15s;display:inline-block;
@@ -2275,6 +2275,7 @@ let lastSchedData = null;         // last /api/schedule payload (for WBS lists)
 const selectedIds = new Set();    // activity_ids currently selected
 let clipboard    = [];            // copied activity specs for paste
 let lastActWbs   = null;          // remember the WBS the user last added into
+let _lastSelectedId = null;       // anchor row for shift+click range selection
 
 function markScheduleStale() {
   scheduleStale = true;
@@ -2528,9 +2529,53 @@ function toggleEditMode(){
 // ── Inline cell editing (delegated dbl-click) ──
 function onSchedDblClick(e){
   if(!isEditMode) return;
+  if(_pickState || _tracePicking) return;
+  // An editable cell still opens the inline editor on double-click.
   const td = e.target.closest('td.editable');
-  if(!td || td.querySelector('input')) return;
-  beginCellEdit(td);
+  if(td){
+    if(!td.querySelector('input')) beginCellEdit(td);
+    return;
+  }
+  // Anywhere else on the row, double-click toggles selection.
+  if(e.target.closest('input,select,button,.chip-x,.row-add-link')) return;
+  const tr = e.target.closest('tr.sched-act-row');
+  const id = tr && tr.dataset.actid;
+  if(!id) return;
+  toggleSel(id, !selectedIds.has(id));
+  _lastSelectedId = id;
+}
+
+/** Shift+click extends the selection from the last row you touched. */
+function onRowShiftClick(e){
+  if(!isEditMode || !e.shiftKey) return;
+  if(_pickState || _tracePicking) return;
+  if(e.target.closest('input,select,button,.chip-x,.row-add-link')) return;
+  const tr = e.target.closest('tr.sched-act-row');
+  const id = tr && tr.dataset.actid;
+  if(!id) return;
+  e.preventDefault();
+  window.getSelection()?.removeAllRanges();   // suppress browser text-selection
+  selectRange(_lastSelectedId || id, id);
+  _lastSelectedId = id;
+}
+
+/** Select every visible row between two activities, inclusive. */
+function selectRange(fromId, toId){
+  const rows = [...document.querySelectorAll('tr.sched-act-row')]
+                 .filter(r => !r.classList.contains('trace-hidden') &&
+                              r.style.display !== 'none');
+  const ids = rows.map(r => r.dataset.actid);
+  let i = ids.indexOf(fromId), j = ids.indexOf(toId);
+  if(i === -1) i = j;
+  if(i === -1 || j === -1) return;
+  if(i > j) [i, j] = [j, i];
+  for(let k = i; k <= j; k++){
+    selectedIds.add(ids[k]);
+    rows[k].classList.add('sel-selected');
+    const cb = rows[k].querySelector('td.col-sel .sel-box');
+    if(cb) cb.checked = true;
+  }
+  refreshBulkBar();
 }
 function beginCellEdit(td){
   const field = td.dataset.edit;
@@ -2826,41 +2871,36 @@ function clearTrace(){
 
 // ── Quick-add activity (inline draft row under a WBS) ──
 function addActivityDraft(wbsUid, wbsName){
-  if(!isEditMode){ toggleEditMode(); }
-  const hdr = document.getElementById('wbs-hdr-' + wbsUid);
-  if(!hdr) return;
-  const next = hdr.nextElementSibling;
-  if(next && next.classList.contains('draft-row')){ next.querySelector('.draft-name').focus(); return; }
-  const tr = document.createElement('tr');
-  tr.className = 'draft-row';
-  tr.innerHTML =
-    `<td class="col-sel"></td>`
-    + `<td colspan="2"><input class="draft-name" placeholder="New activity name" style="width:100%;"></td>`
-    + `<td><input class="draft-dur" type="number" min="0" value="1" style="width:56px;"></td>`
-    + `<td colspan="5"><select class="draft-type">`
-    +   `<option value="Task Dependent">Task</option>`
-    +   `<option value="Start Milestone">Start Milestone</option>`
-    +   `<option value="Finish Milestone">Finish Milestone</option>`
-    +   `<option value="Level of Effort">LOE</option></select></td>`
-    + `<td colspan="20"><button class="mini-btn ok draft-ok">Add</button> `
-    +   `<button class="mini-btn no draft-cancel">Cancel</button>`
-    +   `<span style="font-size:10px;color:var(--text3);margin-left:8px;">into ${escHtml(wbsName)}</span></td>`;
-  hdr.parentNode.insertBefore(tr, hdr.nextSibling);
-  const nameI = tr.querySelector('.draft-name'); nameI.focus();
-  const commit = () => {
-    const name = nameI.value.trim();
-    if(!name){ tr.remove(); return; }
-    const dur  = parseFloat(tr.querySelector('.draft-dur').value) || 0;
-    const type = tr.querySelector('.draft-type').value;
-    directEdit([{action:'add_activity', wbs_name:wbsName, name, duration_days:dur, activity_type:type}],
-               `Add activity "${name}"`);
-  };
-  tr.querySelector('.draft-ok').addEventListener('click', commit);
-  tr.querySelector('.draft-cancel').addEventListener('click', () => tr.remove());
-  nameI.addEventListener('keydown', ev => {
-    if(ev.key === 'Enter'){ ev.preventDefault(); commit(); }
-    else if(ev.key === 'Escape'){ tr.remove(); }
-  });
+  // Kept as an alias so older call sites keep working.
+  quickAddActivity(wbsUid, wbsName);
+}
+
+/**
+ * Instant add: drop a new activity straight into this WBS (no form, no WBS
+ * picker) and open its name cell so the user can just start typing.
+ */
+async function quickAddActivity(wbsUid, wbsName){
+  if(!isEditMode) toggleEditMode();
+  lastActWbs = wbsName;
+  const d = await directEdit(
+    [{action:'add_activity', wbs_name:wbsName, name:'New Activity',
+      duration_days:1, activity_type:'Task Dependent'}],
+    `Add activity to ${wbsName}`);
+  if(!d || d.error) return;
+
+  // The engine reports the id it assigned — grab it and edit the name in place.
+  let newId = null;
+  for(const r of (d.results || [])){
+    const m = /Added activity '([^\s']+)/.exec(r.message || '');
+    if(m){ newId = m[1]; break; }
+  }
+  if(!newId) return;
+  const cell = [...document.querySelectorAll('td[data-edit="name"]')]
+                 .find(td => td.dataset.actid === newId);
+  if(cell){
+    cell.closest('tr')?.scrollIntoView({block:'center'});
+    beginCellEdit(cell);
+  }
 }
 
 // ── Add WBS ──
@@ -2927,6 +2967,12 @@ function toggleActForm(){
   document.getElementById('add-act-btn').classList.toggle('on', show);
   if(show){
     if(!isEditMode) toggleEditMode();
+    // If a row is selected, target ITS WBS — saves picking from the dropdown.
+    if(selectedIds.size){
+      const first = [...selectedIds][0];
+      (lastSchedData?.wbs_sections || []).forEach(w =>
+        (w.activities || []).forEach(a => { if(a.activity_id === first) lastActWbs = w.name; }));
+    }
     populateWbsSelects(lastSchedData || {wbs_sections:[]});
     document.getElementById('act-form-name').focus();
   }
@@ -2949,7 +2995,13 @@ function submitAddActivity(){
 // ── Selection + bulk operations ──
 function toggleSel(id, checked){
   if(checked) selectedIds.add(id); else selectedIds.delete(id);
-  const tr = rowByActId(id); if(tr) tr.classList.toggle('sel-selected', checked);
+  const tr = rowByActId(id);
+  if(tr){
+    tr.classList.toggle('sel-selected', checked);
+    const cb = tr.querySelector('td.col-sel .sel-box');
+    if(cb) cb.checked = checked;
+  }
+  _lastSelectedId = id;          // anchor for a following shift+click
   refreshBulkBar();
 }
 function toggleSelWbs(uid, checked){
@@ -3030,6 +3082,9 @@ function bulkDelete(){
   if(tb){
     tb.addEventListener('dblclick', onSchedDblClick);
     tb.addEventListener('click', onPickClick, true);   // capture: intercept while picking
+    tb.addEventListener('click', onRowShiftClick);     // shift+click = range select
+    // stop the browser from text-selecting rows during a shift+click drag
+    tb.addEventListener('mousedown', e => { if(e.shiftKey) e.preventDefault(); });
   }
   document.addEventListener('keydown', e => {
     if(e.key === 'Escape'){
