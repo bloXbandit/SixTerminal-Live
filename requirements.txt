@@ -1,4 +1,5 @@
 flask>=3.0.0
+gunicorn>=21.2.0         # production WSGI server (used by the Render start command)
 anthropic>=0.25.0
 openai>=1.30.0
 lxml>=5.0.0
@@ -7,6 +8,7 @@ lxml>=5.0.0
 openpyxl>=3.1.0          # Excel (.xlsx) extraction
 pdfplumber>=0.11.0       # text-layer PDF extraction
 
-# Optional: stronger ruled-table PDF extraction (requires a Java runtime).
-# The importer auto-falls back to pdfplumber if this or Java is unavailable.
-tabula-py>=2.9.0
+# Optional: stronger ruled-table PDF extraction. Requires a Java runtime, which
+# Render's Python image does NOT provide — the importer detects this and falls
+# back to pdfplumber automatically. For local use: pip install tabula-py
+# tabula-py>=2.9.0

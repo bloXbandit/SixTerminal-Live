@@ -1,0 +1,30 @@
+# Render Blueprint — https://render.com/docs/blueprint-spec
+#
+# Deploy: push this file, then in Render choose "New +" > "Blueprint" and point
+# it at this repo. Render reads this file and provisions the service.
+#
+# ⚠ SINGLE WORKER IS REQUIRED.
+# All schedule state (loaded projects, undo stacks, settings) lives in
+# module-level memory in server.py. With more than one worker, each worker
+# holds a different copy and requests round-robin between them — you would
+# upload a schedule and the very next request could land on a worker that has
+# never seen it ("No schedule loaded"). --threads gives concurrency inside the
+# one process, where the memory is shared.
+
+services:
+  - type: web
+    name: six-terminal
+    runtime: python
+    plan: free                     # bump to "starter" to avoid cold-start spin-down
+    region: oregon
+    branch: main
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "gunicorn server:app --bind 0.0.0.0:$PORT --workers 1 --threads 4 --timeout 120"
+    healthCheckPath: /
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.11.9"
+      # Set the real value in the Render dashboard (Environment tab).
+      # sync:false keeps it out of this file and out of git.
+      - key: ANTHROPIC_API_KEY
+        sync: false
