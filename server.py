@@ -252,6 +252,16 @@ def index():
     return send_from_directory(app.template_folder, "index.html")
 
 
+@app.route("/healthz")
+def healthz():
+    """
+    Liveness probe for uptime pingers (keeps the Render instance from idling).
+    Deliberately touches no session state and renders no template, so it stays
+    cheap even when hit every few minutes all day.
+    """
+    return "ok", 200, {"Content-Type": "text/plain", "Cache-Control": "no-store"}
+
+
 @app.route("/api/upload", methods=["POST"])
 def upload_file():
     if "file" not in request.files:
