@@ -1137,6 +1137,9 @@
         <button class="col-toggle" id="sched-redo-btn" onclick="doRedo()" disabled
                 title="Redo (Ctrl/Cmd+Shift+Z)">↪ Redo <span class="undo-badge" id="sched-redo-badge" style="display:none">0</span></button>
         <span class="sched-sep"></span>
+        <button class="col-toggle" id="sched-run-btn" onclick="runSchedule()"
+                title="Recalculate all dates from logic + durations, then order the rows in run sequence">⚡ Schedule</button>
+        <span class="sched-sep"></span>
         <span class="sched-toolbar-label">Columns</span>
         <button class="col-toggle on"  data-col="status"    onclick="toggleCol('status')">Status</button>
         <button class="col-toggle on"  data-col="pct"       onclick="toggleCol('pct')">% Complete</button>
@@ -1800,6 +1803,65 @@ async function doUndo() {
     // Reload the grid — flagging it stale left the un-undone rows on screen.
     await refreshAfterHistory(`Undid: ${d.undone_label}`);
   } catch(e) { addMsg('system', errorCard(e.message)); }
+}
+
+// ═══════════════════════════════════════════════════
+//  Run the scheduler (CPM) — the P6 "F9" action
+// ═══════════════════════════════════════════════════
+async function runSchedule() {
+  if (!lastSchedData) { flashSched('Load a schedule first', true); return; }
+
+  // Count logic coverage from what's on screen. An activity with no links at
+  // all is the risk: CPM drives it purely from the data date, so it gets
+  // pulled to the front of the schedule, replacing any imported dates.
+  let acts = 0, unlinked = 0;
+  (lastSchedData.wbs_sections || []).forEach(w => (w.activities || []).forEach(a => {
+    acts++;
+    if ((a.predecessors || []).length === 0 && (a.successors || []).length === 0) unlinked++;
+  }));
+
+  if (unlinked > 0) {
+    const ok = confirm(
+      `${unlinked} of ${acts} activities have no logic links.\n\n` +
+      'Running the scheduler recalculates every date from logic and durations. ' +
+      `Those ${unlinked} unlinked activit${unlinked === 1 ? 'y' : 'ies'} will be ` +
+      'driven to the start of the schedule, replacing the dates they were ' +
+      'imported with.\n\n' +
+      'Undo will restore it. Run anyway?');
+    if (!ok) return;
+  }
+
+  const btn = document.getElementById('sched-run-btn');
+  const label = btn ? btn.innerHTML : '';
+  if (btn) { btn.disabled = true; btn.textContent = '⚡ Scheduling…'; }
+  try {
+    const d = await fetch('/api/schedule/run', {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ reorder: true })
+    }).then(r => r.json());
+    if (d.error) { flashSched(d.error, true); return; }
+
+    undoCount = d.undo_count; redoCount = d.redo_count;
+    updateUndoBtn();
+    resetEditState();
+    await loadSchedule();
+    flashSched(`Scheduled — finish ${d.project_finish || 'n/a'} · ${d.critical_count} critical`, false);
+
+    let msg = `<strong>Scheduled.</strong> Project finish <strong>${escHtml(d.project_finish || 'n/a')}</strong>`
+            + ` · ${d.critical_count} critical activit${d.critical_count === 1 ? 'y' : 'ies'}`
+            + ` · data date ${escHtml(d.data_date || 'n/a')}`
+            + (d.reordered ? ' · rows re-ordered into run sequence' : '');
+    if (d.unlinked_count > 0) {
+      msg += `<br><span style="color:var(--orange)">⚠ ${d.unlinked_count} activit`
+           + `${d.unlinked_count === 1 ? 'y has' : 'ies have'} no logic links — `
+           + `their dates are driven only by the data date.</span>`;
+    }
+    addMsg('system', msg);
+  } catch(e) {
+    flashSched(e.message, true);
+  } finally {
+    if (btn) { btn.disabled = false; btn.innerHTML = label || '⚡ Schedule'; }
+  }
 }
 
 /** Shared post-undo/redo refresh so the schedule view reflects the change now. */

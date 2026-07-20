@@ -395,6 +395,81 @@ def import_commit_route():
         return jsonify({"error": f"Import failed: {str(e)}", "trace": traceback.format_exc()}), 500
 
 
+@app.route("/api/schedule/run", methods=["POST"])
+def run_schedule():
+    """
+    Run the CPM forward/backward pass on demand (the P6 'F9 / Schedule' action)
+    and optionally re-order activities into the sequence they actually run.
+
+    Pushes an undo snapshot first, so a schedule run is always revertable.
+    """
+    sess = _get_session()
+    if sess is None or sess["project"] is None:
+        return jsonify({"error": "No schedule loaded"}), 400
+
+    from datetime import date as _date
+    from engine.schedule_model import compute_dates
+
+    data      = request.get_json() or {}
+    reorder   = data.get("reorder", True)
+    override  = data.get("data_date")
+    project   = sess["project"]
+
+    try:
+        _push_undo("Schedule (CPM)")
+
+        # CPM needs an origin. Prefer an explicit data date, then the project
+        # start, then the earliest date already on the schedule, then today.
+        if override:
+            project.data_date = override
+        if not (project.planned_start or project.data_date):
+            known = [str(a.actual_start or a.planned_start)[:10]
+                     for a in project.activities if (a.actual_start or a.planned_start)]
+            project.data_date = min(known) if known else _date.today().isoformat()
+        if not project.planned_start:
+            project.planned_start = str(project.data_date)[:10]
+
+        compute_dates(project)
+
+        if reorder:
+            # Sequence the rows the way the work runs: earliest start first,
+            # ties broken by finish then activity id for a stable order.
+            def _key(a):
+                s = a.actual_start or a.early_start or a.planned_start or "9999-12-31"
+                f = a.early_finish or a.planned_finish or "9999-12-31"
+                return (str(s)[:10], str(f)[:10], a.activity_id)
+            project.activities.sort(key=_key)
+
+        project.build_lookups()
+
+        finishes = [str(a.early_finish or a.planned_finish)[:10]
+                    for a in project.activities if (a.early_finish or a.planned_finish)]
+        project_finish = max(finishes) if finishes else None
+        critical = [a.activity_id for a in project.activities if a.is_critical]
+
+        # Logic coverage — CPM is only meaningful if activities are linked
+        linked = set()
+        for r in project.relations:
+            linked.add(r.predecessor_uid); linked.add(r.successor_uid)
+        unlinked = [a.activity_id for a in project.activities if a.uid not in linked]
+
+        return jsonify({
+            "success": True,
+            "data_date": str(project.data_date)[:10] if project.data_date else None,
+            "project_finish": project_finish,
+            "activity_count": len(project.activities),
+            "relation_count": len(project.relations),
+            "critical_count": len(critical),
+            "unlinked_count": len(unlinked),
+            "reordered": bool(reorder),
+            "undo_count": len(sess["undo_stack"]),
+            "redo_count": len(sess["redo_stack"]),
+        })
+    except Exception as e:
+        return jsonify({"error": f"Schedule run failed: {str(e)}",
+                        "trace": traceback.format_exc()}), 500
+
+
 def _merge_projects(base, incoming):
     """Append incoming WBS nodes + activities into base, de-duplicating IDs."""
     existing_wbs_codes = {w.code for w in base.wbs_nodes}
