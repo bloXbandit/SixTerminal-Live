@@ -859,6 +859,29 @@
     body.pick-on .wbs-add-act{pointer-events:none;opacity:.35;}
     body.pick-on td.editable:hover{background:none !important;box-shadow:none !important;}
     body.pick-on .sel-box{pointer-events:none;opacity:.4;}
+
+    /* ── Trace logic (driving path) ───────────────────────────────────── */
+    .trace-bar{
+      display:none;gap:8px;align-items:center;flex-wrap:wrap;
+      padding:8px 12px;border-bottom:1px solid var(--orange);
+      background:rgba(245,158,11,.08);
+    }
+    .trace-bar.show{display:flex;}
+    .trace-msg{font-size:12px;font-weight:700;color:var(--orange);}
+    .trace-bar select, .trace-bar input{
+      background:var(--panel2,#0d1117);color:var(--text);
+      border:1px solid var(--border2);border-radius:4px;
+      font-family:inherit;font-size:11px;padding:3px 6px;outline:none;
+    }
+    .trace-hidden{display:none !important;}
+    tr.trace-root td{background:rgba(245,158,11,.14) !important;}
+    tr.trace-root .sched-id{color:var(--orange);font-weight:700;}
+    .trace-drv{
+      display:inline-block;font-size:8px;font-weight:700;margin-left:5px;
+      background:rgba(245,158,11,.14);color:var(--orange);
+      border:1px solid rgba(245,158,11,.3);border-radius:3px;padding:1px 5px;
+      letter-spacing:.06em;text-transform:uppercase;
+    }
   </style>
 </head>
 <body>
@@ -1139,6 +1162,8 @@
         <span class="sched-sep"></span>
         <button class="col-toggle" id="sched-run-btn" onclick="runSchedule()"
                 title="Recalculate all dates from logic + durations, then order the rows in run sequence">⚡ Schedule</button>
+        <button class="col-toggle" id="trace-btn" onclick="startTrace()"
+                title="Trace logic — show only the activities driving a chosen activity">⤳ Trace</button>
         <span class="sched-sep"></span>
         <span class="sched-toolbar-label">Columns</span>
         <button class="col-toggle on"  data-col="status"    onclick="toggleCol('status')">Status</button>
@@ -1196,6 +1221,24 @@
           Click a highlighted row to link · dimmed rows would create a loop · Esc to cancel
         </span>
         <button class="mini-btn no" onclick="cancelPick()">Cancel</button>
+      </div>
+
+      <!-- Trace logic bar -->
+      <div class="trace-bar" id="trace-bar">
+        <span class="trace-msg" id="trace-msg"></span>
+        <span id="trace-controls" style="display:none;gap:8px;align-items:center;">
+          <span class="pick-legend">Show</span>
+          <select id="trace-dir" onchange="renderTrace()">
+            <option value="drivers">Drivers (upstream)</option>
+            <option value="driven">Driven (downstream)</option>
+            <option value="both">Both directions</option>
+          </select>
+          <label class="pick-legend" style="display:inline-flex;gap:5px;align-items:center;cursor:pointer;">
+            <input type="checkbox" id="trace-driving-only" onchange="renderTrace()"> Driving path only
+          </label>
+        </span>
+        <span class="pick-legend" style="margin-left:auto;">Esc to clear</span>
+        <button class="mini-btn no" onclick="clearTrace()">Clear</button>
       </div>
 
       <!-- Table or empty state -->
@@ -1969,6 +2012,7 @@ function resetEditState() {
   _importState.contract = null;
   if (typeof closeLinkEditor === 'function') closeLinkEditor();
   if (typeof cancelPick === 'function') cancelPick();
+  if (typeof clearTrace === 'function') clearTrace();
   const bar = document.getElementById('bulk-bar');
   if (bar) bar.classList.remove('show');
   document.querySelectorAll('.wbs-form.show').forEach(f => f.classList.remove('show'));
@@ -2292,6 +2336,7 @@ function renderSchedule(data) {
   populateWbsSelects(data);
   refreshBulkBar();
   if (_pickState) markPickTargets();   // survive re-renders while picking
+  if (_traceState) renderTrace();      // keep the trace filter applied
 }
 
 function renderActivityRow(a, wbsUid, hidden) {
@@ -2607,13 +2652,16 @@ function cancelPick(){
 
 /** Capture-phase click handler, active only while picking. */
 function onPickClick(e){
-  if(!_pickState) return;
-  if(e.target.closest('#pick-bar')) return;     // the bar's own controls still work
+  if(!_pickState && !_tracePicking) return;
+  if(e.target.closest('#pick-bar') || e.target.closest('#trace-bar')) return;
   const tr = e.target.closest('tr.sched-act-row');
   if(!tr) return;
   e.preventDefault(); e.stopPropagation();
   const other = tr.dataset.actid;
   if(!other) return;
+
+  // Trace mode: the clicked row becomes the root of the logic trace.
+  if(_tracePicking){ applyTrace(other); return; }
   if(_pickState.invalid.has(other)){
     flashSched(other === _pickState.actId
       ? 'Cannot link an activity to itself'
@@ -2635,6 +2683,145 @@ function onPickClick(e){
 function closeLinkEditor(){ const p = document.getElementById('link-pop'); if(p) p.remove(); }
 function deleteLink(predId, succId){
   directEdit([{action:'delete_relation', predecessor_id:predId, successor_id:succId}], `Unlink ${predId} → ${succId}`);
+}
+
+// ═══════════════════════════════════════════════════
+//  Trace logic — filter the grid to what drives an activity
+// ═══════════════════════════════════════════════════
+let _traceState  = null;    // { actId }
+let _tracePicking = false;
+
+function startTrace(){
+  if(!lastSchedData){ flashSched('Load a schedule first', true); return; }
+  clearTrace();
+  cancelPick();
+  _tracePicking = true;
+  document.body.classList.add('pick-on');
+  document.getElementById('trace-msg').textContent = 'Click an activity to trace what drives it';
+  document.getElementById('trace-controls').style.display = 'none';
+  document.getElementById('trace-bar').classList.add('show');
+  document.querySelectorAll('tr.sched-act-row').forEach(tr => {
+    tr.classList.remove('pick-invalid');
+    tr.classList.add('pick-valid');
+    tr.title = 'Click to trace';
+  });
+}
+
+/** Relationship graph + the dates CPM produced, straight from the loaded view. */
+function buildTraceInfo(){
+  const info = {};
+  (lastSchedData?.wbs_sections || []).forEach(w => (w.activities || []).forEach(a => {
+    info[a.activity_id] = {
+      preds: (a.predecessors || []).map(p => ({id:p.activity_id, type:p.type, lag:p.lag||0})),
+      succs: (a.successors   || []).map(s => ({id:s.activity_id, type:s.type, lag:s.lag||0})),
+      start:  a.actual_start  || a.early_start  || a.planned_start  || '',
+      finish: a.actual_finish || a.early_finish || a.planned_finish || '',
+    };
+  }));
+  return info;
+}
+
+/**
+ * The predecessor(s) actually holding an activity back — the binding constraint.
+ * FS/FF are governed by the predecessor's finish, SS/SF by its start; whichever
+ * imposes the latest date is driving. (ISO dates compare correctly as strings.)
+ */
+function drivingPredsOf(id, info){
+  const node = info[id];
+  if(!node || !node.preds.length) return [];
+  if(node.preds.length === 1) return [node.preds[0].id];
+  const imposed = p => {
+    const pa = info[p.id];
+    if(!pa) return '';
+    const byFinish = (p.type === 'Finish to Start' || p.type === 'Finish to Finish');
+    return (byFinish ? (pa.finish || pa.start) : (pa.start || pa.finish)) || '';
+  };
+  let best = '';
+  node.preds.forEach(p => { const v = imposed(p); if(v > best) best = v; });
+  return node.preds.filter(p => imposed(p) === best).map(p => p.id);
+}
+
+/** Transitive chain in the requested direction. */
+function collectTrace(rootId, dir, drivingOnly, info){
+  const out = new Set([rootId]);
+  const walk = (id, up) => {
+    const node = info[id];
+    if(!node) return;
+    const next = up
+      ? (drivingOnly ? drivingPredsOf(id, info) : node.preds.map(p => p.id))
+      : node.succs.map(s => s.id);
+    for(const nid of next){
+      if(!out.has(nid)){ out.add(nid); walk(nid, up); }
+    }
+  };
+  if(dir === 'drivers' || dir === 'both') walk(rootId, true);
+  if(dir === 'driven'  || dir === 'both') walk(rootId, false);
+  return out;
+}
+
+function applyTrace(actId){
+  _tracePicking = false;
+  document.body.classList.remove('pick-on');
+  document.querySelectorAll('tr.sched-act-row').forEach(tr => {
+    tr.classList.remove('pick-valid','pick-invalid');
+    tr.removeAttribute('title');
+  });
+  _traceState = { actId };
+  document.getElementById('trace-controls').style.display = 'inline-flex';
+  document.getElementById('trace-bar').classList.add('show');
+  renderTrace();
+}
+
+function renderTrace(){
+  if(!_traceState) return;
+  const dir         = document.getElementById('trace-dir').value;
+  const drivingOnly = document.getElementById('trace-driving-only').checked;
+  const info        = buildTraceInfo();
+  const root        = _traceState.actId;
+
+  const keep    = collectTrace(root, dir, drivingOnly, info);
+  const driving = collectTrace(root, 'drivers', true, info);   // for badging
+
+  let shown = 0;
+  document.querySelectorAll('tr.sched-act-row').forEach(tr => {
+    const id = tr.dataset.actid;
+    const on = keep.has(id);
+    tr.classList.toggle('trace-hidden', !on);
+    tr.classList.toggle('trace-root', id === root);
+    if(on) shown++;
+    // mark the binding chain when the full upstream set is displayed
+    tr.querySelectorAll('.trace-drv').forEach(b => b.remove());
+    if(on && !drivingOnly && id !== root && driving.has(id)){
+      const cell = tr.querySelector('td[data-edit="name"]');
+      if(cell){
+        const b = document.createElement('span');
+        b.className = 'trace-drv'; b.textContent = 'driving';
+        cell.appendChild(b);
+      }
+    }
+  });
+
+  // collapse WBS headers that no longer have visible rows
+  document.querySelectorAll('tr.sched-wbs-row').forEach(hdr => {
+    const uid = (hdr.id || '').replace('wbs-hdr-','');
+    const any = [...document.querySelectorAll(`tr.sched-act-row[data-wbs="${uid}"]`)]
+                  .some(r => !r.classList.contains('trace-hidden'));
+    hdr.classList.toggle('trace-hidden', !any);
+  });
+
+  const what = dir === 'driven' ? 'driven by' : (dir === 'both' ? 'in the logic chain of' : 'driving');
+  document.getElementById('trace-msg').textContent =
+    `${shown - 1} activit${shown - 1 === 1 ? 'y' : 'ies'} ${what} ${root}` +
+    (drivingOnly ? ' (driving path only)' : '');
+}
+
+function clearTrace(){
+  _traceState = null;
+  _tracePicking = false;
+  document.getElementById('trace-bar')?.classList.remove('show');
+  document.querySelectorAll('.trace-hidden').forEach(el => el.classList.remove('trace-hidden'));
+  document.querySelectorAll('.trace-root').forEach(el => el.classList.remove('trace-root'));
+  document.querySelectorAll('.trace-drv').forEach(b => b.remove());
 }
 
 // ── Quick-add activity (inline draft row under a WBS) ──
@@ -2845,7 +3032,10 @@ function bulkDelete(){
     tb.addEventListener('click', onPickClick, true);   // capture: intercept while picking
   }
   document.addEventListener('keydown', e => {
-    if(e.key === 'Escape' && _pickState) cancelPick();
+    if(e.key === 'Escape'){
+      if(_pickState) cancelPick();
+      if(_traceState || _tracePicking) clearTrace();
+    }
 
     // Undo / redo — but never while typing (inline cell editor, chat box, forms)
     const t = e.target;
