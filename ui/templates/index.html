@@ -1132,6 +1132,11 @@
         <button class="col-toggle" id="add-act-btn" onclick="toggleActForm()">＋ Activity</button>
         <button class="col-toggle" id="add-wbs-btn" onclick="toggleWbsForm()">＋ WBS</button>
         <span class="sched-sep"></span>
+        <button class="col-toggle" id="sched-undo-btn" onclick="doUndo()" disabled
+                title="Undo last change (Ctrl/Cmd+Z)">↩ Undo <span class="undo-badge" id="sched-undo-badge" style="display:none">0</span></button>
+        <button class="col-toggle" id="sched-redo-btn" onclick="doRedo()" disabled
+                title="Redo (Ctrl/Cmd+Shift+Z)">↪ Redo <span class="undo-badge" id="sched-redo-badge" style="display:none">0</span></button>
+        <span class="sched-sep"></span>
         <span class="sched-toolbar-label">Columns</span>
         <button class="col-toggle on"  data-col="status"    onclick="toggleCol('status')">Status</button>
         <button class="col-toggle on"  data-col="pct"       onclick="toggleCol('pct')">% Complete</button>
@@ -1792,8 +1797,18 @@ async function doUndo() {
         <span class="msg-text">Project restored to previous state. ${undoCount} undo step${undoCount!==1?'s':''} remaining.</span>
         </div></div></div>`
     );
-    markScheduleStale();
+    // Reload the grid — flagging it stale left the un-undone rows on screen.
+    await refreshAfterHistory(`Undid: ${d.undone_label}`);
   } catch(e) { addMsg('system', errorCard(e.message)); }
+}
+
+/** Shared post-undo/redo refresh so the schedule view reflects the change now. */
+async function refreshAfterHistory(msg) {
+  resetEditState();
+  scheduleStale = false;
+  document.getElementById('sched-stale-notice')?.classList.remove('show');
+  await loadSchedule();
+  if (typeof flashSched === 'function') flashSched(msg, false);
 }
 
 async function doRedo() {
@@ -1814,7 +1829,7 @@ async function doRedo() {
         <span class="msg-text">Edit reapplied. ${redoCount} redo step${redoCount!==1?'s':''} remaining.</span>
         </div></div></div>`
     );
-    markScheduleStale();
+    await refreshAfterHistory(`Redid: ${d.redone_label}`);
   } catch(e) { addMsg('system', errorCard(e.message)); }
 }
 
@@ -1945,16 +1960,26 @@ async function deleteProject(pid, e) {
 }
 
 function updateUndoBtn() {
-  const btn = document.getElementById('undo-btn');
-  const badge = document.getElementById('undo-badge');
-  btn.disabled = undoCount === 0;
-  if (undoCount > 0) { badge.textContent = undoCount; badge.style.display = 'inline-block'; }
-  else { badge.style.display = 'none'; }
-  const rbtn = document.getElementById('redo-btn');
-  const rbadge = document.getElementById('redo-badge');
-  rbtn.disabled = redoCount === 0;
-  if (redoCount > 0) { rbadge.textContent = redoCount; rbadge.style.display = 'inline-block'; }
-  else { rbadge.style.display = 'none'; }
+  // Drives BOTH the sidebar pair and the schedule-toolbar pair, so the counts
+  // never disagree depending on which view you're looking at.
+  const pairs = [
+    ['undo-btn','undo-badge','redo-btn','redo-badge'],
+    ['sched-undo-btn','sched-undo-badge','sched-redo-btn','sched-redo-badge'],
+  ];
+  for (const [ub, ubg, rb, rbg] of pairs) {
+    const btn = document.getElementById(ub), badge = document.getElementById(ubg);
+    if (btn) btn.disabled = undoCount === 0;
+    if (badge) {
+      if (undoCount > 0) { badge.textContent = undoCount; badge.style.display = 'inline-block'; }
+      else { badge.style.display = 'none'; }
+    }
+    const rbtn = document.getElementById(rb), rbadge = document.getElementById(rbg);
+    if (rbtn) rbtn.disabled = redoCount === 0;
+    if (rbadge) {
+      if (redoCount > 0) { rbadge.textContent = redoCount; rbadge.style.display = 'inline-block'; }
+      else { rbadge.style.display = 'none'; }
+    }
+  }
 }
 
 // ═══════════════════════════════════════════════════
@@ -2759,6 +2784,19 @@ function bulkDelete(){
   }
   document.addEventListener('keydown', e => {
     if(e.key === 'Escape' && _pickState) cancelPick();
+
+    // Undo / redo — but never while typing (inline cell editor, chat box, forms)
+    const t = e.target;
+    if(t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+    if(!(e.metaKey || e.ctrlKey)) return;
+    const k = (e.key || '').toLowerCase();
+    if(k === 'z' && !e.shiftKey){
+      e.preventDefault();
+      if(undoCount > 0) doUndo();
+    } else if((k === 'z' && e.shiftKey) || k === 'y'){
+      e.preventDefault();
+      if(redoCount > 0) doRedo();
+    }
   });
 })();
 </script>
