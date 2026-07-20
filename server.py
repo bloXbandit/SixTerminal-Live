@@ -29,6 +29,7 @@ from engine.edit_engine import (
     generate_schedule_report,
 )
 from interpreter.llm_interpreter import interpret, create_project, MODELS, DEFAULT_MODEL
+from engine.importer import extract as import_extract, build_project_from_contract
 
 TEMPLATE_DIR = str(ROOT / "ui" / "templates")
 STATIC_DIR   = str(ROOT / "ui" / "static")
@@ -296,6 +297,112 @@ def upload_file():
             pass
 
 
+@app.route("/api/import/extract", methods=["POST"])
+def import_extract_route():
+    """
+    Deterministic, offline extraction of a schedule from Excel or PDF.
+    Returns the review contract WITHOUT loading it — the user confirms first,
+    then calls /api/import/commit. No data leaves the machine unless the caller
+    explicitly opts into AI assist (use_llm=true) for a scanned PDF.
+    """
+    if "file" not in request.files:
+        return jsonify({"error": "No file provided"}), 400
+    f = request.files["file"]
+    filename = f.filename or "schedule"
+    ext = Path(filename).suffix.lower()
+    if ext not in (".xlsx", ".xlsm", ".xls", ".pdf"):
+        return jsonify({"error": f"Unsupported type '{ext}'. Upload an Excel (.xlsx) "
+                                 f"or PDF schedule export."}), 400
+
+    pdf_engine = request.form.get("pdf_engine", "auto")
+    use_llm    = request.form.get("use_llm", "").lower() in ("1", "true", "yes")
+
+    tmp = tempfile.NamedTemporaryFile(suffix=ext, delete=False)
+    f.save(tmp.name)
+    tmp.close()
+    try:
+        contract = import_extract(
+            tmp.name, pdf_engine=pdf_engine, use_llm=use_llm,
+            api_key=_settings.get("api_key"), model_key=_settings.get("model_key"),
+        )
+        contract["meta"]["source_name"] = filename
+        contract["meta"]["project_name"] = Path(filename).stem   # real upload name, not temp
+        return jsonify({"success": True, "contract": contract})
+    except NotImplementedError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        return jsonify({"error": f"Extraction failed: {str(e)}", "trace": traceback.format_exc()}), 500
+    finally:
+        try:
+            os.unlink(tmp.name)
+        except Exception:
+            pass
+
+
+@app.route("/api/import/commit", methods=["POST"])
+def import_commit_route():
+    """Materialize a reviewed extraction contract and load it as the active schedule."""
+    data = request.get_json() or {}
+    contract = data.get("contract")
+    if not contract or not isinstance(contract, dict):
+        return jsonify({"error": "contract is required"}), 400
+    mode = (data.get("mode") or "replace").lower()   # replace | merge
+    name = data.get("project_name")
+    if name:
+        contract.setdefault("meta", {})["project_name"] = name
+
+    try:
+        project = build_project_from_contract(contract)
+        if mode == "merge" and _get_session() and _get_session()["project"]:
+            # append imported WBS + activities into the current active project
+            base = _get_session()["project"]
+            _push_undo(f"Import (merge) {contract['meta'].get('source_name','file')}")
+            _merge_projects(base, project)
+            base.build_lookups()
+            from engine.schedule_model import compute_dates
+            try:
+                compute_dates(base)
+            except Exception:
+                pass
+            project = base
+            pid = _active_id[0]
+        else:
+            pid = _unique_pid(project.id or Path(str(name or "import")).stem or "import")
+            sess = _make_session(pid, contract["meta"].get("source_name", f"{pid}.xlsx"))
+            sess["project"] = project
+            _projects[pid] = sess
+            _active_id[0] = pid
+
+        return jsonify({
+            "success": True, "project_id": pid, "project_name": project.name,
+            "activity_count": len(project.activities), "wbs_count": len(project.wbs_nodes),
+            "relation_count": len(project.relations), "data_date": project.data_date,
+            "logic_status": contract["meta"].get("logic_status", "absent"),
+            "summary": project.summary(),
+            "projects": [_project_list_item(k) for k in _projects],
+        })
+    except Exception as e:
+        return jsonify({"error": f"Import failed: {str(e)}", "trace": traceback.format_exc()}), 500
+
+
+def _merge_projects(base, incoming):
+    """Append incoming WBS nodes + activities into base, de-duplicating IDs."""
+    existing_wbs_codes = {w.code for w in base.wbs_nodes}
+    for w in incoming.wbs_nodes:
+        if w.code not in existing_wbs_codes:
+            base.wbs_nodes.append(w)
+            existing_wbs_codes.add(w.code)
+    existing_ids = {a.activity_id for a in base.activities}
+    for a in incoming.activities:
+        aid = a.activity_id
+        while aid in existing_ids:
+            aid += "-i"
+        a.activity_id = aid
+        existing_ids.add(aid)
+        base.activities.append(a)
+    base.relations.extend(incoming.relations)
+
+
 @app.route("/api/edit", methods=["POST"])
 def edit():
     sess = _get_session()
@@ -482,6 +589,67 @@ def redo():
                     "redo_count": len(stack), "project_name": project.name,
                     "activity_count": len(project.activities), "wbs_count": len(project.wbs_nodes),
                     "relation_count": len(project.relations), "edit_count": len(sess["edit_history"])})
+
+
+@app.route("/api/direct", methods=["POST"])
+def direct_edit():
+    """
+    Apply structured edit commands directly, bypassing the LLM.
+
+    Used by the Schedule grid for inline edits, relationship links, quick-add
+    WBS/activities, and bulk operations — no API round-trip, no token cost.
+    Shares the same edit engine, undo stack, and CPM recompute as /api/edit,
+    and records the change in edit_history so the agent stays aware of manual
+    edits made this session.
+
+    Body: {"commands": [...], "label": "human-readable summary"}
+    """
+    sess = _get_session()
+    if sess is None or sess["project"] is None:
+        return jsonify({"error": "No schedule loaded. Upload a file first."}), 400
+
+    data = request.get_json() or {}
+    commands = data.get("commands")
+    label = (data.get("label") or "Direct edit").strip()
+    if not commands or not isinstance(commands, list):
+        return jsonify({"error": "commands (a non-empty list) is required"}), 400
+
+    project = sess["project"]
+    try:
+        _push_undo(label)
+        results = apply_commands(project, commands)
+        applied       = list(zip(commands, results))
+        success_count = sum(1 for _, (ok, _) in applied if ok)
+        fail_count    = len(applied) - success_count
+
+        if success_count == 0:
+            sess["undo_stack"].pop()
+        else:
+            sess["redo_stack"].clear()
+            sess["last_undone"] = None
+            sess["edit_history"].append({
+                "instruction": f"[direct] {label}",
+                "commands":    commands,
+                "results":     [{"action": c.get("action"), "success": ok, "message": msg}
+                                for c, (ok, msg) in applied],
+            })
+
+        return jsonify({
+            "type":             "result",
+            "success":          fail_count == 0,
+            "commands_applied": success_count,
+            "commands_failed":  fail_count,
+            "results":          [{"action": c.get("action"), "success": ok, "message": msg}
+                                 for c, (ok, msg) in applied],
+            "undo_count":       len(sess["undo_stack"]),
+            "redo_count":       len(sess["redo_stack"]),
+            "edit_count":       len(sess["edit_history"]),
+            "activity_count":   len(project.activities),
+            "wbs_count":        len(project.wbs_nodes),
+            "relation_count":   len(project.relations),
+        })
+    except Exception as e:
+        return jsonify({"error": f"Direct edit failed: {str(e)}", "trace": traceback.format_exc()}), 500
 
 
 @app.route("/api/report", methods=["GET"])

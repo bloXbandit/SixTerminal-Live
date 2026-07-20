@@ -38,7 +38,7 @@ MODELS = {
     "claude": {
         "provider": "anthropic",
         "model_id": "claude-sonnet-4-5",
-        "label": "Claude (Anthropic)",
+        "label": "Claude Sonnet (Anthropic)",
     },
     "gpt-4.1-mini": {
         "provider": "openai",
@@ -50,14 +50,11 @@ MODELS = {
         "model_id": "gpt-4.1-nano",
         "label": "GPT-4.1 Nano (OpenAI)",
     },
-    "gpt-5.4-mini": {
-        "provider": "openai",
-        "model_id": "gpt-5.4-mini",
-        "label": "GPT-5.4 Mini (OpenAI)",
-    },
 }
 
-DEFAULT_MODEL = "gpt-4.1-mini"
+# Claude is the strongest at the multi-step logic-tie / phase-sequence reasoning
+# this tool leans on, so it is the recommended default.
+DEFAULT_MODEL = "claude"
 
 
 SYSTEM_PROMPT = """You are a senior Primavera P6 scheduler and construction project controls expert embedded in Six Terminal Live - a professional schedule editing tool.
@@ -450,7 +447,12 @@ def _build_session_history(edit_history: Optional[list]) -> str:
     if not edit_history:
         return ""
     recent = edit_history[-10:]
-    lines = ["\n\n---\nSESSION HISTORY (last edits this session):"]
+    lines = [
+        "\n\n---\nSESSION HISTORY (last edits this session):",
+        "(Entries prefixed [direct] are manual edits the user made straight on the "
+        "schedule grid — not requests to you. They are ALREADY APPLIED; treat them as "
+        "current state and don't repeat or undo them unless asked.)",
+    ]
     for i, entry in enumerate(recent, max(1, len(edit_history) - 9)):
         instruction = entry.get("instruction", "")
         results = entry.get("results", [])

@@ -1,10 +1,10 @@
 # -*- mode: python ; coding: utf-8 -*-
-# SteliLive.spec — PyInstaller build spec for Stelic Insights Live
+# SixTerminal.spec — PyInstaller build spec for Six-Terminal
 #
 # Build command (run from C:\SixTerminal-Live):
-#   pyinstaller SteliLive.spec
+#   pyinstaller SixTerminal.spec
 #
-# Output: dist\SteliLive.exe  (~80-150 MB, standalone Windows executable)
+# Output: dist\SixTerminal.exe  (~80-150 MB, standalone Windows executable)
 
 block_cipher = None
 
@@ -72,7 +72,7 @@ exe = EXE(
     a.zipfiles,
     a.datas,
     [],
-    name='SteliLive',
+    name='SixTerminal',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

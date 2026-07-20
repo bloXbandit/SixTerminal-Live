@@ -1,0 +1,5 @@
+date	votes	woke	outcome
+2026-07-13	0/3	no	quiet — gate green, no actionable signal (uncommitted files are user WIP)
+2026-07-14	0/3	no	quiet — gate green, uncommitted files remain user WIP (same as prior tick); 1 voter stalled twice on infra, quorum already failed at 2 confirmed QUIET
+2026-07-15	0/3	no	quiet — all 3 voters stalled on infra (600s no-progress watchdog), same recurring stall as 2026-07-14; gate green, uncommitted files remain user WIP unchanged
+2026-07-16	1/3	no	quiet — gate green (11 tests pass), both standing goals PASS; 1 voter flagged prior watchdog stalls as actionable infra issue but 2 voters correctly noted those are worker-infra, not project signal; uncommitted WIP (701 insertions/7 files) unchanged for 4th consecutive tick, still user-owned

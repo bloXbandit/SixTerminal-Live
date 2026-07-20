@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Stelic Insights Live</title>
+  <title>Six-Terminal</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
   <style>
@@ -67,14 +67,14 @@
       width:240px;flex-shrink:0;display:flex;align-items:center;gap:10px;
       padding:0 18px;height:100%;border-right:1px solid var(--border);
     }
-    .stelic-wordmark{
+    .st-wordmark{
       display:flex;flex-direction:column;gap:1px;line-height:1;
     }
-    .stelic-name{
+    .st-name{
       font-family:var(--display);font-size:14px;font-weight:700;
       color:var(--accent);letter-spacing:.14em;text-transform:uppercase;
     }
-    .stelic-tag{
+    .st-tag{
       font-size:6.5px;font-weight:500;letter-spacing:.13em;
       text-transform:uppercase;color:var(--text3);
     }
@@ -742,6 +742,123 @@
       border-radius:3px;padding:1px 5px;letter-spacing:.06em;
       text-transform:uppercase;margin-left:5px;border:1px solid rgba(245,158,11,.2);
     }
+
+    /* ── Direct edit mode ─────────────────────────────────────────────── */
+    .edit-toggle.on{background:var(--accent-glow);color:var(--accent);border-color:var(--accent);}
+    .sched-sep{width:1px;height:16px;background:var(--border2);margin:0 4px;}
+    /* Selection checkbox column — hidden unless edit mode is on */
+    .col-sel{display:none;width:26px;text-align:center;}
+    body.edit-on .col-sel{display:table-cell;}
+    .sel-box{cursor:pointer;accent-color:var(--accent);}
+    /* Editable cells get an affordance only in edit mode */
+    body.edit-on td.editable{cursor:text;}
+    body.edit-on td.editable:hover{background:rgba(0,207,255,.06);box-shadow:inset 0 0 0 1px var(--accent);border-radius:3px;}
+    .cell-input{
+      width:100%;background:var(--panel2,#0d1117);color:var(--text);
+      border:1px solid var(--accent);border-radius:3px;
+      font-family:inherit;font-size:11px;padding:2px 4px;outline:none;
+    }
+    .cell-input.mono{font-family:var(--mono);}
+    /* Row / link edit-mode controls */
+    .row-add-link, .link-chip .chip-x{
+      display:none;
+    }
+    body.edit-on .row-add-link{
+      display:inline-block;cursor:pointer;color:var(--accent);
+      border:1px dashed var(--border2);border-radius:3px;
+      padding:0 4px;margin-left:3px;font-size:10px;line-height:15px;
+    }
+    body.edit-on .row-add-link:hover{background:var(--accent-glow);}
+    body.edit-on .link-chip{cursor:default;padding-right:2px;}
+    body.edit-on .link-chip .chip-x{
+      display:inline-block;cursor:pointer;color:var(--text3);
+      margin-left:3px;font-weight:700;
+    }
+    body.edit-on .link-chip .chip-x:hover{color:var(--red);}
+    .sel-selected td{background:rgba(0,207,255,.05) !important;}
+    /* Per-WBS quick-add-activity button in the header row */
+    .wbs-add-act{
+      display:none;margin-left:10px;cursor:pointer;color:var(--accent);
+      font-size:10px;font-weight:600;border:1px dashed var(--border2);
+      border-radius:3px;padding:1px 7px;
+    }
+    body.edit-on .wbs-add-act{display:inline-block;}
+    body.edit-on .wbs-add-act:hover{background:var(--accent-glow);}
+    .wbs-tools{display:none;}
+    body.edit-on .wbs-tools{display:inline-flex;gap:8px;align-items:center;margin-left:12px;vertical-align:middle;}
+    /* Draft (new activity) row */
+    .draft-row td{background:rgba(0,207,255,.04);}
+    .draft-row input, .draft-row select{
+      background:var(--panel2,#0d1117);color:var(--text);
+      border:1px solid var(--border2);border-radius:3px;
+      font-family:inherit;font-size:11px;padding:2px 4px;outline:none;
+    }
+    .draft-row input:focus, .draft-row select:focus{border-color:var(--accent);}
+    .mini-btn{
+      cursor:pointer;border:1px solid var(--border2);border-radius:3px;
+      background:transparent;color:var(--text2);font-size:11px;
+      padding:1px 7px;line-height:16px;
+    }
+    .mini-btn.ok{color:var(--green);border-color:rgba(34,197,94,.3);}
+    .mini-btn.ok:hover{background:var(--green-bg);}
+    .mini-btn.no:hover{background:var(--red-bg);color:var(--red);}
+    /* Add-WBS inline form */
+    .wbs-form{
+      display:none;gap:6px;align-items:center;padding:8px 12px;
+      border-bottom:1px solid var(--border);background:rgba(0,207,255,.03);
+    }
+    .wbs-form.show{display:flex;}
+    .wbs-form input, .wbs-form select{
+      background:var(--panel2,#0d1117);color:var(--text);
+      border:1px solid var(--border2);border-radius:4px;
+      font-family:inherit;font-size:11px;padding:4px 7px;outline:none;
+    }
+    .wbs-form input:focus, .wbs-form select:focus{border-color:var(--accent);}
+    /* Bulk action bar */
+    .bulk-bar{
+      display:none;position:sticky;bottom:0;z-index:5;
+      align-items:center;gap:8px;flex-wrap:wrap;
+      padding:9px 14px;background:var(--panel,#111820);
+      border-top:1px solid var(--accent);
+      box-shadow:0 -6px 18px rgba(0,0,0,.35);
+    }
+    .bulk-bar.show{display:flex;}
+    .bulk-count{font-weight:700;color:var(--accent);font-size:12px;font-family:var(--mono);}
+    .bulk-bar input, .bulk-bar select{
+      background:var(--panel2,#0d1117);color:var(--text);
+      border:1px solid var(--border2);border-radius:4px;
+      font-family:inherit;font-size:11px;padding:4px 6px;outline:none;
+    }
+    .bulk-bar input:focus, .bulk-bar select:focus{border-color:var(--accent);}
+    .bulk-bar .bb-danger:hover{background:var(--red-bg);color:var(--red);border-color:rgba(239,68,68,.3);}
+    .edit-hint{font-size:10px;color:var(--text3);margin-left:auto;}
+    body:not(.edit-on) .edit-hint{display:none;}
+
+    /* ── Click-to-pick relationship mode ─────────────────────────────── */
+    .pick-bar{
+      display:none;gap:8px;align-items:center;flex-wrap:wrap;
+      padding:8px 12px;border-bottom:1px solid var(--accent);
+      background:rgba(0,207,255,.08);
+    }
+    .pick-bar.show{display:flex;}
+    .pick-msg{font-size:12px;font-weight:700;color:var(--accent);}
+    .pick-bar select, .pick-bar input{
+      background:var(--panel2,#0d1117);color:var(--text);
+      border:1px solid var(--border2);border-radius:4px;
+      font-family:inherit;font-size:11px;padding:3px 6px;outline:none;
+    }
+    .pick-legend{font-size:10px;color:var(--text3);}
+    /* valid targets invite the click; invalid ones are visibly ruled out */
+    body.pick-on tr.sched-act-row.pick-valid{cursor:pointer;}
+    body.pick-on tr.sched-act-row.pick-valid:hover td{background:rgba(0,207,255,.16) !important;}
+    body.pick-on tr.sched-act-row.pick-invalid{opacity:.3;cursor:not-allowed;}
+    body.pick-on tr.sched-act-row.pick-invalid .sched-name{text-decoration:line-through;}
+    /* suppress the normal edit affordances while picking */
+    body.pick-on .row-add-link,
+    body.pick-on .chip-x,
+    body.pick-on .wbs-add-act{pointer-events:none;opacity:.35;}
+    body.pick-on td.editable:hover{background:none !important;box-shadow:none !important;}
+    body.pick-on .sel-box{pointer-events:none;opacity:.4;}
   </style>
 </head>
 <body>
@@ -756,10 +873,9 @@
       <div class="form-group">
         <label>AI Model</label>
         <select id="model-select">
-          <option value="gpt-5.4-mini">GPT-5.4 Mini (OpenAI) — Recommended</option>
+          <option value="claude">Claude Sonnet (Anthropic) — Recommended</option>
           <option value="gpt-4.1-mini">GPT-4.1 Mini (OpenAI)</option>
           <option value="gpt-4.1-nano">GPT-4.1 Nano (OpenAI)</option>
-          <option value="claude">Claude (Anthropic)</option>
         </select>
         <div class="hint">GPT-5.4 Mini recommended for most use cases.</div>
       </div>
@@ -840,12 +956,55 @@
   </div>
 </div>
 
+<!-- ══ IMPORT REVIEW MODAL ══════════════════════════════════ -->
+<div class="modal-overlay" id="import-modal" onclick="closeModal('import-modal',event)">
+  <div class="modal wide">
+    <div class="modal-head">
+      <h2><span class="mh-icon">📥</span> Import Schedule — Review</h2>
+    </div>
+    <div class="modal-body">
+      <div id="import-summary" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:12px;font-size:12px;"></div>
+      <div style="display:flex;gap:10px;align-items:center;margin-bottom:12px;">
+        <label style="font-size:11px;color:var(--text3);">Project name</label>
+        <input id="import-proj-name" style="flex:1;background:var(--panel2,#0d1117);color:var(--text);border:1px solid var(--border2);border-radius:6px;font-size:12px;padding:6px 10px;">
+      </div>
+      <div id="import-warnings" style="margin-bottom:12px;"></div>
+      <div style="max-height:340px;overflow:auto;border:1px solid var(--border);border-radius:8px;">
+        <table class="sched-table" style="min-width:640px;">
+          <thead><tr>
+            <th>ID</th><th>Activity Name</th><th style="text-align:right;">Dur</th>
+            <th>Start</th><th>Finish</th><th>Status</th><th>Type</th><th>WBS</th>
+          </tr></thead>
+          <tbody id="import-preview-body"></tbody>
+        </table>
+      </div>
+      <div style="margin-top:12px;font-size:11px;color:var(--text3);display:flex;align-items:center;gap:8px;">
+        <span id="import-engine-note"></span>
+      </div>
+      <div id="import-llm-row" style="display:none;margin-top:8px;padding:10px 12px;border:1px solid rgba(245,158,11,.3);background:rgba(245,158,11,.06);border-radius:8px;font-size:12px;">
+        ⚠ This PDF has no text layer (scanned/photo). Deterministic extraction can't read it.
+        <label style="display:inline-flex;align-items:center;gap:6px;margin-left:8px;cursor:pointer;">
+          <input type="checkbox" id="import-use-llm"> Use AI assist (sends the file to the model)
+        </label>
+        <button class="mini-btn" style="margin-left:6px;" onclick="retryImportWithLlm()">Retry</button>
+      </div>
+    </div>
+    <div class="modal-foot">
+      <label style="margin-right:auto;font-size:11px;color:var(--text3);display:inline-flex;align-items:center;gap:6px;">
+        <input type="checkbox" id="import-merge"> Merge into current schedule (instead of replacing)
+      </label>
+      <button class="btn btn-ghost" onclick="closeModal('import-modal')">Cancel</button>
+      <button class="btn btn-primary" id="import-commit-btn" onclick="commitImport()">Load as active schedule</button>
+    </div>
+  </div>
+</div>
+
 <!-- ══ TOP BAR ════════════════════════════════════════════ -->
 <div class="topbar">
   <div class="logo-block">
-    <div class="stelic-wordmark">
-      <div class="stelic-name">Stelic</div>
-      <div class="stelic-tag">Insight &middot; Action &middot; Impact</div>
+    <div class="st-wordmark">
+      <div class="st-name">Six-Terminal</div>
+      <div class="st-tag">Insight &middot; Action &middot; Impact</div>
     </div>
     <div class="logo-live-pill">Live</div>
   </div>
@@ -873,9 +1032,9 @@
       <div class="sidebar-label">Schedule File</div>
       <div id="drop-zone" onclick="document.getElementById('file-input').click()">
         <div class="dz-icon">📂</div>
-        <div class="dz-label"><strong>Drop XER or XML</strong>click to browse</div>
-        <div class="dz-sub">.xer &nbsp;·&nbsp; .xml &nbsp;·&nbsp; P6 format</div>
-        <input type="file" id="file-input" accept=".xer,.xml" />
+        <div class="dz-label"><strong>Drop schedule file</strong>click to browse</div>
+        <div class="dz-sub">.xer · .xml · .xlsx · .pdf</div>
+        <input type="file" id="file-input" accept=".xer,.xml,.xlsx,.xlsm,.xls,.pdf" />
       </div>
       <button id="new-project-btn" onclick="openModal('create-modal')">
         <span>✦</span> New from Description
@@ -949,8 +1108,8 @@
               <div class="wf-corner-bl"></div>
               <div class="wf-corner-br"></div>
               <div class="welcome-eyebrow">Schedule Intelligence</div>
-              <div class="welcome-title">Stelic<span>.</span></div>
-              <div class="welcome-directive">Insights Live &nbsp;&mdash;&nbsp; Load a file or describe a project below</div>
+              <div class="welcome-title">Six-Terminal<span>.</span></div>
+              <div class="welcome-directive">Load a file or describe a project below</div>
               <div class="welcome-hint">
                 <strong>What the agent can do</strong>
                 <em>add an activity</em> &nbsp;·&nbsp; <em>add FS relationship X → Y</em> &nbsp;·&nbsp; <em>change duration of [activity] to N days</em> &nbsp;·&nbsp; <em>rename WBS node</em> &nbsp;·&nbsp; <em>delete activity [ID]</em> &nbsp;·&nbsp; <em>set constraint on [activity]</em> &nbsp;·&nbsp; <em>find open ends and suggest logic ties</em> &nbsp;·&nbsp; <em>identify critical path risks</em>
@@ -967,8 +1126,12 @@
 
     <!-- Schedule panel -->
     <div id="panel-schedule">
-      <!-- Toolbar: optional column toggles -->
+      <!-- Toolbar: edit mode, quick-add, column toggles -->
       <div class="sched-toolbar">
+        <button class="col-toggle edit-toggle" id="edit-toggle-btn" onclick="toggleEditMode()">✎ Edit</button>
+        <button class="col-toggle" id="add-act-btn" onclick="toggleActForm()">＋ Activity</button>
+        <button class="col-toggle" id="add-wbs-btn" onclick="toggleWbsForm()">＋ WBS</button>
+        <span class="sched-sep"></span>
         <span class="sched-toolbar-label">Columns</span>
         <button class="col-toggle on"  data-col="status"    onclick="toggleCol('status')">Status</button>
         <button class="col-toggle on"  data-col="pct"       onclick="toggleCol('pct')">% Complete</button>
@@ -979,7 +1142,52 @@
         <button class="col-toggle"     data-col="latefinish"  onclick="toggleCol('latefinish')">Late Finish</button>
         <button class="col-toggle"     data-col="constraint" onclick="toggleCol('constraint')">Constraint</button>
         <button class="col-toggle"     data-col="type"       onclick="toggleCol('type')">Activity Type</button>
+        <span class="edit-hint">Double-click a cell to edit · ✕ on a link to remove it</span>
         <button class="btn btn-ghost btn-sm sched-refresh" onclick="loadSchedule()">↺ Refresh</button>
+      </div>
+
+      <!-- Inline add-activity form (toggled by ＋ Activity) -->
+      <div class="wbs-form" id="act-form">
+        <span class="sched-toolbar-label">New Activity</span>
+        <input id="act-form-name" placeholder="Activity name" style="width:240px;" onkeydown="if(event.key==='Enter')submitAddActivity();if(event.key==='Escape')toggleActForm()">
+        <span style="font-size:11px;color:var(--text3);">into WBS</span>
+        <select id="act-form-wbs" style="width:180px;"></select>
+        <span style="font-size:11px;color:var(--text3);">Dur</span>
+        <input id="act-form-dur" type="number" min="0" step="1" value="1" style="width:64px;" onkeydown="if(event.key==='Enter')submitAddActivity()">
+        <select id="act-form-type" style="width:150px;">
+          <option value="Task Dependent">Task</option>
+          <option value="Start Milestone">Start Milestone</option>
+          <option value="Finish Milestone">Finish Milestone</option>
+          <option value="Level of Effort">Level of Effort</option>
+        </select>
+        <button class="mini-btn ok" onclick="submitAddActivity()">Add</button>
+        <button class="mini-btn no" onclick="toggleActForm()">Cancel</button>
+      </div>
+
+      <!-- Inline add-WBS form (toggled by ＋ WBS) -->
+      <div class="wbs-form" id="wbs-form">
+        <span class="sched-toolbar-label">New WBS</span>
+        <input id="wbs-form-name" placeholder="Name (e.g. Level 3 Finishes)" style="width:220px;" onkeydown="if(event.key==='Enter')submitAddWbs();if(event.key==='Escape')toggleWbsForm()">
+        <input id="wbs-form-code" placeholder="Code (optional)" style="width:120px;" onkeydown="if(event.key==='Enter')submitAddWbs()">
+        <select id="wbs-form-parent" style="width:200px;"><option value="">— Root level —</option></select>
+        <button class="mini-btn ok" onclick="submitAddWbs()">Add</button>
+        <button class="mini-btn no" onclick="toggleWbsForm()">Cancel</button>
+      </div>
+
+      <!-- Click-to-pick relationship bar -->
+      <div class="pick-bar" id="pick-bar">
+        <span class="pick-msg" id="pick-msg"></span>
+        <span class="pick-legend">Type</span>
+        <select id="pick-type">
+          <option value="fs">FS</option><option value="ss">SS</option>
+          <option value="ff">FF</option><option value="sf">SF</option>
+        </select>
+        <span class="pick-legend">Lag</span>
+        <input id="pick-lag" type="number" value="0" style="width:56px;">
+        <span class="pick-legend" style="margin-left:auto;">
+          Click a highlighted row to link · dimmed rows would create a loop · Esc to cancel
+        </span>
+        <button class="mini-btn no" onclick="cancelPick()">Cancel</button>
       </div>
 
       <!-- Table or empty state -->
@@ -991,6 +1199,7 @@
         <table class="sched-table" id="sched-table" style="display:none;">
           <thead>
             <tr>
+              <th class="col-sel"><input type="checkbox" class="sel-box" id="sel-all-box" onclick="toggleSelAll(this.checked)"></th>
               <th>ID</th>
               <th>Activity Name</th>
               <th style="text-align:right;">Duration</th>
@@ -1011,6 +1220,25 @@
           </thead>
           <tbody id="sched-tbody"></tbody>
         </table>
+      </div>
+
+      <!-- Bulk action bar (shown when rows are selected in edit mode) -->
+      <div class="bulk-bar" id="bulk-bar">
+        <span class="bulk-count" id="bulk-count">0 selected</span>
+        <span class="sched-sep"></span>
+        <span style="font-size:11px;color:var(--text3);">Set duration</span>
+        <input id="bulk-dur" type="number" min="0" step="1" placeholder="days" style="width:64px;"
+               onkeydown="if(event.key==='Enter')bulkSetDuration()">
+        <button class="mini-btn" onclick="bulkSetDuration()">Apply</button>
+        <span class="sched-sep"></span>
+        <span style="font-size:11px;color:var(--text3);">WBS</span>
+        <select id="bulk-wbs" style="width:180px;"></select>
+        <button class="mini-btn" onclick="bulkMove()">Move</button>
+        <button class="mini-btn" onclick="bulkCopy()">Copy</button>
+        <button class="mini-btn" id="bulk-paste-btn" onclick="bulkPaste()" disabled>Paste →</button>
+        <span class="sched-sep"></span>
+        <button class="mini-btn bb-danger" onclick="bulkDelete()">Delete</button>
+        <button class="mini-btn" onclick="clearSelection()">Clear</button>
       </div>
     </div>
 
@@ -1112,7 +1340,7 @@ checkExistingSession();
 
 function updateModelIndicator(key, keySet) {
   const el = document.getElementById('model-indicator');
-  const labels = {'gpt-4.1-mini':'GPT-4.1 Mini','gpt-4.1-nano':'GPT-4.1 Nano','gpt-5.4-mini':'GPT-5.4 Mini','claude':'Claude'};
+  const labels = {'gpt-4.1-mini':'GPT-4.1 Mini','gpt-4.1-nano':'GPT-4.1 Nano','claude':'Claude Sonnet'};
   const label = labels[key] || key;
   el.textContent = keySet ? `${label} · key set` : `${label} · no key`;
   el.className = keySet ? 'key-set' : 'no-key';
@@ -1144,11 +1372,21 @@ const dropZone = document.getElementById('drop-zone');
 const fileInput = document.getElementById('file-input');
 dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('drag-over'); });
 dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag-over'));
+// Route by type: XER/XML load directly; Excel/PDF go through the import preview
+function handleChosenFile(file) {
+  if (!file) return;
+  const ext = (file.name.split('.').pop() || '').toLowerCase();
+  if (ext === 'xlsx' || ext === 'xlsm' || ext === 'xls' || ext === 'pdf') {
+    importFile(file);
+  } else {
+    uploadFile(file);
+  }
+}
 dropZone.addEventListener('drop', e => {
   e.preventDefault(); dropZone.classList.remove('drag-over');
-  if (e.dataTransfer.files[0]) uploadFile(e.dataTransfer.files[0]);
+  if (e.dataTransfer.files[0]) handleChosenFile(e.dataTransfer.files[0]);
 });
-fileInput.addEventListener('change', () => { if (fileInput.files[0]) uploadFile(fileInput.files[0]); });
+fileInput.addEventListener('change', () => { if (fileInput.files[0]) handleChosenFile(fileInput.files[0]); });
 
 async function uploadFile(file) {
   const fd = new FormData();
@@ -1170,6 +1408,141 @@ async function uploadFile(file) {
       `<strong>${d.project_name}</strong> loaded — ${d.activity_count} activities &middot; ${d.wbs_count} WBS &middot; ${d.relation_count} relations &middot; Data date: ${d.data_date||'N/A'}`
     );
   } catch(e) { document.getElementById('upload-loading')?.remove(); addMsg('system', errorCard(e.message)); }
+}
+
+// ═══════════════════════════════════════════════════
+//  Import Excel / PDF schedule (deterministic, offline)
+// ═══════════════════════════════════════════════════
+let _importState = { file: null, contract: null };
+
+async function importFile(file, useLlm=false) {
+  _importState.file = file;
+  const fd = new FormData();
+  fd.append('file', file);
+  fd.append('pdf_engine', 'auto');
+  fd.append('use_llm', useLlm ? 'true' : 'false');
+  const loading = document.createElement('div');
+  loading.id = 'upload-loading';
+  loading.style.cssText = 'position:fixed;bottom:80px;left:50%;transform:translateX(-50%);background:var(--surface2,#111820);border:1px solid var(--border2);border-radius:8px;padding:10px 18px;font-size:12px;color:var(--text2);z-index:90;display:flex;align-items:center;gap:8px;';
+  loading.innerHTML = `<span class="spinner"></span> Extracting <strong style="color:var(--text)">${escHtml(file.name)}</strong>… (offline)`;
+  document.body.appendChild(loading);
+  try {
+    const d = await fetch('/api/import/extract', {method:'POST', body: fd}).then(r => r.json());
+    document.getElementById('upload-loading')?.remove();
+    if (d.error) {
+      if (/text layer|ai[- ]assist|scanned|offline/i.test(d.error)) {
+        _importState.contract = null;
+        openImportModal(null, d.error);
+      } else {
+        addMsg('system', errorCard(d.error));
+      }
+      return;
+    }
+    _importState.contract = d.contract;
+    openImportModal(d.contract, null);
+  } catch(e) {
+    document.getElementById('upload-loading')?.remove();
+    addMsg('system', errorCard(e.message));
+  }
+}
+
+function openImportModal(contract, errMsg) {
+  const summary = document.getElementById('import-summary');
+  const nameInput = document.getElementById('import-proj-name');
+  const warnBox = document.getElementById('import-warnings');
+  const body = document.getElementById('import-preview-body');
+  const engNote = document.getElementById('import-engine-note');
+  const llmRow = document.getElementById('import-llm-row');
+  const commitBtn = document.getElementById('import-commit-btn');
+  body.innerHTML=''; warnBox.innerHTML=''; summary.innerHTML='';
+  const chip = (t,c) => `<span style="padding:3px 9px;border-radius:12px;background:${c};font-weight:600;">${t}</span>`;
+
+  if (!contract) {
+    nameInput.value = (_importState.file?.name || '').replace(/\.[^.]+$/, '');
+    engNote.textContent = '';
+    llmRow.style.display = 'block';
+    commitBtn.disabled = true;
+    summary.innerHTML = `<span style="color:var(--red)">${escHtml(errMsg || 'No data extracted')}</span>`;
+    openModal('import-modal');
+    return;
+  }
+
+  const m = contract.meta;
+  nameInput.value = m.project_name || '';
+  summary.innerHTML =
+    chip(`${m.activity_count} activities`, 'var(--accent-glow)') +
+    chip(`${m.wbs_count} WBS`, 'rgba(148,163,184,.12)') +
+    chip(`${m.relation_count} relationships`, 'rgba(148,163,184,.12)') +
+    chip(`engine: ${escHtml(m.engine)}`, 'rgba(148,163,184,.12)') +
+    chip(`confidence ${Math.round((m.extraction_confidence||0)*100)}%`,
+         (m.extraction_confidence>=0.8) ? 'var(--green-bg)' : 'var(--orange-bg)');
+  if (m.warnings && m.warnings.length) {
+    warnBox.innerHTML = m.warnings.map(w =>
+      `<div style="font-size:11px;color:var(--orange);padding:2px 0;">⚠ ${escHtml(w)}</div>`).join('');
+  }
+  engNote.textContent = `${(m.source_type||'').toUpperCase()} · ${m.engine} · fully offline — no data left your machine.`;
+  llmRow.style.display = (m.source_type==='pdf' && m.activity_count===0) ? 'block' : 'none';
+  commitBtn.disabled = m.activity_count === 0;
+
+  const wbsName = {};
+  (contract.wbs||[]).forEach(w => wbsName[w.code] = w.name);
+  const fmt = d => d ? escHtml(d) : '<span style="color:var(--text3)">—</span>';
+  const rows = contract.activities.slice(0,120).map(a => {
+    const r = a._review || {};
+    const flagged = (r.flags||[]).length > 0 || (r.confidence||1) < 0.7;
+    const cs = flagged ? 'background:rgba(245,158,11,.08);' : '';
+    return `<tr>
+      <td style="${cs}"><span class="sched-id">${escHtml(a.activity_id)}</span></td>
+      <td title="${escAttr(a.name)}">${escHtml(a.name)}</td>
+      <td style="text-align:right;font-family:var(--mono);">${a.duration_days}d</td>
+      <td class="sched-date">${fmt(a.actual_start||a.planned_start)}</td>
+      <td class="sched-date">${fmt(a.actual_finish||a.planned_finish)}</td>
+      <td style="font-size:10px;">${escHtml(a.status)}</td>
+      <td style="font-size:10px;color:var(--text3);">${escHtml(a.type)}</td>
+      <td style="font-size:10px;color:var(--text3);">${escHtml(wbsName[a.wbs_code]||a.wbs_code||'—')}</td>
+    </tr>`;
+  }).join('');
+  const more = contract.activities.length > 120
+    ? `<tr><td colspan="8" style="text-align:center;color:var(--text3);padding:8px;">… and ${contract.activities.length-120} more</td></tr>` : '';
+  body.innerHTML = rows + more;
+  openModal('import-modal');
+}
+
+async function commitImport() {
+  const c = _importState.contract;
+  if (!c) return;
+  const name = document.getElementById('import-proj-name').value.trim();
+  const mode = document.getElementById('import-merge').checked ? 'merge' : 'replace';
+  const btn = document.getElementById('import-commit-btn');
+  btn.disabled = true; btn.textContent = 'Loading…';
+  try {
+    const d = await fetch('/api/import/commit', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ contract: c, mode, project_name: name })
+    }).then(r => r.json());
+    btn.disabled = false; btn.textContent = 'Load as active schedule';
+    if (d.error) { addMsg('system', errorCard(d.error)); return; }
+    closeModal('import-modal');
+    clearMessages();
+    onProjectLoaded(d);
+    let msg = `<strong>${escHtml(d.project_name)}</strong> imported — ${d.activity_count} activities · ${d.wbs_count} WBS · ${d.relation_count} relations.`;
+    if (d.logic_status === 'absent') {
+      msg += ` <em>No logic in the source — ask me to "tie up the open ends" and I'll propose predecessor/successor links.</em>`;
+    }
+    addMsg('system', msg);
+    switchTab('schedule');
+    loadSchedule();
+  } catch(e) {
+    btn.disabled = false; btn.textContent = 'Load as active schedule';
+    addMsg('system', errorCard(e.message));
+  }
+}
+
+function retryImportWithLlm() {
+  const useLlm = document.getElementById('import-use-llm')?.checked;
+  if (!_importState.file) return;
+  closeModal('import-modal');
+  importFile(_importState.file, useLlm);
 }
 
 // ═══════════════════════════════════════════════════
@@ -1501,9 +1874,45 @@ async function switchProject(pid) {
         else if (m.role === 'system_result') addMsg('system',    escHtml(m.text));
       }
     }
-    switchTab('editor');
-    markScheduleStale();
+    // Reload the grid for the project we just switched to — flagging it stale
+    // left the PREVIOUS project's rows on screen until a manual refresh.
+    resetEditState();
+    collapsedWbs.clear();
+    scheduleStale = false;
+    document.getElementById('sched-stale-notice').classList.remove('show');
+    await loadSchedule();
   } catch(e) { addMsg('system', errorCard(e.message)); }
+}
+
+/** Clear per-project edit state so nothing leaks across projects. */
+function resetEditState() {
+  selectedIds.clear();
+  clipboard = [];
+  lastActWbs = null;
+  _importState.contract = null;
+  if (typeof closeLinkEditor === 'function') closeLinkEditor();
+  if (typeof cancelPick === 'function') cancelPick();
+  const bar = document.getElementById('bulk-bar');
+  if (bar) bar.classList.remove('show');
+  document.querySelectorAll('.wbs-form.show').forEach(f => f.classList.remove('show'));
+  document.querySelectorAll('#add-wbs-btn, #add-act-btn').forEach(b => b.classList.remove('on'));
+}
+
+/** Blank the schedule view entirely (used when the last project is removed). */
+function resetScheduleView() {
+  lastSchedData = null;
+  resetEditState();
+  collapsedWbs.clear();
+  const tb = document.getElementById('sched-tbody');
+  const tbl = document.getElementById('sched-table');
+  const empty = document.getElementById('sched-empty');
+  if (tb) tb.innerHTML = '';
+  if (tbl) tbl.style.display = 'none';
+  if (empty) empty.style.display = '';
+  const pill = document.getElementById('sched-count-pill');
+  if (pill) pill.textContent = '—';
+  scheduleStale = false;
+  document.getElementById('sched-stale-notice')?.classList.remove('show');
 }
 
 async function deleteProject(pid, e) {
@@ -1530,6 +1939,7 @@ async function deleteProject(pid, e) {
       editCount = 0; undoCount = 0; redoCount = 0;
       document.getElementById('info-edits').textContent = '0';
       updateUndoBtn();
+      resetScheduleView();   // blank the grid — it kept showing the removed project
     }
   } catch(e) { addMsg('system', errorCard(e.message)); }
 }
@@ -1634,6 +2044,7 @@ function onProjectLoaded(d) {
   if (d.projects) renderProjectList(d.projects);
   scheduleStale = false;
   document.getElementById('sched-stale-notice').classList.remove('show');
+  resetEditState();
   collapsedWbs.clear();
   loadSchedule();
 }
@@ -1727,6 +2138,12 @@ const SCHED_COLS = {
 };
 // Track collapsed WBS sections
 const collapsedWbs = new Set();
+// ── Direct-edit state ──
+let isEditMode   = false;
+let lastSchedData = null;         // last /api/schedule payload (for WBS lists)
+const selectedIds = new Set();    // activity_ids currently selected
+let clipboard    = [];            // copied activity specs for paste
+let lastActWbs   = null;          // remember the WBS the user last added into
 
 function markScheduleStale() {
   scheduleStale = true;
@@ -1756,21 +2173,26 @@ async function loadSchedule() {
 }
 
 function renderSchedule(data) {
+  lastSchedData = data;
   const tbody = document.getElementById('sched-tbody');
   const rows = [];
   for (const wbs of data.wbs_sections) {
-    if (!wbs.activities.length) continue;
+    // (all WBS nodes shown — even empty ones — so activities can be quick-added)
     const indent = ' '.repeat(wbs.depth * 4);
     const isCollapsed = collapsedWbs.has(wbs.uid);
     rows.push(`
-      <tr class="sched-wbs-row${isCollapsed ? ' collapsed' : ''}" id="wbs-hdr-${wbs.uid}"
-          onclick="toggleWbs('${wbs.uid}')">
+      <tr class="sched-wbs-row${isCollapsed ? ' collapsed' : ''}" id="wbs-hdr-${wbs.uid}">
         <td colspan="20">
-          <span class="sched-wbs-toggle">
+          <span class="sched-wbs-toggle" onclick="toggleWbs('${wbs.uid}')">
             ${indent}<span class="sched-wbs-arrow">▾</span>
             &nbsp;${escHtml(wbs.name)}
             <span class="sched-wbs-code">${escHtml(wbs.code)}</span>
             <span class="sched-wbs-count">${wbs.activities.length} act.</span>
+          </span>
+          <span class="wbs-tools">
+            <input type="checkbox" class="sel-box" title="Select all in this WBS"
+                   onclick="toggleSelWbs('${wbs.uid}', this.checked)">
+            <span class="wbs-add-act" onclick="addActivityDraft('${wbs.uid}', ${escAttrJs(wbs.name)})">&#65291; activity</span>
           </span>
         </td>
       </tr>`);
@@ -1780,6 +2202,9 @@ function renderSchedule(data) {
   }
   tbody.innerHTML = rows.join('');
   updateColVisibility();
+  populateWbsSelects(data);
+  refreshBulkBar();
+  if (_pickState) markPickTargets();   // survive re-renders while picking
 }
 
 function renderActivityRow(a, wbsUid, hidden) {
@@ -1793,16 +2218,19 @@ function renderActivityRow(a, wbsUid, hidden) {
   // Duration display
   const dur = isMilestone ? '◆' : (a.duration_days > 0 ? a.duration_days + 'd' : '—');
 
-  // Predecessors / successors as chips
+  // Predecessors / successors as chips (with in-edit-mode delete + add controls)
+  const aid = a.activity_id;
   const predChips = (a.predecessors || []).map(p => {
     const lag = p.lag ? (p.lag > 0 ? `+${Math.round(p.lag/8)}d` : `${Math.round(p.lag/8)}d`) : '';
-    const abbr = p.type === 'Finish to Start' ? 'FS' : p.type === 'Start to Start' ? 'SS' : p.type === 'Finish to Finish' ? 'FF' : 'SF';
-    return `<span class="link-chip">${escHtml(p.activity_id)} ${abbr}${lag}</span>`;
+    const abbr = relAbbr(p.type);
+    return `<span class="link-chip">${escHtml(p.activity_id)} ${abbr}${lag}<span class="chip-x" onclick="deleteLink(${escAttrJs(p.activity_id)}, ${escAttrJs(aid)})">&times;</span></span>`;
   }).join('');
   const succChips = (a.successors || []).map(s => {
-    const abbr = s.type === 'Finish to Start' ? 'FS' : s.type === 'Start to Start' ? 'SS' : s.type === 'Finish to Finish' ? 'FF' : 'SF';
-    return `<span class="link-chip">${escHtml(s.activity_id)} ${abbr}</span>`;
+    const abbr = relAbbr(s.type);
+    return `<span class="link-chip">${escHtml(s.activity_id)} ${abbr}<span class="chip-x" onclick="deleteLink(${escAttrJs(aid)}, ${escAttrJs(s.activity_id)})">&times;</span></span>`;
   }).join('');
+  const predAdd = `<span class="row-add-link" title="Add predecessor" onclick="addLink(${escAttrJs(aid)}, 'pred')">+</span>`;
+  const succAdd = `<span class="row-add-link" title="Add successor" onclick="addLink(${escAttrJs(aid)}, 'succ')">+</span>`;
 
   // Float display
   let floatHtml = '—';
@@ -1826,19 +2254,22 @@ function renderActivityRow(a, wbsUid, hidden) {
   ].filter(Boolean).join(' ');
 
   const displayStyle = hidden ? 'display:none;' : '';
+  const selected = selectedIds.has(aid);
+  const durEditable = isMilestone ? '' : ' editable';
   return `
-    <tr class="${rowClass}" data-wbs="${wbsUid}" style="${displayStyle}">
-      <td><span class="sched-id">${escHtml(a.activity_id)}</span></td>
-      <td><span class="sched-name" title="${escAttr(a.name)}">${escHtml(a.name)}</span>${nameBadges}</td>
-      <td class="sched-dur">${dur}</td>
+    <tr class="${rowClass}${selected ? ' sel-selected' : ''}" data-wbs="${wbsUid}" data-actid="${escAttr(aid)}" style="${displayStyle}">
+      <td class="col-sel"><input type="checkbox" class="sel-box" ${selected ? 'checked' : ''} onclick="toggleSel(${escAttrJs(aid)}, this.checked)"></td>
+      <td class="editable" data-actid="${escAttr(aid)}" data-edit="id"><span class="sched-id">${escHtml(a.activity_id)}</span></td>
+      <td class="editable" data-actid="${escAttr(aid)}" data-edit="name"><span class="sched-name" title="${escAttr(a.name)}">${escHtml(a.name)}</span>${nameBadges}</td>
+      <td class="sched-dur${durEditable}" data-actid="${escAttr(aid)}" data-edit="duration" data-val="${a.duration_days}">${dur}</td>
       <td class="sched-date">${fmtDate(a.planned_start)}</td>
       <td class="sched-date">${fmtDate(a.planned_finish)}</td>
       <td class="sched-date col-earlystart">${fmtDate(a.early_start)}</td>
       <td class="sched-date col-earlyfinish">${fmtDate(a.early_finish)}</td>
       <td class="sched-date col-latestart">${fmtDate(a.late_start)}</td>
       <td class="sched-date col-latefinish">${fmtDate(a.late_finish)}</td>
-      <td class="sched-links">${predChips || '<span style="color:var(--text3)">—</span>'}</td>
-      <td class="sched-links">${succChips || '<span style="color:var(--text3)">—</span>'}</td>
+      <td class="sched-links">${predChips || (isEditMode ? '' : '<span style="color:var(--text3)">—</span>')}${predAdd}</td>
+      <td class="sched-links">${succChips || (isEditMode ? '' : '<span style="color:var(--text3)">—</span>')}${succAdd}</td>
       <td class="col-status"><span class="sched-status ${stCls}">${escHtml(a.status)}</span></td>
       <td class="col-pct" style="text-align:right;font-family:var(--mono);font-size:10px;">${a.percent_complete > 0 ? a.percent_complete + '%' : '—'}</td>
       <td class="col-float">${floatHtml}</td>
@@ -1873,17 +2304,463 @@ function toggleCol(col) {
 }
 
 function updateColVisibility() {
+  // Scope to the TABLE only. The toolbar's own toggle buttons also carry
+  // data-col, so an unscoped query hid the button that turns the column back
+  // on — making the toggle one-way.
+  const table = document.getElementById('sched-table');
+  if (!table) return;
   for (const [col, visible] of Object.entries(SCHED_COLS)) {
     const disp = visible ? '' : 'none';
-    document.querySelectorAll(`.col-${col}, [data-col="${col}"]`).forEach(el => {
-      el.style.display = disp;
-    });
-    // For header th with data-col attribute
-    document.querySelectorAll(`th[data-col="${col}"]`).forEach(el => {
+    table.querySelectorAll(`.col-${col}, [data-col="${col}"]`).forEach(el => {
       el.style.display = disp;
     });
   }
 }
+
+// ═══════════════════════════════════════════════════
+//  DIRECT EDIT — inline grid editing (no LLM round-trip)
+// ═══════════════════════════════════════════════════
+
+function relAbbr(t){ return t==='Finish to Start'?'FS':t==='Start to Start'?'SS':t==='Finish to Finish'?'FF':'SF'; }
+
+// Produce a single-quoted JS string literal safe for use inside a
+// double-quoted inline onclick="..." attribute.
+function escAttrJs(s){
+  return "'" + String(s)
+    .replace(/\\/g,'\\\\').replace(/'/g,"\\'")
+    .replace(/"/g,'&quot;').replace(/\n/g,' ') + "'";
+}
+
+function rowByActId(id){
+  return [...document.querySelectorAll('tr[data-actid]')].find(tr => tr.dataset.actid === id);
+}
+
+// ── Core: send structured commands straight to the engine ──
+async function directEdit(commands, label){
+  try{
+    const d = await fetch('/api/direct', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({commands, label})
+    }).then(r => r.json());
+    if(d.error){ flashSched(d.error, true); return d; }
+    undoCount = d.undo_count; redoCount = d.redo_count; editCount = d.edit_count;
+    const ei = document.getElementById('info-edits'); if(ei) ei.textContent = editCount;
+    if(d.activity_count != null) document.getElementById('info-acts').textContent = d.activity_count;
+    if(d.wbs_count      != null) document.getElementById('info-wbs').textContent  = d.wbs_count;
+    if(d.relation_count != null) document.getElementById('info-rels').textContent = d.relation_count;
+    updateUndoBtn();
+    if(d.commands_failed > 0){
+      const f = (d.results||[]).filter(r => !r.success).map(r => r.message).join('; ');
+      flashSched(f || 'Some edits failed', true);
+    } else {
+      flashSched(label, false);
+    }
+    await loadSchedule();
+    return d;
+  }catch(e){ flashSched(e.message, true); }
+}
+
+// ── Transient feedback toast ──
+let _flashTimer = null;
+function flashSched(msg, isErr){
+  let el = document.getElementById('sched-flash');
+  if(!el){
+    el = document.createElement('div'); el.id = 'sched-flash';
+    el.style.cssText = 'position:fixed;bottom:64px;left:50%;transform:translateX(-50%);z-index:80;'
+      + 'padding:8px 16px;border-radius:6px;font-size:12px;box-shadow:0 6px 20px rgba(0,0,0,.45);max-width:70%;';
+    document.body.appendChild(el);
+  }
+  el.style.background = isErr ? 'rgba(58,20,20,.96)' : 'var(--panel,#111820)';
+  el.style.color = isErr ? '#ff8080' : 'var(--text,#e6edf3)';
+  el.style.border = '1px solid ' + (isErr ? 'rgba(239,68,68,.5)' : 'var(--accent,#00cfff)');
+  el.textContent = (isErr ? '⚠ ' : '✓ ') + msg;
+  el.style.display = 'block';
+  clearTimeout(_flashTimer);
+  _flashTimer = setTimeout(() => { el.style.display = 'none'; }, isErr ? 4500 : 1700);
+}
+
+// ── Edit mode toggle ──
+function toggleEditMode(){
+  isEditMode = !isEditMode;
+  document.body.classList.toggle('edit-on', isEditMode);
+  document.getElementById('edit-toggle-btn').classList.toggle('on', isEditMode);
+  if(!isEditMode){
+    clearSelection();
+    document.getElementById('wbs-form').classList.remove('show');
+    document.getElementById('add-wbs-btn').classList.remove('on');
+    closeLinkEditor();
+  }
+  if(lastSchedData) loadSchedule();
+}
+
+// ── Inline cell editing (delegated dbl-click) ──
+function onSchedDblClick(e){
+  if(!isEditMode) return;
+  const td = e.target.closest('td.editable');
+  if(!td || td.querySelector('input')) return;
+  beginCellEdit(td);
+}
+function beginCellEdit(td){
+  const field = td.dataset.edit;
+  const actId = td.dataset.actid;
+  let orig;
+  if(field === 'duration') orig = td.dataset.val;
+  else if(field === 'id')  orig = actId;
+  else { const s = td.querySelector('.sched-name'); orig = s ? s.textContent : td.textContent.trim(); }
+  const input = document.createElement('input');
+  input.className = 'cell-input' + (field !== 'name' ? ' mono' : '');
+  input.value = orig;
+  if(field === 'duration'){ input.type = 'number'; input.min = '0'; input.step = '1'; }
+  td.innerHTML = ''; td.appendChild(input); input.focus(); input.select();
+  let done = false;
+  const commit = () => { if(done) return; done = true; commitCellEdit(actId, field, input.value, orig); };
+  const cancel = () => { if(done) return; done = true; loadSchedule(); };
+  input.addEventListener('keydown', ev => {
+    if(ev.key === 'Enter'){ ev.preventDefault(); commit(); }
+    else if(ev.key === 'Escape'){ ev.preventDefault(); cancel(); }
+  });
+  input.addEventListener('blur', commit);
+}
+function commitCellEdit(actId, field, raw, orig){
+  const val = (raw || '').trim();
+  if(val === String(orig).trim()){ loadSchedule(); return; }   // no change
+  let cmd = null, label = '';
+  if(field === 'name'){
+    if(!val){ loadSchedule(); return; }
+    cmd = {action:'rename_activity', activity_id:actId, new_name:val};
+    label = `Rename ${actId} → ${val}`;
+  } else if(field === 'id'){
+    if(!val){ loadSchedule(); return; }
+    cmd = {action:'update_activity_id', activity_id:actId, new_activity_id:val};
+    label = `ID ${actId} → ${val}`;
+  } else if(field === 'duration'){
+    const n = parseFloat(val);
+    if(isNaN(n) || n < 0){ flashSched('Invalid duration', true); loadSchedule(); return; }
+    cmd = {action:'update_duration', activity_id:actId, new_duration_days:n};
+    label = `${actId} duration → ${n}d`;
+  }
+  if(cmd) directEdit([cmd], label); else loadSchedule();
+}
+
+// ── Relationships ──
+// Click-to-pick: instead of typing an activity ID, the user clicks the row.
+// Targets that would close a loop are computed up-front and made unclickable.
+let _pickState = null;   // {actId, dir, invalid:Set, linked:Set}
+
+function addLink(actId, dir){ startPick(actId, dir); }
+
+/** Adjacency (ids only) from the loaded schedule. */
+function buildRelGraph(){
+  const succ = {}, pred = {};
+  (lastSchedData?.wbs_sections || []).forEach(w => (w.activities || []).forEach(a => {
+    succ[a.activity_id] = (a.successors   || []).map(s => s.activity_id);
+    pred[a.activity_id] = (a.predecessors || []).map(p => p.activity_id);
+  }));
+  return { succ, pred };
+}
+
+/** Every id reachable from startId by following adj. */
+function reachableFrom(startId, adj){
+  const seen = new Set(), stack = [startId];
+  while(stack.length){
+    const u = stack.pop();
+    for(const v of (adj[u] || [])){
+      if(!seen.has(v)){ seen.add(v); stack.push(v); }
+    }
+  }
+  return seen;
+}
+
+function startPick(actId, dir){
+  if(!isEditMode) toggleEditMode();
+  const { succ, pred } = buildRelGraph();
+  // Picking a PREDECESSOR for A: anything downstream of A would close a loop.
+  // Picking a SUCCESSOR  for A: anything upstream  of A would close a loop.
+  const invalid = reachableFrom(actId, dir === 'pred' ? succ : pred);
+  invalid.add(actId);                                    // never self-link
+  const linked = new Set(dir === 'pred' ? (pred[actId] || []) : (succ[actId] || []));
+  _pickState = { actId, dir, invalid, linked };
+  document.body.classList.add('pick-on');
+  document.getElementById('pick-msg').textContent =
+    `Select the ${dir === 'pred' ? 'predecessor' : 'successor'} for ${actId}`;
+  document.getElementById('pick-bar').classList.add('show');
+  markPickTargets();
+}
+
+function markPickTargets(){
+  if(!_pickState) return;
+  document.querySelectorAll('tr.sched-act-row').forEach(tr => {
+    const id = tr.dataset.actid;
+    tr.classList.remove('pick-valid','pick-invalid');
+    if(!id) return;
+    if(_pickState.invalid.has(id)){
+      tr.classList.add('pick-invalid');
+      tr.title = (id === _pickState.actId)
+        ? 'Same activity — cannot link to itself'
+        : 'Would create a circular dependency';
+    } else if(_pickState.linked.has(id)){
+      tr.classList.add('pick-invalid');
+      tr.title = 'Already linked';
+    } else {
+      tr.classList.add('pick-valid');
+      tr.title = 'Click to link';
+    }
+  });
+}
+
+function cancelPick(){
+  _pickState = null;
+  document.body.classList.remove('pick-on');
+  document.getElementById('pick-bar')?.classList.remove('show');
+  document.querySelectorAll('tr.sched-act-row').forEach(tr => {
+    tr.classList.remove('pick-valid','pick-invalid');
+    tr.removeAttribute('title');
+  });
+}
+
+/** Capture-phase click handler, active only while picking. */
+function onPickClick(e){
+  if(!_pickState) return;
+  if(e.target.closest('#pick-bar')) return;     // the bar's own controls still work
+  const tr = e.target.closest('tr.sched-act-row');
+  if(!tr) return;
+  e.preventDefault(); e.stopPropagation();
+  const other = tr.dataset.actid;
+  if(!other) return;
+  if(_pickState.invalid.has(other)){
+    flashSched(other === _pickState.actId
+      ? 'Cannot link an activity to itself'
+      : `${other} already leads back to ${_pickState.actId} — that would be circular`, true);
+    return;
+  }
+  if(_pickState.linked.has(other)){ flashSched(`${other} is already linked`, true); return; }
+  const type = document.getElementById('pick-type').value;
+  const lag  = parseFloat(document.getElementById('pick-lag').value) || 0;
+  const A = _pickState.actId, dir = _pickState.dir;
+  const p = (dir === 'pred') ? other : A;
+  const s = (dir === 'pred') ? A : other;
+  cancelPick();
+  directEdit([{action:'add_relation', predecessor_id:p, successor_id:s, type, lag_days:lag}],
+             `Link ${p} → ${s} ${type.toUpperCase()}`);
+}
+
+/** Defensive: clear any stray popover left by older builds. */
+function closeLinkEditor(){ const p = document.getElementById('link-pop'); if(p) p.remove(); }
+function deleteLink(predId, succId){
+  directEdit([{action:'delete_relation', predecessor_id:predId, successor_id:succId}], `Unlink ${predId} → ${succId}`);
+}
+
+// ── Quick-add activity (inline draft row under a WBS) ──
+function addActivityDraft(wbsUid, wbsName){
+  if(!isEditMode){ toggleEditMode(); }
+  const hdr = document.getElementById('wbs-hdr-' + wbsUid);
+  if(!hdr) return;
+  const next = hdr.nextElementSibling;
+  if(next && next.classList.contains('draft-row')){ next.querySelector('.draft-name').focus(); return; }
+  const tr = document.createElement('tr');
+  tr.className = 'draft-row';
+  tr.innerHTML =
+    `<td class="col-sel"></td>`
+    + `<td colspan="2"><input class="draft-name" placeholder="New activity name" style="width:100%;"></td>`
+    + `<td><input class="draft-dur" type="number" min="0" value="1" style="width:56px;"></td>`
+    + `<td colspan="5"><select class="draft-type">`
+    +   `<option value="Task Dependent">Task</option>`
+    +   `<option value="Start Milestone">Start Milestone</option>`
+    +   `<option value="Finish Milestone">Finish Milestone</option>`
+    +   `<option value="Level of Effort">LOE</option></select></td>`
+    + `<td colspan="20"><button class="mini-btn ok draft-ok">Add</button> `
+    +   `<button class="mini-btn no draft-cancel">Cancel</button>`
+    +   `<span style="font-size:10px;color:var(--text3);margin-left:8px;">into ${escHtml(wbsName)}</span></td>`;
+  hdr.parentNode.insertBefore(tr, hdr.nextSibling);
+  const nameI = tr.querySelector('.draft-name'); nameI.focus();
+  const commit = () => {
+    const name = nameI.value.trim();
+    if(!name){ tr.remove(); return; }
+    const dur  = parseFloat(tr.querySelector('.draft-dur').value) || 0;
+    const type = tr.querySelector('.draft-type').value;
+    directEdit([{action:'add_activity', wbs_name:wbsName, name, duration_days:dur, activity_type:type}],
+               `Add activity "${name}"`);
+  };
+  tr.querySelector('.draft-ok').addEventListener('click', commit);
+  tr.querySelector('.draft-cancel').addEventListener('click', () => tr.remove());
+  nameI.addEventListener('keydown', ev => {
+    if(ev.key === 'Enter'){ ev.preventDefault(); commit(); }
+    else if(ev.key === 'Escape'){ tr.remove(); }
+  });
+}
+
+// ── Add WBS ──
+function toggleWbsForm(){
+  const f = document.getElementById('wbs-form');
+  const show = !f.classList.contains('show');
+  // only one inline form open at a time
+  document.getElementById('act-form').classList.remove('show');
+  document.getElementById('add-act-btn').classList.remove('on');
+  f.classList.toggle('show', show);
+  document.getElementById('add-wbs-btn').classList.toggle('on', show);
+  if(show){ populateWbsSelects(lastSchedData || {wbs_sections:[]}); document.getElementById('wbs-form-name').focus(); }
+}
+function submitAddWbs(){
+  const nameEl = document.getElementById('wbs-form-name');
+  const name = nameEl.value.trim();
+  if(!name){ nameEl.focus(); return; }
+  const code = document.getElementById('wbs-form-code').value.trim();
+  const parentName = document.getElementById('wbs-form-parent').value;
+  const cmd = {action:'add_wbs', name};
+  if(code) cmd.code = code;
+  if(parentName) cmd.parent_name = parentName;
+  nameEl.value = ''; document.getElementById('wbs-form-code').value = '';
+  toggleWbsForm();
+  directEdit([cmd], `Add WBS "${name}"`);
+}
+function populateWbsSelects(data){
+  const opts = (data.wbs_sections || []).map(w =>
+    `<option value="${escAttr(w.name)}">${escHtml(w.name)}</option>`).join('');
+  const parent = document.getElementById('wbs-form-parent');
+  if(parent) parent.innerHTML = '<option value="">— Root level —</option>' + opts;
+  const bulk = document.getElementById('bulk-wbs');
+  if(bulk) bulk.innerHTML = opts;
+  const actWbs = document.getElementById('act-form-wbs');
+  if(actWbs){
+    const sections = data.wbs_sections || [];
+    const names = sections.map(w => w.name);
+    const prev = actWbs.value;
+    actWbs.innerHTML = opts;
+    // Sticky target: keep current pick, else last-used, else first REAL phase
+    // (a WBS that holds activities or has a parent — never default to the root).
+    let target = '';
+    if(prev && names.includes(prev))                 target = prev;
+    else if(lastActWbs && names.includes(lastActWbs)) target = lastActWbs;
+    else {
+      const firstWithActs = sections.find(w => (w.activities || []).length > 0);
+      const firstChild    = sections.find(w => w.parent_uid);
+      target = (firstWithActs && firstWithActs.name)
+            || (firstChild && firstChild.name)
+            || (names[0] || '');
+    }
+    if(target) actWbs.value = target;
+  }
+}
+
+// ── Add a single activity from the toolbar form ──
+function toggleActForm(){
+  const f = document.getElementById('act-form');
+  const show = !f.classList.contains('show');
+  // only one inline form open at a time
+  document.getElementById('wbs-form').classList.remove('show');
+  document.getElementById('add-wbs-btn').classList.remove('on');
+  f.classList.toggle('show', show);
+  document.getElementById('add-act-btn').classList.toggle('on', show);
+  if(show){
+    if(!isEditMode) toggleEditMode();
+    populateWbsSelects(lastSchedData || {wbs_sections:[]});
+    document.getElementById('act-form-name').focus();
+  }
+}
+function submitAddActivity(){
+  const nameEl = document.getElementById('act-form-name');
+  const name = nameEl.value.trim();
+  if(!name){ nameEl.focus(); return; }
+  const wbs = document.getElementById('act-form-wbs').value;
+  if(!wbs){ flashSched('Pick a WBS for the activity', true); return; }
+  lastActWbs = wbs;                        // remember for the next add
+  const dur  = parseFloat(document.getElementById('act-form-dur').value) || 0;
+  const type = document.getElementById('act-form-type').value;
+  nameEl.value = '';                       // keep form open for rapid entry
+  directEdit([{action:'add_activity', wbs_name:wbs, name, duration_days:dur, activity_type:type}],
+             `Add activity "${name}"`);
+  nameEl.focus();
+}
+
+// ── Selection + bulk operations ──
+function toggleSel(id, checked){
+  if(checked) selectedIds.add(id); else selectedIds.delete(id);
+  const tr = rowByActId(id); if(tr) tr.classList.toggle('sel-selected', checked);
+  refreshBulkBar();
+}
+function toggleSelWbs(uid, checked){
+  document.querySelectorAll(`tr.sched-act-row[data-wbs="${uid}"]`).forEach(tr => {
+    const id = tr.dataset.actid; if(!id) return;
+    if(checked) selectedIds.add(id); else selectedIds.delete(id);
+    tr.classList.toggle('sel-selected', checked);
+    const cb = tr.querySelector('td.col-sel .sel-box'); if(cb) cb.checked = checked;
+  });
+  refreshBulkBar();
+}
+function toggleSelAll(checked){
+  document.querySelectorAll('tr.sched-act-row').forEach(tr => {
+    const id = tr.dataset.actid; if(!id) return;
+    if(checked) selectedIds.add(id); else selectedIds.delete(id);
+    tr.classList.toggle('sel-selected', checked);
+    const cb = tr.querySelector('td.col-sel .sel-box'); if(cb) cb.checked = checked;
+  });
+  refreshBulkBar();
+}
+function clearSelection(){
+  selectedIds.clear();
+  document.querySelectorAll('tr.sel-selected').forEach(tr => tr.classList.remove('sel-selected'));
+  document.querySelectorAll('.sel-box').forEach(cb => cb.checked = false);
+  refreshBulkBar();
+}
+function refreshBulkBar(){
+  const bar = document.getElementById('bulk-bar'); if(!bar) return;
+  const n = selectedIds.size;
+  document.getElementById('bulk-count').textContent = n + ' selected';
+  bar.classList.toggle('show', isEditMode && n > 0);
+  const pb = document.getElementById('bulk-paste-btn'); if(pb) pb.disabled = clipboard.length === 0;
+}
+function bulkSetDuration(){
+  const v = parseFloat(document.getElementById('bulk-dur').value);
+  if(isNaN(v) || v < 0){ flashSched('Enter a valid duration', true); return; }
+  const ids = [...selectedIds]; if(!ids.length) return;
+  const cmds = ids.map(id => ({action:'update_duration', activity_id:id, new_duration_days:v}));
+  clearSelection();
+  directEdit(cmds, `Set ${ids.length} activit${ids.length===1?'y':'ies'} to ${v}d`);
+}
+function bulkMove(){
+  const wbs = document.getElementById('bulk-wbs').value;
+  if(!wbs){ flashSched('Pick a target WBS', true); return; }
+  const ids = [...selectedIds]; if(!ids.length) return;
+  const cmds = ids.map(id => ({action:'move_activity_wbs', activity_id:id, wbs_name:wbs}));
+  clearSelection();
+  directEdit(cmds, `Move ${ids.length} activit${ids.length===1?'y':'ies'} → ${wbs}`);
+}
+function bulkCopy(){
+  clipboard = [];
+  const sel = new Set(selectedIds);
+  (lastSchedData?.wbs_sections || []).forEach(w => w.activities.forEach(a => {
+    if(sel.has(a.activity_id)) clipboard.push({name:a.name, duration_days:a.duration_days, activity_type:a.activity_type});
+  }));
+  flashSched(`Copied ${clipboard.length} activit${clipboard.length===1?'y':'ies'} — pick a WBS and Paste`, false);
+  refreshBulkBar();
+}
+function bulkPaste(){
+  if(!clipboard.length){ flashSched('Nothing copied yet', true); return; }
+  const wbs = document.getElementById('bulk-wbs').value;
+  if(!wbs){ flashSched('Pick a target WBS to paste into', true); return; }
+  const cmds = clipboard.map(c => ({action:'add_activity', wbs_name:wbs, name:c.name, duration_days:c.duration_days, activity_type:c.activity_type}));
+  clearSelection();
+  directEdit(cmds, `Paste ${cmds.length} activit${cmds.length===1?'y':'ies'} → ${wbs}`);
+}
+function bulkDelete(){
+  const ids = [...selectedIds]; if(!ids.length) return;
+  if(!confirm(`Delete ${ids.length} selected activit${ids.length===1?'y':'ies'}? Their relationships are removed too.`)) return;
+  const cmds = ids.map(id => ({action:'delete_activity', activity_id:id}));
+  clearSelection();
+  directEdit(cmds, `Delete ${ids.length} activit${ids.length===1?'y':'ies'}`);
+}
+
+// Attach the delegated dbl-click handler once
+(function initDirectEdit(){
+  const tb = document.getElementById('sched-tbody');
+  if(tb){
+    tb.addEventListener('dblclick', onSchedDblClick);
+    tb.addEventListener('click', onPickClick, true);   // capture: intercept while picking
+  }
+  document.addEventListener('keydown', e => {
+    if(e.key === 'Escape' && _pickState) cancelPick();
+  });
+})();
 </script>
 </body>
 </html>

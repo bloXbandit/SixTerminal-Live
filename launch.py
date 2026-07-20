@@ -1,7 +1,7 @@
 """
-launch.py — Entry point for the Stelic Insights Live executable.
+launch.py — Entry point for the Six-Terminal executable.
 
-When built with PyInstaller this becomes SteliLive.exe.
+When built with PyInstaller this becomes SixTerminal.exe.
 Starts the Flask server on port 5100 and opens the browser automatically.
 """
 import sys
@@ -13,7 +13,7 @@ import time
 
 def _banner():
     print("=" * 50)
-    print("  Stelic Insights Live")
+    print("  Six-Terminal")
     print("  http://localhost:5100")
     print("=" * 50)
     print("Server starting — browser will open automatically.")

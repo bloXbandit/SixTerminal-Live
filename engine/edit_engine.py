@@ -84,6 +84,52 @@ def _new_uid() -> str:
     return str(uuid.uuid4().int)[:10]
 
 
+def _next_activity_id(project: Project) -> str:
+    """
+    Compute the next available activity ID following the project's dominant
+    prefix + 4-digit numbering (e.g. A1000 -> A1010), skipping any collisions.
+    Used when add_activity / paste are called without an explicit ID.
+    """
+    prefix = "A"
+    numeric_ids: List[int] = []
+    for a in project.activities:
+        raw = a.activity_id.lstrip("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz")
+        try:
+            numeric_ids.append(int(raw))
+            if a.activity_id and a.activity_id[0].isalpha():
+                prefix = a.activity_id[0]
+        except ValueError:
+            pass
+    current = (((max(numeric_ids) // 10) + 1) * 10) if numeric_ids else 1000
+    while project.get_activity(activity_id=f"{prefix}{current:04d}"):
+        current += 10
+    return f"{prefix}{current:04d}"
+
+
+def _would_create_cycle(project: Project, pred_uid: str, succ_uid: str) -> bool:
+    """
+    Return True if adding a predecessor→successor link would create a circular
+    dependency (or is a self-loop). Walks forward from succ along existing
+    successor edges; if it can already reach pred, the new edge closes a loop.
+    """
+    if pred_uid == succ_uid:
+        return True
+    adj: Dict[str, List[str]] = {}
+    for r in project.relations:
+        adj.setdefault(r.predecessor_uid, []).append(r.successor_uid)
+    stack = [succ_uid]
+    seen: set = set()
+    while stack:
+        u = stack.pop()
+        if u == pred_uid:
+            return True
+        if u in seen:
+            continue
+        seen.add(u)
+        stack.extend(adj.get(u, []))
+    return False
+
+
 def apply_command(project: Project, command: Dict[str, Any]) -> Tuple[bool, str]:
     """
     Apply a single edit command to the project.
@@ -392,7 +438,8 @@ def _add_activity(project: Project, cmd: Dict) -> Tuple[bool, str]:
         raise EditError(f"WBS node not found: {cmd.get('wbs_code') or cmd.get('wbs_name')}")
     act_id = cmd.get("activity_id", "").strip()
     if not act_id:
-        raise EditError("activity_id is required for add_activity")
+        # Auto-assign the next available ID (quick-add / paste from the grid)
+        act_id = _next_activity_id(project)
     if project.get_activity(activity_id=act_id):
         raise EditError(f"Activity ID '{act_id}' already exists")
     name = cmd.get("name", "").strip()
@@ -445,6 +492,14 @@ def _add_relation(project: Project, cmd: Dict) -> Tuple[bool, str]:
         raise EditError(f"Multiple successors matched '{cmd.get('successor_name')}' — use activity_id")
     pred = pred_matches[0]
     succ = succ_matches[0]
+    # Reject self-loops and circular dependencies before mutating the network
+    if pred.uid == succ.uid:
+        raise EditError(f"Cannot link {pred.activity_id} to itself")
+    if _would_create_cycle(project, pred.uid, succ.uid):
+        raise EditError(
+            f"Adding {pred.activity_id} → {succ.activity_id} would create a circular "
+            f"dependency ({succ.activity_id} already leads back to {pred.activity_id})"
+        )
     # Check for duplicate
     for r in project.relations:
         if r.predecessor_uid == pred.uid and r.successor_uid == succ.uid:

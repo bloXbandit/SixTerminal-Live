@@ -114,7 +114,7 @@ class Project:
             f"  Calendars: {len(self.calendars)}"
         )
 
-    def llm_context(self, max_activities: int = 120) -> str:
+    def llm_context(self, max_activities: int = 400) -> str:
         """
         Rich context string for the LLM.
         Includes WBS structure, full activity list with pred/succ links,
