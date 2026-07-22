@@ -694,6 +694,17 @@
 
     /* Activity rows */
     .sched-act-row td{color:var(--text2);}
+    /* Column hide/show by a single class on the table (O(1)) instead of
+       touching every cell. One rule per toggleable column. */
+    #sched-table.hide-status     .col-status,
+    #sched-table.hide-pct        .col-pct,
+    #sched-table.hide-float      .col-float,
+    #sched-table.hide-earlystart .col-earlystart,
+    #sched-table.hide-earlyfinish .col-earlyfinish,
+    #sched-table.hide-latestart  .col-latestart,
+    #sched-table.hide-latefinish .col-latefinish,
+    #sched-table.hide-constraint .col-constraint,
+    #sched-table.hide-type       .col-type{display:none;}
     .sched-act-row.critical td{border-left:2px solid var(--red) !important;}
     .sched-act-row.critical .sched-id{color:var(--red);}
     .sched-id{font-family:var(--mono);color:var(--accent);font-size:10px;font-weight:500;}
@@ -1262,17 +1273,17 @@
               <th style="text-align:right;">Duration</th>
               <th>Start</th>
               <th>Finish</th>
-              <th data-col="earlystart"  class="col-earlystart"  style="display:none;">Early Start</th>
-              <th data-col="earlyfinish" class="col-earlyfinish" style="display:none;">Early Finish</th>
-              <th data-col="latestart"   class="col-latestart"   style="display:none;">Late Start</th>
-              <th data-col="latefinish"  class="col-latefinish"  style="display:none;">Late Finish</th>
+              <th data-col="earlystart"  class="col-earlystart">Early Start</th>
+              <th data-col="earlyfinish" class="col-earlyfinish">Early Finish</th>
+              <th data-col="latestart"   class="col-latestart">Late Start</th>
+              <th data-col="latefinish"  class="col-latefinish">Late Finish</th>
               <th>Predecessors</th>
               <th>Successors</th>
               <th data-col="status"    class="col-status">Status</th>
               <th data-col="pct"       class="col-pct"    style="text-align:right;">% Done</th>
               <th data-col="float"     class="col-float"  style="text-align:right;">Float (d)</th>
-              <th data-col="constraint" class="col-constraint" style="display:none;">Constraint</th>
-              <th data-col="type"       class="col-type"       style="display:none;">Type</th>
+              <th data-col="constraint" class="col-constraint">Constraint</th>
+              <th data-col="type"       class="col-type">Type</th>
             </tr>
           </thead>
           <tbody id="sched-tbody"></tbody>
@@ -2480,16 +2491,12 @@ function toggleCol(col) {
 }
 
 function updateColVisibility() {
-  // Scope to the TABLE only. The toolbar's own toggle buttons also carry
-  // data-col, so an unscoped query hid the button that turns the column back
-  // on — making the toggle one-way.
+  // One class toggle on the table drives a CSS rule that hides the column —
+  // O(1), instead of walking every cell (which cost ~600ms at 15k rows).
   const table = document.getElementById('sched-table');
   if (!table) return;
   for (const [col, visible] of Object.entries(SCHED_COLS)) {
-    const disp = visible ? '' : 'none';
-    table.querySelectorAll(`.col-${col}, [data-col="${col}"]`).forEach(el => {
-      el.style.display = disp;
-    });
+    table.classList.toggle('hide-' + col, !visible);
   }
 }
 

@@ -960,6 +960,84 @@ def schedule_view():
         return jsonify({"error": f"Schedule build failed: {str(e)}", "trace": traceback.format_exc()}), 500
 
 
+_MILESTONE_TYPES = {"Start Milestone", "Finish Milestone"}
+
+
+def _fmt_date(d):
+    return str(d)[:10] if d else None
+
+
+def _build_rel_maps(project):
+    """uid -> [{activity_id, type, lag}] predecessor and successor lists."""
+    preds_map: dict = {}
+    succs_map: dict = {}
+    for rel in project.relations:
+        pred_act = project.get_activity(uid=rel.predecessor_uid)
+        succ_act = project.get_activity(uid=rel.successor_uid)
+        if pred_act and succ_act:
+            succs_map.setdefault(rel.predecessor_uid, []).append(
+                {"activity_id": succ_act.activity_id, "type": rel.type, "lag": rel.lag})
+            preds_map.setdefault(rel.successor_uid, []).append(
+                {"activity_id": pred_act.activity_id, "type": rel.type, "lag": rel.lag})
+    return preds_map, succs_map
+
+
+def _activity_row(a, preds_map, succs_map):
+    """
+    One schedule-grid row. Null / False / empty values are omitted to shrink the
+    payload (the client already treats missing fields as null/false/[]), which
+    roughly halves the JSON for a big schedule.
+    """
+    is_milestone = a.activity_type in _MILESTONE_TYPES
+    row = {
+        "uid":           a.uid,
+        "activity_id":   a.activity_id,
+        "name":          a.name,
+        "duration_days": round(a.planned_duration / 8.0, 1) if a.planned_duration else 0.0,
+        "status":        a.status,
+        "activity_type": a.activity_type,
+    }
+    opt = {
+        "planned_start":  _fmt_date(a.planned_start),
+        "planned_finish": _fmt_date(a.planned_finish),
+        "actual_start":   _fmt_date(a.actual_start),
+        "actual_finish":  _fmt_date(a.actual_finish),
+        "early_start":    _fmt_date(a.early_start),
+        "early_finish":   _fmt_date(a.early_finish),
+        "late_start":     _fmt_date(a.late_start),
+        "late_finish":    _fmt_date(a.late_finish),
+        "total_float":    round(a.total_float / 8.0, 1) if a.total_float is not None else None,
+        "free_float":     round(a.free_float / 8.0, 1) if a.free_float is not None else None,
+        "constraint_type": a.constraint_type,
+        "constraint_date": _fmt_date(a.constraint_date),
+    }
+    for k, v in opt.items():
+        if v is not None:
+            row[k] = v
+    if a.percent_complete:
+        row["percent_complete"] = a.percent_complete
+    if is_milestone:
+        row["is_milestone"] = True
+    if a.is_critical:
+        row["is_critical"] = True
+    if a.is_longest_path:
+        row["is_longest_path"] = True
+    preds = preds_map.get(a.uid)
+    succs = succs_map.get(a.uid)
+    if preds:
+        row["predecessors"] = preds
+    if succs:
+        row["successors"] = succs
+    return row
+
+
+def _flat_rows(project):
+    """activity_id -> row dict, for diffing before/after an edit."""
+    preds_map, succs_map = _build_rel_maps(project)
+    return {a.activity_id: _activity_row(a, preds_map, succs_map)
+            for a in project.activities}
+
+
 def _schedule_view_inner():
     project = _get_session()["project"]
 
@@ -1008,36 +1086,8 @@ def _schedule_view_inner():
 
     wbs_sections = []
     for wbs in project.wbs_nodes:
-        activities_out = []
-        for a in acts_by_wbs.get(wbs.uid, []):
-            is_milestone = a.activity_type in MILESTONE_TYPES
-            dur_days = round(a.planned_duration / 8.0, 1) if a.planned_duration else 0.0
-            activities_out.append({
-                "uid":              a.uid,
-                "activity_id":      a.activity_id,
-                "name":             a.name,
-                "duration_days":    dur_days,
-                "planned_start":    fmt_date(a.planned_start),
-                "planned_finish":   fmt_date(a.planned_finish),
-                "actual_start":     fmt_date(a.actual_start),
-                "actual_finish":    fmt_date(a.actual_finish),
-                "early_start":      fmt_date(a.early_start),
-                "early_finish":     fmt_date(a.early_finish),
-                "late_start":       fmt_date(a.late_start),
-                "late_finish":      fmt_date(a.late_finish),
-                "total_float":      round(a.total_float / 8.0, 1) if a.total_float is not None else None,
-                "free_float":       round(a.free_float / 8.0, 1) if a.free_float is not None else None,
-                "status":           a.status,
-                "percent_complete": a.percent_complete,
-                "activity_type":    a.activity_type,
-                "is_milestone":     is_milestone,
-                "is_critical":      a.is_critical,
-                "is_longest_path":  a.is_longest_path,
-                "constraint_type":  a.constraint_type,
-                "constraint_date":  fmt_date(a.constraint_date),
-                "predecessors":     preds_map.get(a.uid, []),
-                "successors":       succs_map.get(a.uid, []),
-            })
+        activities_out = [_activity_row(a, preds_map, succs_map)
+                          for a in acts_by_wbs.get(wbs.uid, [])]
         wbs_sections.append({
             "uid":        wbs.uid,
             "name":       wbs.name,
