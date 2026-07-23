@@ -495,7 +495,12 @@ def compute_dates(project: "Project") -> None:
             return None
 
     def _is_work(d: _date, wd, hol) -> bool:
-        return d.weekday() in wd and d.isoformat() not in hol
+        # Short-circuit the weekday test first, and skip the isoformat() string
+        # build entirely when the calendar has no holidays (the default) — that
+        # formatting was the dominant per-day cost in the day-by-day walk.
+        if d.weekday() not in wd:
+            return False
+        return (not hol) or (d.isoformat() not in hol)
 
     def _snap(d: _date, wd, hol) -> _date:
         """Advance to the next working day on this calendar."""

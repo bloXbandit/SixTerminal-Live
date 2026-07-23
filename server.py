@@ -222,12 +222,37 @@ def _append_chat(role: str, text: str):
     if sess is not None:
         sess["chat_history"].append({"role": role, "text": text})
 
+def _snapshot_project(project):
+    """
+    A cheap undo snapshot.
+
+    Every Activity / WBSNode / Relation / Calendar field is an immutable scalar
+    (str, float, bool) or an immutable frozenset, so a shallow copy.copy of each
+    object is a fully independent copy: a later `a.field = x` on the live project
+    reassigns the field on a *different* object and never touches the snapshot.
+    This avoids copy.deepcopy's recursion + memo, which cost ~0.9s at 15k rows.
+    """
+    import copy as _copy
+    from engine.schedule_model import Project
+    snap = Project(
+        uid=project.uid, name=project.name, id=project.id,
+        data_date=project.data_date, planned_start=project.planned_start,
+        must_finish_by=project.must_finish_by, status_code=project.status_code,
+        calendars=[_copy.copy(c) for c in project.calendars],
+        wbs_nodes=[_copy.copy(w) for w in project.wbs_nodes],
+        activities=[_copy.copy(a) for a in project.activities],
+        relations=[_copy.copy(r) for r in project.relations],
+    )
+    snap.build_lookups()
+    return snap
+
+
 def _push_undo(label: str):
     sess = _get_session()
     if sess is None or sess["project"] is None:
         return
     stack = sess["undo_stack"]
-    stack.append((label, copy.deepcopy(sess["project"])))
+    stack.append((label, _snapshot_project(sess["project"])))
     if len(stack) > _MAX_UNDO:
         stack.pop(0)
 
@@ -717,7 +742,7 @@ def undo():
     label, snapshot = stack.pop()
     if sess["edit_history"]:
         sess["edit_history"].pop()
-    sess["redo_stack"].append((label, copy.deepcopy(sess["project"])))
+    sess["redo_stack"].append((label, _snapshot_project(sess["project"])))
     sess["last_undone"] = label
     sess["project"] = snapshot
     project = snapshot
