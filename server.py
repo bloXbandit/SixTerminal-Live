@@ -1010,7 +1010,7 @@ _MILESTONE_TYPES = {"Start Milestone", "Finish Milestone"}
 # These force a full client reload; all other edits patch just the changed rows.
 _STRUCTURAL_ACTIONS = {
     "add_activity", "delete_activity", "bulk_add_activity",
-    "add_wbs", "rename_wbs", "bulk_create_wbs", "move_activity_wbs",
+    "add_wbs", "rename_wbs", "bulk_create_wbs", "move_activity_wbs", "move_wbs",
     "update_activity_id", "bulk_update_activity_id",
 }
 
@@ -1083,6 +1083,42 @@ def _activity_row(a, preds_map, succs_map):
     return row
 
 
+def _ordered_wbs(project):
+    """
+    WBS nodes in tree order — each parent immediately followed by its children,
+    siblings by sequence_num. The stored list is in creation order, which made a
+    re-parented folder appear far from its new parent in the grid.
+    """
+    children = {}
+    roots = []
+    by_uid = {w.uid: w for w in project.wbs_nodes}
+    for w in project.wbs_nodes:
+        if w.parent_uid and w.parent_uid in by_uid:
+            children.setdefault(w.parent_uid, []).append(w)
+        else:
+            roots.append(w)
+    for lst in children.values():
+        lst.sort(key=lambda w: (w.sequence_num, w.name))
+    roots.sort(key=lambda w: (w.sequence_num, w.name))
+
+    out, seen = [], set()
+
+    def walk(node):
+        if node.uid in seen:          # defensive: never loop on a bad tree
+            return
+        seen.add(node.uid)
+        out.append(node)
+        for c in children.get(node.uid, []):
+            walk(c)
+
+    for r in roots:
+        walk(r)
+    for w in project.wbs_nodes:       # anything unreachable still gets shown
+        if w.uid not in seen:
+            out.append(w)
+    return out
+
+
 def _flat_rows(project):
     """activity_id -> row dict, for diffing before/after an edit."""
     preds_map, succs_map = _build_rel_maps(project)
@@ -1137,7 +1173,7 @@ def _schedule_view_inner():
         return str(d)[:10] if d else None
 
     wbs_sections = []
-    for wbs in project.wbs_nodes:
+    for wbs in _ordered_wbs(project):
         activities_out = [_activity_row(a, preds_map, succs_map)
                           for a in acts_by_wbs.get(wbs.uid, [])]
         wbs_sections.append({

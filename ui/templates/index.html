@@ -795,6 +795,36 @@
     }
     body.edit-on .wbs-add-act{display:inline-block;}
     body.edit-on .wbs-add-act:hover{background:var(--accent-glow);}
+    /* ── WBS selection + drag/drop re-parenting ──────────────────────── */
+    body.edit-on tr.sched-wbs-row{cursor:grab;}
+    tr.wbs-selected td{
+      background:rgba(0,207,255,.14) !important;
+      box-shadow:inset 3px 0 0 var(--accent);
+    }
+    tr.wbs-selected .sched-wbs-toggle{color:var(--accent);}
+    tr.wbs-drag{opacity:.45;}
+    /* drop ON a folder = nest inside it */
+    tr.wbs-drop-into td{
+      background:rgba(34,197,94,.18) !important;
+      box-shadow:inset 0 0 0 2px var(--green);
+    }
+    tr.wbs-drop-bad td{
+      background:rgba(239,68,68,.16) !important;
+      box-shadow:inset 0 0 0 2px var(--red);
+      cursor:no-drop;
+    }
+    #wbs-root-drop{
+      display:none;margin:6px 0 0 0;padding:8px 12px;text-align:center;
+      border:1px dashed var(--border2);border-radius:6px;
+      font-size:11px;color:var(--text3);
+    }
+    body.wbs-dragging #wbs-root-drop{display:block;}
+    #wbs-root-drop.over{border-color:var(--green);color:var(--green);background:rgba(34,197,94,.08);}
+    .wbs-count-badge{
+      display:inline-block;margin-left:8px;font-size:9px;font-weight:700;
+      background:var(--accent-glow);color:var(--accent);
+      border-radius:10px;padding:1px 7px;
+    }
     .wbs-tools{display:none;}
     body.edit-on .wbs-tools{display:inline-flex;gap:8px;align-items:center;margin-left:12px;vertical-align:middle;}
     /* Draft (new activity) row */
@@ -1176,6 +1206,9 @@
         <button class="col-toggle" id="trace-btn" onclick="startTrace()"
                 title="Trace logic — show only the activities driving a chosen activity">⤳ Trace</button>
         <span class="sched-sep"></span>
+        <button class="col-toggle" onclick="collapseAllWbs(true)"  title="Collapse every WBS folder">⊟ Collapse all</button>
+        <button class="col-toggle" onclick="collapseAllWbs(false)" title="Expand every WBS folder">⊞ Expand all</button>
+        <span class="sched-sep"></span>
         <span class="pick-legend">Calendar</span>
         <select id="cal-select" onchange="setCalendar(this.value)"
                 title="Working pattern used to schedule dates and written into the P6 export"
@@ -1288,6 +1321,21 @@
           </thead>
           <tbody id="sched-tbody"></tbody>
         </table>
+        <div id="wbs-root-drop">⇱ Drop here to move to the top level (no parent)</div>
+      </div>
+
+      <!-- WBS folder action bar (shown when folders are selected) -->
+      <div class="bulk-bar" id="wbs-bar">
+        <span class="bulk-count" id="wbs-count">0 folders</span>
+        <span class="sched-sep"></span>
+        <span style="font-size:11px;color:var(--text3);">Move under</span>
+        <select id="wbs-target" style="width:220px;"></select>
+        <button class="mini-btn" onclick="moveSelectedWbs()">Move</button>
+        <button class="mini-btn" onclick="moveSelectedWbs(true)">Move to root</button>
+        <span class="pick-legend" style="margin-left:auto;">
+          Ctrl/Cmd+click folders to multi-select · or drag a folder onto another
+        </span>
+        <button class="mini-btn" onclick="clearWbsSelection()">Clear</button>
       </div>
 
       <!-- Bulk action bar (shown when rows are selected in edit mode) -->
@@ -2066,6 +2114,8 @@ function resetEditState() {
   if (typeof closeLinkEditor === 'function') closeLinkEditor();
   if (typeof cancelPick === 'function') cancelPick();
   if (typeof clearTrace === 'function') clearTrace();
+  if (typeof selectedWbs !== 'undefined') { selectedWbs.clear(); endWbsDrag(); }
+  document.getElementById('wbs-bar')?.classList.remove('show');
   const bar = document.getElementById('bulk-bar');
   if (bar) bar.classList.remove('show');
   document.querySelectorAll('.wbs-form.show').forEach(f => f.classList.remove('show'));
@@ -2367,9 +2417,12 @@ function renderSchedule(data) {
     const indent = ' '.repeat(wbs.depth * 4);
     const isCollapsed = collapsedWbs.has(wbs.uid);
     rows.push(`
-      <tr class="sched-wbs-row${isCollapsed ? ' collapsed' : ''}" id="wbs-hdr-${wbs.uid}">
+      <tr class="sched-wbs-row${isCollapsed ? ' collapsed' : ''}${selectedWbs.has(wbs.uid) ? ' wbs-selected' : ''}"
+          id="wbs-hdr-${wbs.uid}" data-wbsuid="${escAttr(wbs.uid)}"
+          data-wbsname="${escAttr(wbs.name)}" data-depth="${wbs.depth || 0}"
+          draggable="true" onclick="onWbsRowClick(event, '${wbs.uid}')">
         <td colspan="20">
-          <span class="sched-wbs-toggle" onclick="toggleWbs('${wbs.uid}')">
+          <span class="sched-wbs-toggle" onclick="toggleWbs('${wbs.uid}');event.stopPropagation();">
             ${indent}<span class="sched-wbs-arrow">▾</span>
             &nbsp;${escHtml(wbs.name)}
             <span class="sched-wbs-code">${escHtml(wbs.code)}</span>
@@ -2377,8 +2430,8 @@ function renderSchedule(data) {
           </span>
           <span class="wbs-tools">
             <input type="checkbox" class="sel-box" title="Select all in this WBS"
-                   onclick="toggleSelWbs('${wbs.uid}', this.checked)">
-            <span class="wbs-add-act" onclick="addActivityDraft('${wbs.uid}', ${escAttrJs(wbs.name)})">&#65291; activity</span>
+                   onclick="toggleSelWbs('${wbs.uid}', this.checked);event.stopPropagation();">
+            <span class="wbs-add-act" onclick="addActivityDraft('${wbs.uid}', ${escAttrJs(wbs.name)});event.stopPropagation();">&#65291; activity</span>
           </span>
         </td>
       </tr>`);
@@ -2392,6 +2445,11 @@ function renderSchedule(data) {
   refreshBulkBar();
   if (_pickState) markPickTargets();   // survive re-renders while picking
   if (_traceState) renderTrace();      // keep the trace filter applied
+  // drop selections for folders that no longer exist, then re-apply highlight
+  [...selectedWbs].forEach(uid => {
+    if(!(data.wbs_sections || []).some(w => w.uid === uid)) selectedWbs.delete(uid);
+  });
+  refreshWbsSelection();
 }
 
 function renderActivityRow(a, wbsUid, hidden) {
@@ -2463,6 +2521,168 @@ function renderActivityRow(a, wbsUid, hidden) {
       <td class="col-constraint" style="font-size:10px;color:var(--text3);">${escHtml(constraintTxt)}</td>
       <td class="col-type" style="font-size:10px;color:var(--text3);">${escHtml(a.activity_type)}</td>
     </tr>`;
+}
+
+// ═══════════════════════════════════════════════════
+//  WBS folders — collapse all, multi-select, drag to re-parent
+// ═══════════════════════════════════════════════════
+const selectedWbs = new Set();     // uids of selected WBS folders
+let _wbsDragUids = null;           // folders currently being dragged
+
+function collapseAllWbs(collapse){
+  (lastSchedData?.wbs_sections || []).forEach(w => {
+    if(collapse) collapsedWbs.add(w.uid); else collapsedWbs.delete(w.uid);
+  });
+  document.querySelectorAll('tr.sched-wbs-row').forEach(hdr => {
+    hdr.classList.toggle('collapsed', !!collapse);
+  });
+  document.querySelectorAll('tr.sched-act-row').forEach(r => {
+    r.style.display = collapse ? 'none' : '';
+  });
+  if(_traceState) renderTrace();
+}
+
+/** Plain click selects one folder; Ctrl/Cmd+click adds to the selection. */
+function onWbsRowClick(e, uid){
+  if(!isEditMode) return;
+  if(_pickState || _tracePicking) return;
+  if(e.target.closest('input,button,.wbs-add-act,.sched-wbs-toggle')) return;
+  if(e.metaKey || e.ctrlKey){
+    if(selectedWbs.has(uid)) selectedWbs.delete(uid); else selectedWbs.add(uid);
+  } else {
+    const only = selectedWbs.size === 1 && selectedWbs.has(uid);
+    selectedWbs.clear();
+    if(!only) selectedWbs.add(uid);
+  }
+  refreshWbsSelection();
+}
+
+function refreshWbsSelection(){
+  document.querySelectorAll('tr.sched-wbs-row').forEach(hdr => {
+    hdr.classList.toggle('wbs-selected', selectedWbs.has(hdr.dataset.wbsuid));
+  });
+  const bar = document.getElementById('wbs-bar');
+  const n = selectedWbs.size;
+  document.getElementById('wbs-count').textContent = `${n} folder${n===1?'':'s'}`;
+  if(bar) bar.classList.toggle('show', isEditMode && n > 0);
+  populateWbsTarget();
+}
+
+function clearWbsSelection(){
+  selectedWbs.clear();
+  refreshWbsSelection();
+}
+
+/** Target list excludes the selected folders and anything beneath them. */
+function populateWbsTarget(){
+  const sel = document.getElementById('wbs-target');
+  if(!sel || !lastSchedData) return;
+  const blocked = descendantsOf(selectedWbs);
+  const prev = sel.value;
+  sel.innerHTML = (lastSchedData.wbs_sections || [])
+    .filter(w => !blocked.has(w.uid))
+    .map(w => `<option value="${escAttr(w.uid)}">${' '.repeat((w.depth||0)*3)}${escHtml(w.name)}</option>`)
+    .join('');
+  if(prev) sel.value = prev;
+}
+
+/** The given folders plus everything nested under them. */
+function descendantsOf(uids){
+  const out = new Set(uids);
+  const secs = lastSchedData?.wbs_sections || [];
+  let grew = true;
+  while(grew){
+    grew = false;
+    for(const w of secs){
+      if(!out.has(w.uid) && w.parent_uid && out.has(w.parent_uid)){ out.add(w.uid); grew = true; }
+    }
+  }
+  return out;
+}
+
+function wbsNameOf(uid){
+  return (lastSchedData?.wbs_sections || []).find(w => w.uid === uid)?.name || null;
+}
+
+/** Move the selected folders under a target (or to the root). */
+async function moveSelectedWbs(toRoot){
+  const uids = [...selectedWbs];
+  if(!uids.length){ flashSched('Select one or more WBS folders first', true); return; }
+  let targetUid = null, targetName = null;
+  if(!toRoot){
+    targetUid = document.getElementById('wbs-target').value;
+    targetName = wbsNameOf(targetUid);
+    if(!targetName){ flashSched('Pick a target folder', true); return; }
+    const blocked = descendantsOf(selectedWbs);
+    if(blocked.has(targetUid)){
+      flashSched('Cannot move a folder into itself or its own sub-folder', true);
+      return;
+    }
+  }
+  await applyWbsMove(uids, targetUid, targetName, toRoot);
+}
+
+async function applyWbsMove(uids, targetUid, targetName, toRoot){
+  const cmds = uids.map(uid => {
+    const c = {action:'move_wbs', wbs_name: wbsNameOf(uid)};
+    if(toRoot) c.to_root = true; else c.parent_name = targetName;
+    return c;
+  }).filter(c => c.wbs_name);
+  if(!cmds.length) return;
+  const label = toRoot
+    ? `Move ${cmds.length} folder${cmds.length===1?'':'s'} to root`
+    : `Move ${cmds.length} folder${cmds.length===1?'':'s'} under ${targetName}`;
+  clearWbsSelection();
+  await directEdit(cmds, label);
+}
+
+// ── Drag and drop ────────────────────────────────────────────────────────────
+function onWbsDragStart(e){
+  const hdr = e.target.closest('tr.sched-wbs-row');
+  if(!hdr || !isEditMode){ e.preventDefault(); return; }
+  const uid = hdr.dataset.wbsuid;
+  // dragging an unselected folder acts on just that one
+  _wbsDragUids = selectedWbs.has(uid) ? [...selectedWbs] : [uid];
+  document.body.classList.add('wbs-dragging');
+  hdr.classList.add('wbs-drag');
+  try { e.dataTransfer.setData('text/plain', uid); e.dataTransfer.effectAllowed = 'move'; } catch(_){}
+}
+
+function onWbsDragOver(e){
+  if(!_wbsDragUids) return;
+  const hdr = e.target.closest('tr.sched-wbs-row');
+  if(!hdr) return;
+  e.preventDefault();
+  const uid = hdr.dataset.wbsuid;
+  const blocked = descendantsOf(new Set(_wbsDragUids));
+  document.querySelectorAll('.wbs-drop-into,.wbs-drop-bad')
+          .forEach(el => el.classList.remove('wbs-drop-into','wbs-drop-bad'));
+  hdr.classList.add(blocked.has(uid) ? 'wbs-drop-bad' : 'wbs-drop-into');
+  e.dataTransfer.dropEffect = blocked.has(uid) ? 'none' : 'move';
+}
+
+async function onWbsDrop(e){
+  if(!_wbsDragUids) return;
+  const hdr = e.target.closest('tr.sched-wbs-row');
+  if(!hdr) return;
+  e.preventDefault();
+  const uid = hdr.dataset.wbsuid;
+  const uids = _wbsDragUids;
+  const blocked = descendantsOf(new Set(uids));
+  endWbsDrag();
+  if(blocked.has(uid)){
+    flashSched('Cannot move a folder into itself or its own sub-folder', true);
+    return;
+  }
+  await applyWbsMove(uids, uid, wbsNameOf(uid), false);
+}
+
+function endWbsDrag(){
+  _wbsDragUids = null;
+  document.body.classList.remove('wbs-dragging');
+  document.querySelectorAll('.wbs-drag,.wbs-drop-into,.wbs-drop-bad')
+          .forEach(el => el.classList.remove('wbs-drag','wbs-drop-into','wbs-drop-bad'));
+  document.getElementById('wbs-root-drop')?.classList.remove('over');
 }
 
 function toggleWbs(uid) {
@@ -3171,6 +3391,26 @@ function bulkDelete(){
     tb.addEventListener('dblclick', onSchedDblClick);
     tb.addEventListener('click', onPickClick, true);   // capture: intercept while picking
     tb.addEventListener('click', onRowShiftClick);     // shift+click = range select
+    // WBS folder drag-and-drop re-parenting
+    tb.addEventListener('dragstart', onWbsDragStart);
+    tb.addEventListener('dragover',  onWbsDragOver);
+    tb.addEventListener('drop',      onWbsDrop);
+    tb.addEventListener('dragend',   endWbsDrag);
+    const rootDrop = document.getElementById('wbs-root-drop');
+    if(rootDrop){
+      rootDrop.addEventListener('dragover', e => {
+        if(!_wbsDragUids) return;
+        e.preventDefault(); rootDrop.classList.add('over');
+      });
+      rootDrop.addEventListener('dragleave', () => rootDrop.classList.remove('over'));
+      rootDrop.addEventListener('drop', async e => {
+        if(!_wbsDragUids) return;
+        e.preventDefault();
+        const uids = _wbsDragUids;
+        endWbsDrag();
+        await applyWbsMove(uids, null, null, true);
+      });
+    }
     // stop the browser from text-selecting rows during a shift+click drag
     tb.addEventListener('mousedown', e => { if(e.shiftKey) e.preventDefault(); });
   }

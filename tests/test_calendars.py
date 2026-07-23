@@ -148,3 +148,64 @@ def test_six_day_export_adds_calendar_and_holidays(tmp_path):
     assert "P6-DAY WITH HOLIDAY" in xml
     assert "<Date>2026-07-03T00:00:00</Date>" in xml      # observed 4 Jul
     assert xml.count("<HolidayOrException>") == len(hols) * 4   # 2 global + 2 project
+
+
+# ── WBS re-parenting (move_wbs) ──────────────────────────────────────────────
+
+def _wbs_project():
+    from engine.schedule_model import Project, WBSNode, Activity, Calendar
+    p = Project(uid="1", name="t", id="T")
+    p.calendars = [Calendar(uid="1", name="S")]
+    p.wbs_nodes = [
+        WBSNode(uid="10", name="Structure", code="STR"),
+        WBSNode(uid="11", name="Level 1", code="L1", parent_uid="10"),
+        WBSNode(uid="12", name="Interiors", code="INT"),
+        WBSNode(uid="13", name="Deep", code="DEEP", parent_uid="11"),
+    ]
+    p.activities = [Activity(uid="100", activity_id="A1000", name="In L1",
+                             wbs_uid="11", calendar_uid="1")]
+    p.build_lookups()
+    return p
+
+
+def _parent_of(p, name):
+    by_uid = {w.uid: w for w in p.wbs_nodes}
+    node = next(w for w in p.wbs_nodes if w.name == name)
+    return by_uid[node.parent_uid].name if node.parent_uid in by_uid else None
+
+
+def test_move_wbs_reparents_and_keeps_contents():
+    from engine.edit_engine import apply_command
+    p = _wbs_project()
+    ok, _ = apply_command(p, {"action": "move_wbs", "wbs_name": "Level 1",
+                              "parent_name": "Interiors"})
+    assert ok
+    assert _parent_of(p, "Level 1") == "Interiors"
+    # activities stay in the folder, and nested folders travel with it
+    assert p.get_activity(activity_id="A1000").wbs_uid == "11"
+    assert _parent_of(p, "Deep") == "Level 1"
+
+
+def test_move_wbs_to_root():
+    from engine.edit_engine import apply_command
+    p = _wbs_project()
+    ok, _ = apply_command(p, {"action": "move_wbs", "wbs_name": "Level 1",
+                              "to_root": True})
+    assert ok and _parent_of(p, "Level 1") is None
+
+
+def test_move_wbs_rejects_moving_into_own_descendant():
+    from engine.edit_engine import apply_command
+    p = _wbs_project()
+    ok, msg = apply_command(p, {"action": "move_wbs", "wbs_name": "Structure",
+                                "parent_name": "Deep"})
+    assert not ok and "underneath" in msg
+    assert _parent_of(p, "Structure") is None      # unchanged
+
+
+def test_move_wbs_rejects_moving_into_itself():
+    from engine.edit_engine import apply_command
+    p = _wbs_project()
+    ok, msg = apply_command(p, {"action": "move_wbs", "wbs_name": "Structure",
+                                "parent_name": "Structure"})
+    assert not ok and "itself" in msg

@@ -171,6 +171,8 @@ def apply_command(project: Project, command: Dict[str, Any]) -> Tuple[bool, str]
             return _rename_wbs(project, command)
         elif action == "add_wbs":
             return _add_wbs(project, command)
+        elif action == "move_wbs":
+            return _move_wbs(project, command)
         elif action == "move_activity_wbs":
             return _move_activity_wbs(project, command)
         elif action == "bulk_rename":
@@ -588,6 +590,51 @@ def _add_wbs(project: Project, cmd: Dict) -> Tuple[bool, str]:
     project.wbs_nodes.append(new_wbs)
     project.build_lookups()
     return True, f"Added WBS node '{code} — {name}'" + (f" under '{parent.name}'" if parent else " at root")
+
+
+def _move_wbs(project: Project, cmd: Dict) -> Tuple[bool, str]:
+    """
+    Re-parent a WBS folder (with everything under it — child folders and their
+    activities move implicitly, since membership is by parent_uid / wbs_uid).
+
+    Pass parent_code/parent_name to nest it, or omit both (or parent_code=None)
+    to move it to the root.
+    """
+    wbs = _find_wbs(project, cmd.get("wbs_code"), cmd.get("wbs_name"))
+    if not wbs:
+        raise EditError(f"WBS node not found: {cmd.get('wbs_code') or cmd.get('wbs_name')}")
+
+    to_root = cmd.get("to_root") or not (cmd.get("parent_code") or cmd.get("parent_name"))
+    parent = None
+    if not to_root:
+        parent = _find_wbs(project, cmd.get("parent_code"), cmd.get("parent_name"))
+        if not parent:
+            raise EditError(f"Target WBS not found: {cmd.get('parent_code') or cmd.get('parent_name')}")
+        if parent.uid == wbs.uid:
+            raise EditError(f"Cannot move '{wbs.name}' into itself")
+        # Walking up from the target must not reach the node being moved,
+        # otherwise the tree would become a cycle and orphan the branch.
+        by_uid = {w.uid: w for w in project.wbs_nodes}
+        seen, cur = set(), parent
+        while cur is not None and cur.uid not in seen:
+            if cur.uid == wbs.uid:
+                raise EditError(
+                    f"Cannot move '{wbs.name}' into '{parent.name}' — "
+                    f"that folder sits underneath it")
+            seen.add(cur.uid)
+            cur = by_uid.get(cur.parent_uid) if cur.parent_uid else None
+
+    new_parent_uid = parent.uid if parent else None
+    if wbs.parent_uid == new_parent_uid:
+        return True, f"WBS '{wbs.name}' is already there"
+
+    siblings = [w for w in project.wbs_nodes
+                if w.parent_uid == new_parent_uid and w.uid != wbs.uid]
+    wbs.parent_uid = new_parent_uid
+    wbs.sequence_num = (max(s.sequence_num for s in siblings) + 10) if siblings else 0
+    project.build_lookups()
+    where = f"under '{parent.name}'" if parent else "to the root"
+    return True, f"Moved WBS '{wbs.name}' {where}"
 
 
 def _move_activity_wbs(project: Project, cmd: Dict) -> Tuple[bool, str]:
