@@ -676,6 +676,35 @@
       border-bottom:1px solid var(--border);
       padding-top:8px;padding-bottom:8px;
     }
+
+    /* ── P6-style depth shading ───────────────────────────────────────────
+       Each WBS level gets a lighter tint plus a left rail, so you can see at a
+       glance what sits under what. Kept low-alpha over the dark surface so the
+       folder text stays full brightness and easy to read. */
+    tr.sched-wbs-row td{
+      box-shadow:inset 3px 0 0 rgba(0,207,255,.55);
+    }
+    tr.sched-wbs-row[data-depth="0"] td{background:rgba(0,207,255,.16);}
+    tr.sched-wbs-row[data-depth="1"] td{
+      background:rgba(0,207,255,.115); box-shadow:inset 3px 0 0 rgba(0,207,255,.42);
+    }
+    tr.sched-wbs-row[data-depth="2"] td{
+      background:rgba(0,207,255,.08);  box-shadow:inset 3px 0 0 rgba(0,207,255,.30);
+    }
+    tr.sched-wbs-row[data-depth="3"] td{
+      background:rgba(0,207,255,.055); box-shadow:inset 3px 0 0 rgba(0,207,255,.22);
+    }
+    tr.sched-wbs-row[data-depth="4"] td{
+      background:rgba(0,207,255,.038); box-shadow:inset 3px 0 0 rgba(0,207,255,.16);
+    }
+    tr.sched-wbs-row[data-depth="5"] td,
+    tr.sched-wbs-row[data-depth="6"] td{
+      background:rgba(0,207,255,.026); box-shadow:inset 3px 0 0 rgba(0,207,255,.12);
+    }
+    /* top level reads as the heading it is; deeper levels step down gently */
+    tr.sched-wbs-row[data-depth="0"] .sched-wbs-toggle{font-size:11px;letter-spacing:.06em;}
+    tr.sched-wbs-row[data-depth="1"] .sched-wbs-toggle{font-size:10.5px;}
+    tr.sched-wbs-row:hover td{filter:brightness(1.18);}
     .sched-wbs-toggle{
       display:inline-flex;align-items:center;gap:7px;
       cursor:pointer;user-select:none;width:auto;
@@ -798,19 +827,19 @@
     /* ── WBS selection + drag/drop re-parenting ──────────────────────── */
     body.edit-on tr.sched-wbs-row{cursor:grab;}
     tr.wbs-selected td{
-      background:rgba(0,207,255,.14) !important;
-      box-shadow:inset 3px 0 0 var(--accent);
+      background:rgba(0,207,255,.26) !important;
+      box-shadow:inset 4px 0 0 var(--accent) !important;
     }
     tr.wbs-selected .sched-wbs-toggle{color:var(--accent);}
     tr.wbs-drag{opacity:.45;}
     /* drop ON a folder = nest inside it */
     tr.wbs-drop-into td{
       background:rgba(34,197,94,.18) !important;
-      box-shadow:inset 0 0 0 2px var(--green);
+      box-shadow:inset 0 0 0 2px var(--green) !important;
     }
     tr.wbs-drop-bad td{
       background:rgba(239,68,68,.16) !important;
-      box-shadow:inset 0 0 0 2px var(--red);
+      box-shadow:inset 0 0 0 2px var(--red) !important;
       cursor:no-drop;
     }
     #wbs-root-drop{
