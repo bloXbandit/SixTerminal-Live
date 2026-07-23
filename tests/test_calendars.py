@@ -209,3 +209,70 @@ def test_move_wbs_rejects_moving_into_itself():
     ok, msg = apply_command(p, {"action": "move_wbs", "wbs_name": "Structure",
                                 "parent_name": "Structure"})
     assert not ok and "itself" in msg
+
+
+# ── WBS hierarchy on import ──────────────────────────────────────────────────
+
+_NESTED_XML = """<?xml version="1.0" encoding="UTF-8"?>
+<APIBusinessObjects xmlns="http://xmlns.oracle.com/Primavera/P6/V23.12/API/BusinessObjects">
+  <Project>
+    <ObjectId>4510</ObjectId><Id>NEST</Id><Name>Nested</Name>
+    <WBSObjectId>1000</WBSObjectId>
+    {WBS}
+    <Activity><ObjectId>5001</ObjectId><Id>A1000</Id><Name>In Sub A</Name>
+      <WBSObjectId>1002</WBSObjectId><PlannedDuration>40</PlannedDuration></Activity>
+  </Project>
+</APIBusinessObjects>"""
+
+_WBS_BLOCKS = """
+    <WBS><ObjectId>1001</ObjectId><Code>P1</Code><Name>Phase 1</Name>
+      <ParentObjectId>1000</ParentObjectId><SequenceNumber>1</SequenceNumber></WBS>
+    <WBS><ObjectId>1002</ObjectId><Code>P1A</Code><Name>Sub A</Name>
+      <ParentObjectId>1001</ParentObjectId><SequenceNumber>1</SequenceNumber></WBS>
+"""
+
+
+def _parents(project):
+    by = {w.uid: w for w in project.wbs_nodes}
+    return {w.name: (by[w.parent_uid].name if w.parent_uid in by else None)
+            for w in project.wbs_nodes}
+
+
+def _load(tmp_path, xml, name):
+    from engine.xml_reader import load_xml
+    p = os.path.join(str(tmp_path), name)
+    open(p, "w").write(xml)
+    return load_xml(p)
+
+
+def test_wbs_nested_inside_project_keeps_hierarchy(tmp_path):
+    proj = _load(tmp_path, _NESTED_XML.replace("{WBS}", _WBS_BLOCKS), "a.xml")
+    assert _parents(proj)["Sub A"] == "Phase 1"
+
+
+def test_wbs_emitted_at_root_level_is_still_read(tmp_path):
+    """Some P6 exports put <WBS> beside <Project>, not inside it."""
+    xml = _NESTED_XML.replace("{WBS}", "")
+    xml = xml.replace("  <Project>", _WBS_BLOCKS + "  <Project>")
+    proj = _load(tmp_path, xml, "b.xml")
+    names = {w.name for w in proj.wbs_nodes}
+    assert {"Phase 1", "Sub A"} <= names, "root-level WBS blocks were dropped"
+    assert _parents(proj)["Sub A"] == "Phase 1"
+
+
+def test_top_level_wbs_attaches_to_project_root(tmp_path):
+    """A nil ParentObjectId means 'directly under the project'."""
+    proj = _load(tmp_path, _NESTED_XML.replace("{WBS}", _WBS_BLOCKS), "c.xml")
+    assert _parents(proj)["Phase 1"] == "Nested"
+
+
+def test_wbs_hierarchy_survives_export_reimport(tmp_path):
+    from engine.xml_writer import write_p6_xml
+    from engine.xml_reader import load_xml
+    proj = _load(tmp_path, _NESTED_XML.replace("{WBS}", _WBS_BLOCKS), "d.xml")
+    out = os.path.join(str(tmp_path), "rt.xml")
+    write_p6_xml(proj, out)
+    again = load_xml(out)
+    p = _parents(again)
+    assert p["Sub A"] == "Phase 1"
+    assert p["Phase 1"] == "Nested"

@@ -218,9 +218,13 @@ def load_xml(path: str) -> Project:
         project.calendars.append(Calendar(uid="1", name="Standard"))
 
     # --- WBS ---
-    # WBS blocks are Project children, not root children.
+    # Most P6 exports nest <WBS> inside <Project>, but some emit them at the
+    # root alongside <Project>. Reading only one location silently dropped every
+    # folder, which then reappeared as flat "Imported WBS <id>" placeholders for
+    # whichever ones activities happened to reference — losing the hierarchy.
     wbs_ids = set()
-    for wbs_el in _children(proj_el, "WBS"):
+    _wbs_elements = list(_children(proj_el, "WBS")) + list(_children(root, "WBS"))
+    for wbs_el in _unique_by_uid(_wbs_elements):
         uid = _text(wbs_el, "ObjectId")
         if not uid:
             continue
@@ -246,6 +250,15 @@ def load_xml(path: str) -> Project:
             sequence_num=0,
         ))
         wbs_ids.add(hidden_project_wbs_uid)
+
+    # Top-level folders that carry no ParentObjectId belong to the project's
+    # root WBS. Without this they come back as siblings of the project node
+    # instead of sitting under it, so one level of hierarchy is lost on every
+    # export -> re-import round trip.
+    if hidden_project_wbs_uid:
+        for w in project.wbs_nodes:
+            if w.uid != hidden_project_wbs_uid and not w.parent_uid:
+                w.parent_uid = hidden_project_wbs_uid
 
     # --- Activities ---
     default_calendar_uid = project.calendars[0].uid if project.calendars else "1"
