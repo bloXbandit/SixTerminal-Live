@@ -1185,6 +1185,19 @@ def _schedule_view_inner():
             "activities": activities_out,
         })
 
+    # Roll activity counts up the tree. A parent folder usually holds no
+    # activities directly — they live in its children — so a bare direct count
+    # reads as "0 act." on a branch containing hundreds. _ordered_wbs puts
+    # parents before children, so summing in reverse accumulates bottom-up.
+    totals = {w["uid"]: len(w["activities"]) for w in wbs_sections}
+    for w in reversed(wbs_sections):
+        parent = w.get("parent_uid")
+        if parent in totals:
+            totals[parent] += totals[w["uid"]]
+    for w in wbs_sections:
+        w["activity_count_direct"] = len(w["activities"])
+        w["activity_count_total"] = totals[w["uid"]]
+
     return jsonify({
         "project_name":   project.name,
         "data_date":      project.data_date,

@@ -1208,6 +1208,10 @@
         <span class="sched-sep"></span>
         <button class="col-toggle" onclick="collapseAllWbs(true)"  title="Collapse every WBS folder">⊟ Collapse all</button>
         <button class="col-toggle" onclick="collapseAllWbs(false)" title="Expand every WBS folder">⊞ Expand all</button>
+        <span class="pick-legend">Level</span>
+        <button class="col-toggle" onclick="collapseToLevel(1)" title="Show top-level folders only">1</button>
+        <button class="col-toggle" onclick="collapseToLevel(2)" title="Show two levels of folders">2</button>
+        <button class="col-toggle" onclick="collapseToLevel(3)" title="Show three levels of folders">3</button>
         <span class="sched-sep"></span>
         <span class="pick-legend">Calendar</span>
         <select id="cal-select" onchange="setCalendar(this.value)"
@@ -2426,7 +2430,9 @@ function renderSchedule(data) {
             ${indent}<span class="sched-wbs-arrow">▾</span>
             &nbsp;${escHtml(wbs.name)}
             <span class="sched-wbs-code">${escHtml(wbs.code)}</span>
-            <span class="sched-wbs-count">${wbs.activities.length} act.</span>
+            <span class="sched-wbs-count"
+                  title="${wbs.activity_count_direct ?? wbs.activities.length} directly in this folder">
+              ${wbs.activity_count_total ?? wbs.activities.length} act.</span>
           </span>
           <span class="wbs-tools">
             <input type="checkbox" class="sel-box" title="Select all in this WBS"
@@ -2440,6 +2446,7 @@ function renderSchedule(data) {
     }
   }
   tbody.innerHTML = rows.join('');
+  applyWbsVisibility();      // one pass drives all collapse state, incl. nesting
   updateColVisibility();
   populateWbsSelects(data);
   refreshBulkBar();
@@ -2533,13 +2540,7 @@ function collapseAllWbs(collapse){
   (lastSchedData?.wbs_sections || []).forEach(w => {
     if(collapse) collapsedWbs.add(w.uid); else collapsedWbs.delete(w.uid);
   });
-  document.querySelectorAll('tr.sched-wbs-row').forEach(hdr => {
-    hdr.classList.toggle('collapsed', !!collapse);
-  });
-  document.querySelectorAll('tr.sched-act-row').forEach(r => {
-    r.style.display = collapse ? 'none' : '';
-  });
-  if(_traceState) renderTrace();
+  applyWbsVisibility();
 }
 
 /** Plain click selects one folder; Ctrl/Cmd+click adds to the selection. */
@@ -2686,18 +2687,54 @@ function endWbsDrag(){
 }
 
 function toggleWbs(uid) {
-  const hdr = document.getElementById('wbs-hdr-' + uid);
-  if (!hdr) return;
-  const isCollapsed = collapsedWbs.has(uid);
-  if (isCollapsed) {
-    collapsedWbs.delete(uid);
-    hdr.classList.remove('collapsed');
-    document.querySelectorAll(`tr.sched-act-row[data-wbs="${uid}"]`).forEach(r => r.style.display = '');
-  } else {
-    collapsedWbs.add(uid);
-    hdr.classList.add('collapsed');
-    document.querySelectorAll(`tr.sched-act-row[data-wbs="${uid}"]`).forEach(r => r.style.display = 'none');
+  if (collapsedWbs.has(uid)) collapsedWbs.delete(uid);
+  else collapsedWbs.add(uid);
+  applyWbsVisibility();
+}
+
+/**
+ * Recompute which rows are visible from the collapse state.
+ *
+ * Collapsing a folder hides its ENTIRE branch — child folders and their
+ * activities — so a collapsed parent shows one line and you unfold it to reveal
+ * the sub-folders. (It used to hide only the folder's own activity rows, which
+ * left nested folders dangling in the open.)
+ */
+function applyWbsVisibility() {
+  const secs = lastSchedData?.wbs_sections || [];
+  const byUid = {};
+  secs.forEach(w => byUid[w.uid] = w);
+
+  // a folder is hidden when ANY ancestor is collapsed
+  const hidden = new Set();
+  for (const w of secs) {
+    let cur = w.parent_uid, guard = 0;
+    while (cur && byUid[cur] && guard++ < 200) {
+      if (collapsedWbs.has(cur)) { hidden.add(w.uid); break; }
+      cur = byUid[cur].parent_uid;
+    }
   }
+
+  document.querySelectorAll('tr.sched-wbs-row').forEach(hdr => {
+    const uid = hdr.dataset.wbsuid;
+    hdr.style.display = hidden.has(uid) ? 'none' : '';
+    hdr.classList.toggle('collapsed', collapsedWbs.has(uid));
+  });
+  // an activity shows only if its folder is visible and not itself collapsed
+  document.querySelectorAll('tr.sched-act-row').forEach(r => {
+    const uid = r.dataset.wbs;
+    r.style.display = (hidden.has(uid) || collapsedWbs.has(uid)) ? 'none' : '';
+  });
+  if (_traceState) renderTrace();
+}
+
+/** Collapse/expand every folder. */
+function collapseToLevel(level) {
+  const secs = lastSchedData?.wbs_sections || [];
+  collapsedWbs.clear();
+  // collapse anything at or deeper than `level` so only levels above stay open
+  secs.forEach(w => { if ((w.depth || 0) >= level) collapsedWbs.add(w.uid); });
+  applyWbsVisibility();
 }
 
 // ═══════════════════════════════════════════════════
