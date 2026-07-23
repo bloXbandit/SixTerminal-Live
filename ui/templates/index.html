@@ -2538,9 +2538,47 @@ async function directEdit(commands, label){
     } else {
       flashSched(label, false);
     }
-    await loadSchedule();
+    // Value-only edit → patch just the changed rows in place. Structural edits
+    // (add/delete/move/id-change) still do a full reload.
+    if(d.success && !d.structural && Array.isArray(d.changed_rows)){
+      patchRows(d.changed_rows);
+    } else {
+      await loadSchedule();
+    }
     return d;
   }catch(e){ flashSched(e.message, true); }
+}
+
+/**
+ * Patch specific activity rows in place without rebuilding the grid.
+ * Updates both the DOM row and its record in lastSchedData so trace/pick/graph
+ * stay correct.
+ */
+function patchRows(rows){
+  if(!rows || !rows.length) return;
+  // index the activity objects currently in lastSchedData by id
+  const dataIndex = {};
+  (lastSchedData?.wbs_sections || []).forEach((w, wi) =>
+    (w.activities || []).forEach((a, ai) => { dataIndex[a.activity_id] = [wi, ai, w.uid]; }));
+
+  for(const row of rows){
+    const ref = dataIndex[row.activity_id];
+    if(ref){
+      const [wi, ai] = ref;
+      lastSchedData.wbs_sections[wi].activities[ai] = row;   // keep data in sync
+    }
+    const tr = rowByActId(row.activity_id);
+    if(!tr) continue;
+    const wbsUid = ref ? ref[2] : tr.dataset.wbs;
+    const hidden = tr.style.display === 'none';
+    const html = renderActivityRow(row, wbsUid, hidden);
+    // swap the row element (outerHTML invalidates tr, but we're done with it)
+    tr.outerHTML = html;
+  }
+  // re-apply any active overlays that depend on row content
+  if(_traceState) renderTrace();
+  if(_pickState)  markPickTargets();
+  refreshBulkBar();
 }
 
 // ── Transient feedback toast ──

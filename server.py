@@ -770,7 +770,15 @@ def direct_edit():
         return jsonify({"error": "commands (a non-empty list) is required"}), 400
 
     project = sess["project"]
+    # Actions that change which rows exist, their identity, or their order.
+    # For these the client does a full grid reload; everything else is a
+    # value-only edit, where we return just the rows that actually changed and
+    # the client patches them in place (avoids re-rendering the whole grid).
+    structural = any((c.get("action") or "").lower() in _STRUCTURAL_ACTIONS
+                     for c in commands)
     try:
+        before = None if structural else _flat_rows(project)
+
         _push_undo(label)
         results = apply_commands(project, commands)
         applied       = list(zip(commands, results))
@@ -789,6 +797,15 @@ def direct_edit():
                                 for c, (ok, msg) in applied],
             })
 
+        changed_rows = None
+        if before is not None and success_count:
+            after = _flat_rows(project)
+            if set(after) != set(before):
+                structural = True                      # row set changed unexpectedly
+            else:
+                changed_rows = [row for aid, row in after.items()
+                                if row != before.get(aid)]
+
         return jsonify({
             "type":             "result",
             "success":          fail_count == 0,
@@ -796,6 +813,8 @@ def direct_edit():
             "commands_failed":  fail_count,
             "results":          [{"action": c.get("action"), "success": ok, "message": msg}
                                  for c, (ok, msg) in applied],
+            "structural":       structural,
+            "changed_rows":     changed_rows,          # None => client full-reloads
             "undo_count":       len(sess["undo_stack"]),
             "redo_count":       len(sess["redo_stack"]),
             "edit_count":       len(sess["edit_history"]),
@@ -961,6 +980,14 @@ def schedule_view():
 
 
 _MILESTONE_TYPES = {"Start Milestone", "Finish Milestone"}
+
+# Edits that add/remove rows, change an activity's id or WBS, or re-key the grid.
+# These force a full client reload; all other edits patch just the changed rows.
+_STRUCTURAL_ACTIONS = {
+    "add_activity", "delete_activity", "bulk_add_activity",
+    "add_wbs", "rename_wbs", "bulk_create_wbs", "move_activity_wbs",
+    "update_activity_id", "bulk_update_activity_id",
+}
 
 
 def _fmt_date(d):
