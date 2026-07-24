@@ -799,6 +799,17 @@
       font-family:inherit;font-size:11px;padding:2px 4px;outline:none;
     }
     .cell-input.mono{font-family:var(--mono);}
+    /* a pinned date is held against the scheduler by a constraint */
+    .date-pin{margin-left:4px;font-size:8px;opacity:.85;}
+    .constraint-pop{
+      position:absolute;z-index:70;background:var(--panel,#111820);
+      border:1px solid var(--orange);border-radius:6px;padding:8px;
+      display:flex;gap:6px;align-items:center;box-shadow:0 8px 24px rgba(0,0,0,.55);
+    }
+    .constraint-pop select,.constraint-pop input{
+      background:var(--panel2,#0d1117);color:var(--text);
+      border:1px solid var(--border2);border-radius:4px;font-size:11px;padding:3px 6px;outline:none;
+    }
     /* Row / link edit-mode controls */
     .row-add-link, .link-chip .chip-x{
       display:none;
@@ -1256,7 +1267,7 @@
         <button class="col-toggle"     data-col="earlyfinish" onclick="toggleCol('earlyfinish')">Early Finish</button>
         <button class="col-toggle"     data-col="latestart"  onclick="toggleCol('latestart')">Late Start</button>
         <button class="col-toggle"     data-col="latefinish"  onclick="toggleCol('latefinish')">Late Finish</button>
-        <button class="col-toggle"     data-col="constraint" onclick="toggleCol('constraint')">Constraint</button>
+        <button class="col-toggle on"  data-col="constraint" onclick="toggleCol('constraint')">Constraint</button>
         <button class="col-toggle"     data-col="type"       onclick="toggleCol('type')">Activity Type</button>
         <span class="edit-hint">Double-click a cell to edit · ✕ on a link to remove it</span>
         <button class="btn btn-ghost btn-sm sched-refresh" onclick="loadSchedule()">↺ Refresh</button>
@@ -2147,6 +2158,7 @@ function resetEditState() {
   if (typeof closeLinkEditor === 'function') closeLinkEditor();
   if (typeof cancelPick === 'function') cancelPick();
   if (typeof clearTrace === 'function') clearTrace();
+  if (typeof closeConstraintEditor === 'function') closeConstraintEditor();
   if (typeof selectedWbs !== 'undefined') { selectedWbs.clear(); endWbsDrag(); }
   document.getElementById('wbs-bar')?.classList.remove('show');
   const bar = document.getElementById('bulk-bar');
@@ -2400,7 +2412,7 @@ const SCHED_COLS = {
   earlyfinish: false,
   latestart:   false,
   latefinish:  false,
-  constraint:  false,
+  constraint:  true,     // shown by default so pinned dates are visible
   type:        false,
 };
 // Track collapsed WBS sections
@@ -2525,8 +2537,12 @@ function renderActivityRow(a, wbsUid, hidden) {
   if (isCritical) nameBadges += '<span class="crit-badge">CRIT</span>';
   if (isLP && !isCritical) nameBadges += '<span class="lp-badge">LP</span>';
 
-  // Constraint
-  const constraintTxt = a.constraint_type ? `${a.constraint_type}${a.constraint_date ? ' · ' + a.constraint_date : ''}` : '—';
+  // Constraint — a pin marks a date that is held against the scheduler
+  const ct = a.constraint_type || '';
+  const constraintTxt = ct ? `${ct}${a.constraint_date ? ' · ' + fmtDate(a.constraint_date) : ''}` : '—';
+  const pin = `<span class="date-pin" title="${escAttr(constraintTxt)}">📌</span>`;
+  const pinStart  = /start/i.test(ct)  ? pin : '';
+  const pinFinish = /finish/i.test(ct) ? pin : '';
 
   const rowClass = [
     'sched-act-row',
@@ -2543,8 +2559,12 @@ function renderActivityRow(a, wbsUid, hidden) {
       <td class="editable" data-actid="${escAttr(aid)}" data-edit="id"><span class="sched-id">${escHtml(a.activity_id)}</span></td>
       <td class="editable" data-actid="${escAttr(aid)}" data-edit="name"><span class="sched-name" title="${escAttr(a.name)}">${escHtml(a.name)}</span>${nameBadges}</td>
       <td class="sched-dur${durEditable}" data-actid="${escAttr(aid)}" data-edit="duration" data-val="${a.duration_days}">${dur}</td>
-      <td class="sched-date">${fmtDate(a.planned_start)}</td>
-      <td class="sched-date">${fmtDate(a.planned_finish)}</td>
+      <td class="sched-date editable" data-actid="${escAttr(aid)}" data-edit="start"
+          data-val="${escAttr(a.actual_start || a.planned_start || '')}"
+          title="Set a start date — pins it with a Start On constraint so it survives Schedule">${fmtDate(a.planned_start)}${pinStart}</td>
+      <td class="sched-date editable" data-actid="${escAttr(aid)}" data-edit="finish"
+          data-val="${escAttr(a.actual_finish || a.planned_finish || '')}"
+          title="Set a finish date — pins it with a Finish On constraint">${fmtDate(a.planned_finish)}${pinFinish}</td>
       <td class="sched-date col-earlystart">${fmtDate(a.early_start)}</td>
       <td class="sched-date col-earlyfinish">${fmtDate(a.early_finish)}</td>
       <td class="sched-date col-latestart">${fmtDate(a.late_start)}</td>
@@ -2554,7 +2574,10 @@ function renderActivityRow(a, wbsUid, hidden) {
       <td class="col-status"><span class="sched-status ${stCls}">${escHtml(a.status)}</span></td>
       <td class="col-pct" style="text-align:right;font-family:var(--mono);font-size:10px;">${a.percent_complete > 0 ? a.percent_complete + '%' : '—'}</td>
       <td class="col-float">${floatHtml}</td>
-      <td class="col-constraint" style="font-size:10px;color:var(--text3);">${escHtml(constraintTxt)}</td>
+      <td class="col-constraint editable" data-actid="${escAttr(aid)}" data-edit="constraint"
+          data-val="${escAttr(ct)}" data-cdate="${escAttr(a.constraint_date || '')}"
+          style="font-size:10px;color:${ct ? 'var(--orange)' : 'var(--text3)'};"
+          title="Double-click to set or clear a constraint">${escHtml(constraintTxt)}</td>
       <td class="col-type" style="font-size:10px;color:var(--text3);">${escHtml(a.activity_type)}</td>
     </tr>`;
 }
@@ -2954,6 +2977,13 @@ function selectRange(fromId, toId){
 function beginCellEdit(td){
   const field = td.dataset.edit;
   const actId = td.dataset.actid;
+
+  // Constraints get their own picker (type + date), not a plain text box.
+  if(field === 'constraint'){ openConstraintEditor(td, actId); return; }
+
+  // Dates use a native date picker.
+  if(field === 'start' || field === 'finish'){ beginDateEdit(td, actId, field); return; }
+
   let orig;
   if(field === 'duration') orig = td.dataset.val;
   else if(field === 'id')  orig = actId;
@@ -2991,6 +3021,103 @@ function commitCellEdit(actId, field, raw, orig){
     label = `${actId} duration → ${n}d`;
   }
   if(cmd) directEdit([cmd], label); else loadSchedule();
+}
+
+// ── Dates and constraints ────────────────────────────────────────────────────
+// The grid's Start/Finish are CPM *outputs*, so simply overwriting one would be
+// undone by the next Schedule run. Setting a date therefore pins it with a
+// Start On / Finish On constraint — which is what makes it stick.
+
+function beginDateEdit(td, actId, field){
+  const orig = td.dataset.val || '';
+  const input = document.createElement('input');
+  input.type = 'date';
+  input.className = 'cell-input mono';
+  if(orig) input.value = orig.slice(0,10);
+  td.innerHTML = ''; td.appendChild(input);
+  input.focus();
+  if(input.showPicker) { try { input.showPicker(); } catch(_){} }
+
+  let done = false;
+  const commit = () => {
+    if(done) return; done = true;
+    const val = (input.value || '').trim();
+    if(val === (orig || '').slice(0,10)){ loadSchedule(); return; }
+    if(!val){                                   // cleared → drop the constraint
+      directEdit([{action:'clear_constraint', activity_id:actId}],
+                 `Clear date constraint on ${actId}`);
+      return;
+    }
+    const type = field === 'start' ? 'Start On' : 'Finish On';
+    directEdit([{action:'set_constraint', activity_id:actId,
+                 constraint_type:type, constraint_date:val}],
+               `${actId} ${field} pinned to ${val}`);
+  };
+  input.addEventListener('keydown', ev => {
+    if(ev.key === 'Enter'){ ev.preventDefault(); commit(); }
+    else if(ev.key === 'Escape'){ ev.preventDefault(); done = true; loadSchedule(); }
+  });
+  input.addEventListener('blur', commit);
+}
+
+const CONSTRAINT_TYPES = [
+  'Start On', 'Start On Or After', 'Start On Or Before',
+  'Finish On', 'Finish On Or Before', 'Finish On Or After',
+  'Must Start On', 'Must Finish On',
+];
+
+function openConstraintEditor(td, actId){
+  closeConstraintEditor();
+  const curType = td.dataset.val || '';
+  const curDate = (td.dataset.cdate || '').slice(0,10);
+  const pop = document.createElement('div');
+  pop.id = 'constraint-pop';
+  pop.className = 'constraint-pop';
+  pop.innerHTML =
+    `<select id="cp-type">
+       <option value="">— none —</option>
+       ${CONSTRAINT_TYPES.map(t => `<option value="${escAttr(t)}"${t===curType?' selected':''}>${escHtml(t)}</option>`).join('')}
+     </select>
+     <input id="cp-date" type="date" value="${escAttr(curDate)}">
+     <button class="mini-btn ok" id="cp-ok">Apply</button>
+     <button class="mini-btn no" id="cp-clear">Clear</button>`;
+  document.body.appendChild(pop);
+  const r = td.getBoundingClientRect();
+  pop.style.top  = (window.scrollY + r.bottom + 4) + 'px';
+  pop.style.left = (window.scrollX + Math.max(8, Math.min(r.left, window.innerWidth - 420))) + 'px';
+
+  const apply = () => {
+    const type = pop.querySelector('#cp-type').value;
+    const date = pop.querySelector('#cp-date').value;
+    closeConstraintEditor();
+    if(!type){
+      directEdit([{action:'clear_constraint', activity_id:actId}], `Clear constraint on ${actId}`);
+      return;
+    }
+    if(!date){ flashSched('Pick a constraint date', true); return; }
+    directEdit([{action:'set_constraint', activity_id:actId,
+                 constraint_type:type, constraint_date:date}],
+               `${actId}: ${type} ${date}`);
+  };
+  pop.querySelector('#cp-ok').addEventListener('click', apply);
+  pop.querySelector('#cp-clear').addEventListener('click', () => {
+    closeConstraintEditor();
+    directEdit([{action:'clear_constraint', activity_id:actId}], `Clear constraint on ${actId}`);
+  });
+  pop.addEventListener('keydown', ev => {
+    if(ev.key === 'Enter'){ ev.preventDefault(); apply(); }
+    else if(ev.key === 'Escape'){ closeConstraintEditor(); }
+  });
+  setTimeout(() => document.addEventListener('mousedown', outsideConstraintClose), 0);
+}
+function outsideConstraintClose(e){
+  const p = document.getElementById('constraint-pop');
+  if(p && !p.contains(e.target)) closeConstraintEditor();
+}
+function closeConstraintEditor(){
+  const p = document.getElementById('constraint-pop');
+  if(p) p.remove();
+  document.removeEventListener('mousedown', outsideConstraintClose);
 }
 
 // ── Relationships ──
