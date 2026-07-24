@@ -806,6 +806,17 @@
       border:1px solid var(--orange);border-radius:6px;padding:8px;
       display:flex;gap:6px;align-items:center;box-shadow:0 8px 24px rgba(0,0,0,.55);
     }
+    .ctx-menu{
+      position:absolute;z-index:90;min-width:210px;
+      background:var(--panel,#111820);border:1px solid var(--border2);
+      border-radius:6px;padding:4px;box-shadow:0 10px 30px rgba(0,0,0,.6);
+    }
+    .ctx-item{
+      padding:6px 10px;font-size:11px;color:var(--text2);
+      border-radius:4px;cursor:pointer;white-space:nowrap;
+    }
+    .ctx-item:hover{background:var(--accent-glow);color:var(--accent);}
+    body.edit-on .link-chip{cursor:pointer;}
     .constraint-pop select,.constraint-pop input{
       background:var(--panel2,#0d1117);color:var(--text);
       border:1px solid var(--border2);border-radius:4px;font-size:11px;padding:3px 6px;outline:none;
@@ -1269,7 +1280,11 @@
         <button class="col-toggle"     data-col="latefinish"  onclick="toggleCol('latefinish')">Late Finish</button>
         <button class="col-toggle on"  data-col="constraint" onclick="toggleCol('constraint')">Constraint</button>
         <button class="col-toggle"     data-col="type"       onclick="toggleCol('type')">Activity Type</button>
-        <span class="edit-hint">Double-click a cell to edit · ✕ on a link to remove it</span>
+        <input id="sched-find" type="search" placeholder="Find ID or name…  (Ctrl+F)"
+               oninput="applyFind(this.value)"
+               style="width:190px;background:var(--panel2,#0d1117);color:var(--text);border:1px solid var(--border2);border-radius:4px;font-size:11px;padding:3px 8px;outline:none;">
+        <span id="find-count" class="pick-legend"></span>
+        <span class="edit-hint">Double-click a cell to edit · Tab/Enter to move · ✕ on a link to remove</span>
         <button class="btn btn-ghost btn-sm sched-refresh" onclick="loadSchedule()">↺ Refresh</button>
       </div>
 
@@ -1376,6 +1391,10 @@
         <select id="wbs-target" style="width:220px;"></select>
         <button class="mini-btn" onclick="moveSelectedWbs()">Move</button>
         <button class="mini-btn" onclick="moveSelectedWbs(true)">Move to root</button>
+        <span class="sched-sep"></span>
+        <button class="mini-btn" onclick="duplicateSelectedWbs()"
+                title="Copy the folder, its sub-folders, activities and their internal logic">⧉ Duplicate</button>
+        <input id="wbs-dup-count" type="number" min="1" max="50" value="1" style="width:52px;" title="How many copies">
         <span class="pick-legend" style="margin-left:auto;">
           Ctrl/Cmd+click folders to multi-select · or drag a folder onto another
         </span>
@@ -1394,6 +1413,9 @@
         <span style="font-size:11px;color:var(--text3);">WBS</span>
         <select id="bulk-wbs" style="width:180px;"></select>
         <button class="mini-btn" onclick="bulkMove()">Move</button>
+        <button class="mini-btn" onclick="bulkLinkSequence()" title="Chain the selected activities FS in row order">⛓ Link in sequence</button>
+        <button class="mini-btn" onclick="bulkFillDown()" title="Copy the first selected row's duration to the rest">⇊ Fill down</button>
+        <span class="sched-sep"></span>
         <button class="mini-btn" onclick="bulkCopy()">Copy</button>
         <button class="mini-btn" id="bulk-paste-btn" onclick="bulkPaste()" disabled>Paste →</button>
         <span class="sched-sep"></span>
@@ -2516,11 +2538,12 @@ function renderActivityRow(a, wbsUid, hidden) {
   const predChips = (a.predecessors || []).map(p => {
     const lag = p.lag ? (p.lag > 0 ? `+${Math.round(p.lag/8)}d` : `${Math.round(p.lag/8)}d`) : '';
     const abbr = relAbbr(p.type);
-    return `<span class="link-chip">${escHtml(p.activity_id)} ${abbr}${lag}<span class="chip-x" onclick="deleteLink(${escAttrJs(p.activity_id)}, ${escAttrJs(aid)})">&times;</span></span>`;
+    return `<span class="link-chip" onclick="editLink(event, ${escAttrJs(p.activity_id)}, ${escAttrJs(aid)})" title="Click to change type or lag">${escHtml(p.activity_id)} ${abbr}${lag}<span class="chip-x" onclick="deleteLink(${escAttrJs(p.activity_id)}, ${escAttrJs(aid)});event.stopPropagation();">&times;</span></span>`;
   }).join('');
   const succChips = (a.successors || []).map(s => {
     const abbr = relAbbr(s.type);
-    return `<span class="link-chip">${escHtml(s.activity_id)} ${abbr}<span class="chip-x" onclick="deleteLink(${escAttrJs(aid)}, ${escAttrJs(s.activity_id)})">&times;</span></span>`;
+    const slag = s.lag ? (s.lag > 0 ? `+${Math.round(s.lag/8)}d` : `${Math.round(s.lag/8)}d`) : '';
+    return `<span class="link-chip" onclick="editLink(event, ${escAttrJs(aid)}, ${escAttrJs(s.activity_id)})" title="Click to change type or lag">${escHtml(s.activity_id)} ${abbr}${slag}<span class="chip-x" onclick="deleteLink(${escAttrJs(aid)}, ${escAttrJs(s.activity_id)});event.stopPropagation();">&times;</span></span>`;
   }).join('');
   const predAdd = `<span class="row-add-link" title="Add predecessor" onclick="addLink(${escAttrJs(aid)}, 'pred')">+</span>`;
   const succAdd = `<span class="row-add-link" title="Add successor" onclick="addLink(${escAttrJs(aid)}, 'succ')">+</span>`;
@@ -2572,13 +2595,19 @@ function renderActivityRow(a, wbsUid, hidden) {
       <td class="sched-links">${predChips || (isEditMode ? '' : '<span style="color:var(--text3)">—</span>')}${predAdd}</td>
       <td class="sched-links">${succChips || (isEditMode ? '' : '<span style="color:var(--text3)">—</span>')}${succAdd}</td>
       <td class="col-status"><span class="sched-status ${stCls}">${escHtml(a.status)}</span></td>
-      <td class="col-pct" style="text-align:right;font-family:var(--mono);font-size:10px;">${a.percent_complete > 0 ? a.percent_complete + '%' : '—'}</td>
+      <td class="col-pct editable" data-actid="${escAttr(aid)}" data-edit="pct"
+          data-val="${a.percent_complete || 0}"
+          style="text-align:right;font-family:var(--mono);font-size:10px;"
+          title="Double-click to set % complete">${a.percent_complete > 0 ? a.percent_complete + '%' : '—'}</td>
       <td class="col-float">${floatHtml}</td>
       <td class="col-constraint editable" data-actid="${escAttr(aid)}" data-edit="constraint"
           data-val="${escAttr(ct)}" data-cdate="${escAttr(a.constraint_date || '')}"
           style="font-size:10px;color:${ct ? 'var(--orange)' : 'var(--text3)'};"
           title="Double-click to set or clear a constraint">${escHtml(constraintTxt)}</td>
-      <td class="col-type" style="font-size:10px;color:var(--text3);">${escHtml(a.activity_type)}</td>
+      <td class="col-type editable" data-actid="${escAttr(aid)}" data-edit="type"
+          data-val="${escAttr(a.activity_type)}"
+          style="font-size:10px;color:var(--text3);"
+          title="Double-click to change activity type">${escHtml(a.activity_type)}</td>
     </tr>`;
 }
 
@@ -2675,6 +2704,19 @@ async function moveSelectedWbs(toRoot){
   await applyWbsMove(uids, targetUid, targetName, toRoot);
 }
 
+/** Copy each selected folder (sub-folders, activities and internal logic). */
+async function duplicateSelectedWbs(){
+  const uids = [...selectedWbs];
+  if(!uids.length){ flashSched('Select a WBS folder to duplicate', true); return; }
+  const count = Math.max(1, Math.min(50, parseInt(document.getElementById('wbs-dup-count').value, 10) || 1));
+  const cmds = uids.map(uid => ({action:'duplicate_wbs', wbs_name: wbsNameOf(uid), count}))
+                   .filter(c => c.wbs_name);
+  if(!cmds.length) return;
+  clearWbsSelection();
+  await directEdit(cmds, `Duplicate ${cmds.length} folder${cmds.length===1?'':'s'}`
+                         + (count > 1 ? ` ×${count}` : ''));
+}
+
 async function applyWbsMove(uids, targetUid, targetName, toRoot){
   const cmds = uids.map(uid => {
     const c = {action:'move_wbs', wbs_name: wbsNameOf(uid)};
@@ -2744,6 +2786,22 @@ function toggleWbs(uid) {
   applyWbsVisibility();
 }
 
+// ── Find / filter ────────────────────────────────────────────────────────────
+let _findTerm = '';
+
+function applyFind(term){
+  _findTerm = (term || '').trim().toLowerCase();
+  applyWbsVisibility();
+}
+
+/** True when a row is filtered out by the current find term. */
+function findHides(tr){
+  if(!_findTerm) return false;
+  const id   = (tr.dataset.actid || '').toLowerCase();
+  const name = (tr.querySelector('.sched-name')?.textContent || '').toLowerCase();
+  return !(id.includes(_findTerm) || name.includes(_findTerm));
+}
+
 /**
  * Recompute which rows are visible from the collapse state.
  *
@@ -2767,16 +2825,34 @@ function applyWbsVisibility() {
     }
   }
 
-  document.querySelectorAll('tr.sched-wbs-row').forEach(hdr => {
-    const uid = hdr.dataset.wbsuid;
-    hdr.style.display = hidden.has(uid) ? 'none' : '';
-    hdr.classList.toggle('collapsed', collapsedWbs.has(uid));
-  });
-  // an activity shows only if its folder is visible and not itself collapsed
+  // an activity shows only if its folder is visible, not collapsed, and it
+  // survives the find filter
+  const matchedWbs = new Set();
+  let shown = 0;
   document.querySelectorAll('tr.sched-act-row').forEach(r => {
     const uid = r.dataset.wbs;
-    r.style.display = (hidden.has(uid) || collapsedWbs.has(uid)) ? 'none' : '';
+    const filtered = findHides(r);
+    const vis = !hidden.has(uid) && !(collapsedWbs.has(uid) && !_findTerm) && !filtered;
+    r.style.display = vis ? '' : 'none';
+    if (vis) { shown++; matchedWbs.add(uid); }
   });
+  // while filtering, keep any folder that still contains a match (and its
+  // ancestors) so results stay in context
+  if (_findTerm) {
+    for (const uid of [...matchedWbs]) {
+      let cur = byUid[uid];
+      while (cur) { matchedWbs.add(cur.uid); cur = byUid[cur.parent_uid]; }
+    }
+  }
+  document.querySelectorAll('tr.sched-wbs-row').forEach(hdr => {
+    const uid = hdr.dataset.wbsuid;
+    const hide = hidden.has(uid) || (_findTerm && !matchedWbs.has(uid));
+    hdr.style.display = hide ? 'none' : '';
+    hdr.classList.toggle('collapsed', collapsedWbs.has(uid) && !_findTerm);
+  });
+
+  const fc = document.getElementById('find-count');
+  if (fc) fc.textContent = _findTerm ? `${shown} match${shown === 1 ? '' : 'es'}` : '';
   if (_traceState) renderTrace();
 }
 
@@ -2984,43 +3060,185 @@ function beginCellEdit(td){
   // Dates use a native date picker.
   if(field === 'start' || field === 'finish'){ beginDateEdit(td, actId, field); return; }
 
+  // Activity type is a fixed list → dropdown.
+  if(field === 'type'){ beginSelectEdit(td, actId); return; }
+
   let orig;
-  if(field === 'duration') orig = td.dataset.val;
+  if(field === 'duration' || field === 'pct') orig = td.dataset.val;
   else if(field === 'id')  orig = actId;
   else { const s = td.querySelector('.sched-name'); orig = s ? s.textContent : td.textContent.trim(); }
+
+  const restoreHTML = td.innerHTML;
   const input = document.createElement('input');
   input.className = 'cell-input' + (field !== 'name' ? ' mono' : '');
   input.value = orig;
   if(field === 'duration'){ input.type = 'number'; input.min = '0'; input.step = '1'; }
+  if(field === 'pct'){ input.type = 'number'; input.min = '0'; input.max = '100'; input.step = '5'; }
   td.innerHTML = ''; td.appendChild(input); input.focus(); input.select();
+
   let done = false;
-  const commit = () => { if(done) return; done = true; commitCellEdit(actId, field, input.value, orig); };
-  const cancel = () => { if(done) return; done = true; loadSchedule(); };
-  input.addEventListener('keydown', ev => {
-    if(ev.key === 'Enter'){ ev.preventDefault(); commit(); }
-    else if(ev.key === 'Escape'){ ev.preventDefault(); cancel(); }
-  });
-  input.addEventListener('blur', commit);
+  const finish = async (opts, cmd, label) => {
+    done = true;
+    if(cmd) await directEdit([cmd], label);
+    else td.innerHTML = restoreHTML;          // unchanged — no round trip
+    if(opts && opts.then){
+      const fresh = findCell(actId, field);
+      if(fresh) opts.then(fresh);
+    }
+  };
+  const commit = (opts) => {
+    if(done) return;
+    const val = (input.value || '').trim();
+    const built = buildCellCommand(actId, field, val, orig);
+    if(built === false){ finish(opts, null); return; }      // invalid or unchanged
+    finish(opts, built.cmd, built.label);
+  };
+  const cancel = () => { if(done) return; done = true; td.innerHTML = restoreHTML; };
+  wireCellKeys(input, td, commit, cancel);
+  input.addEventListener('blur', () => commit());
 }
-function commitCellEdit(actId, field, raw, orig){
-  const val = (raw || '').trim();
-  if(val === String(orig).trim()){ loadSchedule(); return; }   // no change
-  let cmd = null, label = '';
-  if(field === 'name'){
-    if(!val){ loadSchedule(); return; }
-    cmd = {action:'rename_activity', activity_id:actId, new_name:val};
-    label = `Rename ${actId} → ${val}`;
-  } else if(field === 'id'){
-    if(!val){ loadSchedule(); return; }
-    cmd = {action:'update_activity_id', activity_id:actId, new_activity_id:val};
-    label = `ID ${actId} → ${val}`;
-  } else if(field === 'duration'){
+
+/** Locate a cell again after the row has been patched/re-rendered. */
+function findCell(actId, field){
+  return [...document.querySelectorAll(`td.editable[data-edit="${field}"]`)]
+    .find(td => td.dataset.actid === actId) || null;
+}
+
+const ACTIVITY_TYPES = ['Task Dependent', 'Resource Dependent', 'Level of Effort',
+                        'Start Milestone', 'Finish Milestone', 'WBS Summary'];
+
+/** Dropdown editor for activity type. */
+function beginSelectEdit(td, actId){
+  const orig = td.dataset.val || 'Task Dependent';
+  const restoreHTML = td.innerHTML;
+  const sel = document.createElement('select');
+  sel.className = 'cell-input';
+  sel.innerHTML = ACTIVITY_TYPES.map(t =>
+    `<option value="${escAttr(t)}"${t === orig ? ' selected' : ''}>${escHtml(t)}</option>`).join('');
+  td.innerHTML = ''; td.appendChild(sel); sel.focus();
+
+  let done = false;
+  const finish = async (opts, cmd, label) => {
+    done = true;
+    if(cmd) await directEdit([cmd], label);
+    else td.innerHTML = restoreHTML;
+    if(opts && opts.then){ const f = findCell(actId, 'type'); if(f) opts.then(f); }
+  };
+  const commit = (opts) => {
+    if(done) return;
+    if(sel.value === orig){ finish(opts, null); return; }
+    finish(opts, {action:'update_activity_type', activity_id:actId, activity_type:sel.value},
+           `${actId} → ${sel.value}`);
+  };
+  const cancel = () => { if(done) return; done = true; td.innerHTML = restoreHTML; };
+  wireCellKeys(sel, td, commit, cancel);
+  sel.addEventListener('change', () => commit());
+  sel.addEventListener('blur', () => commit());
+}
+
+/** Turn a raw cell value into an edit command, or false if there's nothing to do. */
+function buildCellCommand(actId, field, val, orig){
+  if(val === String(orig).trim()) return false;
+  if(field === 'pct'){
     const n = parseFloat(val);
-    if(isNaN(n) || n < 0){ flashSched('Invalid duration', true); loadSchedule(); return; }
-    cmd = {action:'update_duration', activity_id:actId, new_duration_days:n};
-    label = `${actId} duration → ${n}d`;
+    if(isNaN(n) || n < 0 || n > 100){ flashSched('Enter 0–100', true); return false; }
+    return {cmd:{action:'update_progress', activity_id:actId, percent_complete:n},
+            label:`${actId} → ${n}% complete`};
   }
-  if(cmd) directEdit([cmd], label); else loadSchedule();
+  if(field === 'name'){
+    if(!val) return false;
+    return {cmd:{action:'rename_activity', activity_id:actId, new_name:val},
+            label:`Rename ${actId} → ${val}`};
+  }
+  if(field === 'id'){
+    if(!val) return false;
+    return {cmd:{action:'update_activity_id', activity_id:actId, new_activity_id:val},
+            label:`ID ${actId} → ${val}`};
+  }
+  if(field === 'duration'){
+    const n = parseFloat(val);
+    if(isNaN(n) || n < 0){ flashSched('Invalid duration', true); return false; }
+    return {cmd:{action:'update_duration', activity_id:actId, new_duration_days:n},
+            label:`${actId} duration → ${n}d`};
+  }
+  return false;
+}
+
+// ═══════════════════════════════════════════════════
+//  Keyboard-first entry — Tab/Enter/arrows move the active cell
+// ═══════════════════════════════════════════════════
+const EDIT_FIELD_ORDER = ['id', 'name', 'duration', 'start', 'finish', 'pct', 'constraint', 'type'];
+
+/** Editable cells of a row, in visual order, skipping hidden columns. */
+function editableCellsOf(tr){
+  if(!tr) return [];
+  return EDIT_FIELD_ORDER
+    .map(f => tr.querySelector(`td.editable[data-edit="${f}"]`))
+    .filter(td => td && td.offsetParent !== null);
+}
+
+function visibleActRows(){
+  return [...document.querySelectorAll('tr.sched-act-row')]
+    .filter(r => r.style.display !== 'none' && !r.classList.contains('trace-hidden'));
+}
+
+/**
+ * Move the editor from `td` by (dRow, dCol) and open it there.
+ * Stepping past the last row of a WBS creates a new activity in that folder,
+ * so you can keep typing without reaching for the mouse.
+ */
+function moveEdit(td, dRow, dCol, opts={}){
+  const tr = td.closest('tr');
+  const cells = editableCellsOf(tr);
+  let idx = cells.indexOf(td);
+  if(idx === -1) idx = 0;
+
+  if(dCol){
+    const next = idx + dCol;
+    if(next >= 0 && next < cells.length){ beginCellEdit(cells[next]); return; }
+    // ran off the row — wrap to the next/previous row
+    dRow = dCol > 0 ? 1 : -1;
+    idx = dCol > 0 ? 0 : 99;
+  }
+
+  if(dRow){
+    const rows = visibleActRows();
+    const rIdx = rows.indexOf(tr);
+    const target = rows[rIdx + dRow];
+    if(target){
+      const tCells = editableCellsOf(target);
+      const pick = tCells[Math.min(idx, tCells.length - 1)] || tCells[0];
+      if(pick) beginCellEdit(pick);
+      return;
+    }
+    // past the end: start a new activity in this row's WBS
+    if(dRow > 0 && opts.createAtEnd !== false){
+      const wbsUid = tr.dataset.wbs;
+      const name = (lastSchedData?.wbs_sections || []).find(w => w.uid === wbsUid)?.name;
+      if(name) quickAddActivity(wbsUid, name);
+    }
+  }
+}
+
+/** Shared key handling for any inline editor input. */
+function wireCellKeys(input, td, commit, cancel){
+  input.addEventListener('keydown', ev => {
+    if(ev.key === 'Enter'){
+      ev.preventDefault();
+      commit({then: (t) => moveEdit(t, 1, 0)});
+    } else if(ev.key === 'Tab'){
+      ev.preventDefault();
+      commit({then: (t) => moveEdit(t, 0, ev.shiftKey ? -1 : 1)});
+    } else if(ev.key === 'Escape'){
+      ev.preventDefault(); cancel();
+    } else if((ev.key === 'ArrowDown' || ev.key === 'ArrowUp') && !ev.altKey){
+      // arrows navigate rows unless the user is mid-selection in a text box
+      if(input.type === 'date' || input.selectionStart === input.selectionEnd){
+        ev.preventDefault();
+        commit({then: (t) => moveEdit(t, ev.key === 'ArrowDown' ? 1 : -1, 0)});
+      }
+    }
+  });
 }
 
 // ── Dates and constraints ────────────────────────────────────────────────────
@@ -3029,35 +3247,42 @@ function commitCellEdit(actId, field, raw, orig){
 // Start On / Finish On constraint — which is what makes it stick.
 
 function beginDateEdit(td, actId, field){
-  const orig = td.dataset.val || '';
+  const orig = (td.dataset.val || '').slice(0,10);
+  const restoreHTML = td.innerHTML;
   const input = document.createElement('input');
   input.type = 'date';
   input.className = 'cell-input mono';
-  if(orig) input.value = orig.slice(0,10);
+  if(orig) input.value = orig;
   td.innerHTML = ''; td.appendChild(input);
   input.focus();
-  if(input.showPicker) { try { input.showPicker(); } catch(_){} }
 
   let done = false;
-  const commit = () => {
-    if(done) return; done = true;
+  const finish = async (opts, cmd, label) => {
+    done = true;
+    if(cmd) await directEdit([cmd], label);
+    else td.innerHTML = restoreHTML;
+    if(opts && opts.then){
+      const fresh = findCell(actId, field);
+      if(fresh) opts.then(fresh);
+    }
+  };
+  const commit = (opts) => {
+    if(done) return;
     const val = (input.value || '').trim();
-    if(val === (orig || '').slice(0,10)){ loadSchedule(); return; }
+    if(val === orig){ finish(opts, null); return; }
     if(!val){                                   // cleared → drop the constraint
-      directEdit([{action:'clear_constraint', activity_id:actId}],
-                 `Clear date constraint on ${actId}`);
+      finish(opts, {action:'clear_constraint', activity_id:actId},
+             `Clear date constraint on ${actId}`);
       return;
     }
     const type = field === 'start' ? 'Start On' : 'Finish On';
-    directEdit([{action:'set_constraint', activity_id:actId,
-                 constraint_type:type, constraint_date:val}],
-               `${actId} ${field} pinned to ${val}`);
+    finish(opts, {action:'set_constraint', activity_id:actId,
+                  constraint_type:type, constraint_date:val},
+           `${actId} ${field} pinned to ${val}`);
   };
-  input.addEventListener('keydown', ev => {
-    if(ev.key === 'Enter'){ ev.preventDefault(); commit(); }
-    else if(ev.key === 'Escape'){ ev.preventDefault(); done = true; loadSchedule(); }
-  });
-  input.addEventListener('blur', commit);
+  const cancel = () => { if(done) return; done = true; td.innerHTML = restoreHTML; };
+  wireCellKeys(input, td, commit, cancel);
+  input.addEventListener('blur', () => commit());
 }
 
 const CONSTRAINT_TYPES = [
@@ -3227,6 +3452,54 @@ function onPickClick(e){
 
 /** Defensive: clear any stray popover left by older builds. */
 function closeLinkEditor(){ const p = document.getElementById('link-pop'); if(p) p.remove(); }
+/** Click a relationship chip to change its type or lag in place. */
+function editLink(ev, predId, succId){
+  if(!isEditMode) return;
+  if(ev) ev.stopPropagation();
+  if(_pickState || _tracePicking) return;
+  closeConstraintEditor();
+  const pop = document.createElement('div');
+  pop.id = 'constraint-pop';
+  pop.className = 'constraint-pop';
+  pop.style.borderColor = 'var(--accent)';
+  pop.innerHTML =
+    `<span style="font-size:10px;color:var(--text3);">${escHtml(predId)} → ${escHtml(succId)}</span>
+     <select id="lk-type">
+       <option value="fs">FS</option><option value="ss">SS</option>
+       <option value="ff">FF</option><option value="sf">SF</option>
+     </select>
+     <input id="lk-lag" type="number" step="1" style="width:60px;" placeholder="lag d">
+     <button class="mini-btn ok" id="lk-ok">Apply</button>
+     <button class="mini-btn no" id="lk-del">Remove</button>`;
+  document.body.appendChild(pop);
+  const r = (ev && ev.target.closest('.link-chip') || ev.target).getBoundingClientRect();
+  pop.style.top  = (window.scrollY + r.bottom + 4) + 'px';
+  pop.style.left = (window.scrollX + Math.max(8, Math.min(r.left, window.innerWidth - 400))) + 'px';
+
+  // preload the link's current type/lag from the loaded data
+  let cur = null;
+  (lastSchedData?.wbs_sections || []).forEach(w => (w.activities || []).forEach(a => {
+    if(a.activity_id === succId)
+      (a.predecessors || []).forEach(pr => { if(pr.activity_id === predId) cur = pr; });
+  }));
+  if(cur){
+    pop.querySelector('#lk-type').value = relAbbr(cur.type).toLowerCase();
+    pop.querySelector('#lk-lag').value = Math.round((cur.lag || 0) / 8);
+  }
+  pop.querySelector('#lk-ok').addEventListener('click', () => {
+    const type = pop.querySelector('#lk-type').value;
+    const lag  = parseFloat(pop.querySelector('#lk-lag').value) || 0;
+    closeConstraintEditor();
+    directEdit([{action:'update_relation', predecessor_id:predId, successor_id:succId,
+                 type, lag_days:lag}], `${predId} → ${succId} ${type.toUpperCase()}${lag?` ${lag>0?'+':''}${lag}d`:''}`);
+  });
+  pop.querySelector('#lk-del').addEventListener('click', () => {
+    closeConstraintEditor();
+    deleteLink(predId, succId);
+  });
+  setTimeout(() => document.addEventListener('mousedown', outsideConstraintClose), 0);
+}
+
 function deleteLink(predId, succId){
   directEdit([{action:'delete_relation', predecessor_id:predId, successor_id:succId}], `Unlink ${predId} → ${succId}`);
 }
@@ -3552,6 +3825,36 @@ function bulkMove(){
   clearSelection();
   directEdit(cmds, `Move ${ids.length} activit${ids.length===1?'y':'ies'} → ${wbs}`);
 }
+/** Chain the selected activities FS in the order they appear in the grid. */
+function bulkLinkSequence(){
+  const order = visibleActRows().map(r => r.dataset.actid).filter(id => selectedIds.has(id));
+  if(order.length < 2){ flashSched('Select at least two activities to chain', true); return; }
+  const type = 'fs';
+  const cmds = [];
+  for(let i = 0; i < order.length - 1; i++){
+    cmds.push({action:'add_relation', predecessor_id:order[i],
+               successor_id:order[i+1], type, lag_days:0});
+  }
+  clearSelection();
+  directEdit(cmds, `Chain ${order.length} activities FS`);
+}
+
+/** Excel-style fill: the first selected row's duration goes to the rest. */
+function bulkFillDown(){
+  const order = visibleActRows().map(r => r.dataset.actid).filter(id => selectedIds.has(id));
+  if(order.length < 2){ flashSched('Select the source row plus the rows to fill', true); return; }
+  let src = null;
+  (lastSchedData?.wbs_sections || []).forEach(w => (w.activities || []).forEach(a => {
+    if(a.activity_id === order[0]) src = a;
+  }));
+  if(!src){ flashSched('Could not read the source row', true); return; }
+  const days = src.duration_days || 0;
+  const cmds = order.slice(1).map(id =>
+    ({action:'update_duration', activity_id:id, new_duration_days:days}));
+  clearSelection();
+  directEdit(cmds, `Fill ${days}d down ${cmds.length} activities`);
+}
+
 function bulkCopy(){
   clipboard = [];
   const sel = new Set(selectedIds);
@@ -3575,6 +3878,111 @@ function bulkDelete(){
   const cmds = ids.map(id => ({action:'delete_activity', activity_id:id}));
   clearSelection();
   directEdit(cmds, `Delete ${ids.length} activit${ids.length===1?'y':'ies'}`);
+}
+
+// ═══════════════════════════════════════════════════
+//  Right-click context menu
+// ═══════════════════════════════════════════════════
+function closeCtxMenu(){
+  document.getElementById('ctx-menu')?.remove();
+  document.removeEventListener('mousedown', closeCtxMenu);
+}
+
+function onSchedContextMenu(e){
+  if(!isEditMode) return;
+  const tr = e.target.closest('tr.sched-act-row, tr.sched-wbs-row');
+  if(!tr) return;
+  e.preventDefault();
+  closeCtxMenu();
+
+  const isWbs = tr.classList.contains('sched-wbs-row');
+  const actId = tr.dataset.actid;
+  // right-clicking an unselected row acts on just that row
+  if(!isWbs && actId && !selectedIds.has(actId)){ clearSelection(); toggleSel(actId, true); }
+  if(isWbs && !selectedWbs.has(tr.dataset.wbsuid)){
+    selectedWbs.clear(); selectedWbs.add(tr.dataset.wbsuid); refreshWbsSelection();
+  }
+
+  const items = isWbs ? [
+    ['＋ Add activity here', () => quickAddActivity(tr.dataset.wbsuid, tr.dataset.wbsname)],
+    ['⧉ Duplicate folder',  () => duplicateSelectedWbs()],
+    ['⇱ Move to root',      () => moveSelectedWbs(true)],
+  ] : [
+    ['⛓ Link selected in sequence', () => bulkLinkSequence()],
+    ['⇊ Fill duration down',        () => bulkFillDown()],
+    ['＋ Add predecessor',          () => addLink(actId, 'pred')],
+    ['＋ Add successor',            () => addLink(actId, 'succ')],
+    ['⤳ Trace what drives this',    () => { startTrace(); applyTrace(actId); }],
+    ['📌 Set constraint…',          () => { const c = findCell(actId, 'constraint'); if(c) beginCellEdit(c); }],
+    ['🗑 Delete selected',           () => bulkDelete()],
+  ];
+
+  const menu = document.createElement('div');
+  menu.id = 'ctx-menu';
+  menu.className = 'ctx-menu';
+  menu.innerHTML = items.map((it, i) => `<div class="ctx-item" data-i="${i}">${it[0]}</div>`).join('');
+  document.body.appendChild(menu);
+  menu.style.top  = (window.scrollY + Math.min(e.clientY, window.innerHeight - menu.offsetHeight - 10)) + 'px';
+  menu.style.left = (window.scrollX + Math.min(e.clientX, window.innerWidth - 230)) + 'px';
+  menu.addEventListener('click', ev => {
+    const el = ev.target.closest('.ctx-item');
+    if(!el) return;
+    closeCtxMenu();
+    items[+el.dataset.i][1]();
+  });
+  setTimeout(() => document.addEventListener('mousedown', closeCtxMenu), 0);
+}
+
+// ═══════════════════════════════════════════════════
+//  Paste a block from Excel straight into the grid
+// ═══════════════════════════════════════════════════
+async function onSchedPaste(e){
+  if(!isEditMode) return;
+  // don't hijack paste while typing in a cell editor or the chat box
+  const t = e.target;
+  if(t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+
+  const text = (e.clipboardData || window.clipboardData)?.getData('text') || '';
+  if(!text.trim() || !text.includes('\t') && !text.includes('\n')) return;
+
+  // target folder: the selected row's WBS, else the last-used, else the first
+  let wbsName = lastActWbs;
+  if(selectedIds.size){
+    const first = [...selectedIds][0];
+    (lastSchedData?.wbs_sections || []).forEach(w => (w.activities || []).forEach(a => {
+      if(a.activity_id === first) wbsName = w.name;
+    }));
+  }
+  if(!wbsName) wbsName = (lastSchedData?.wbs_sections || [])[0]?.name;
+  if(!wbsName){ flashSched('Load a schedule first', true); return; }
+
+  // rows are "Name<TAB>Duration" (extra columns ignored); a leading ID column
+  // is detected and used when present
+  const rows = text.replace(/\r/g,'').split('\n').map(l => l.split('\t')).filter(c => c.join('').trim());
+  if(!rows.length) return;
+  const looksLikeHeader = /activity|name|task|id/i.test(rows[0][0] || '') && rows.length > 1;
+  const body = looksLikeHeader ? rows.slice(1) : rows;
+
+  const cmds = [];
+  for(const cells of body){
+    const parts = cells.map(c => (c || '').trim());
+    let id = null, name = null, dur = 0;
+    const idLike = /^[A-Za-z0-9][A-Za-z0-9._\-\/]*\d[A-Za-z0-9._\-\/]*$/;
+    if(parts.length >= 2 && idLike.test(parts[0]) && !/^\d+(\.\d+)?$/.test(parts[0])){
+      id = parts[0]; name = parts[1]; dur = parseFloat(parts[2]) || 0;
+    } else {
+      name = parts[0]; dur = parseFloat(parts[1]) || 0;
+    }
+    if(!name) continue;
+    const c = {action:'add_activity', wbs_name:wbsName, name, duration_days:dur,
+               activity_type: dur === 0 ? 'Finish Milestone' : 'Task Dependent'};
+    if(id) c.activity_id = id;
+    cmds.push(c);
+  }
+  if(!cmds.length) return;
+  e.preventDefault();
+  lastActWbs = wbsName;
+  await directEdit(cmds, `Paste ${cmds.length} activit${cmds.length===1?'y':'ies'} into ${wbsName}`);
 }
 
 // Attach the delegated dbl-click handler once
@@ -3606,11 +4014,23 @@ function bulkDelete(){
     }
     // stop the browser from text-selecting rows during a shift+click drag
     tb.addEventListener('mousedown', e => { if(e.shiftKey) e.preventDefault(); });
+    tb.addEventListener('contextmenu', onSchedContextMenu);
+  }
+  document.addEventListener('paste', onSchedPaste);
+  {
   }
   document.addEventListener('keydown', e => {
     if(e.key === 'Escape'){
       if(_pickState) cancelPick();
       if(_traceState || _tracePicking) clearTrace();
+      closeCtxMenu();
+    }
+    // Ctrl/Cmd+F focuses the grid's find box
+    if((e.metaKey || e.ctrlKey) && (e.key || '').toLowerCase() === 'f'){
+      const box = document.getElementById('sched-find');
+      if(box && document.getElementById('panel-schedule')?.classList.contains('active')){
+        e.preventDefault(); box.focus(); box.select();
+      }
     }
 
     // Undo / redo — but never while typing (inline cell editor, chat box, forms)

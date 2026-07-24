@@ -173,6 +173,14 @@ def apply_command(project: Project, command: Dict[str, Any]) -> Tuple[bool, str]
             return _add_wbs(project, command)
         elif action == "move_wbs":
             return _move_wbs(project, command)
+        elif action == "duplicate_wbs":
+            return _duplicate_wbs(project, command)
+        elif action == "update_relation":
+            return _update_relation(project, command)
+        elif action == "update_activity_type":
+            return _update_activity_type(project, command)
+        elif action == "update_progress":
+            return _update_progress(project, command)
         elif action == "move_activity_wbs":
             return _move_activity_wbs(project, command)
         elif action == "bulk_rename":
@@ -635,6 +643,171 @@ def _move_wbs(project: Project, cmd: Dict) -> Tuple[bool, str]:
     project.build_lookups()
     where = f"under '{parent.name}'" if parent else "to the root"
     return True, f"Moved WBS '{wbs.name}' {where}"
+
+
+def _duplicate_wbs(project: Project, cmd: Dict) -> Tuple[bool, str]:
+    """
+    Copy a WBS folder, everything nested under it, its activities, and the
+    logic *between* those activities. Repetitive structures (rooms, lineups,
+    levels) are built once and stamped out.
+
+      wbs_name / wbs_code : the branch to copy
+      new_name            : name for the copy (default "<name> (copy)")
+      parent_name/_code   : where to put it (default: alongside the original)
+      count               : how many copies (default 1)
+    """
+    src = _find_wbs(project, cmd.get("wbs_code"), cmd.get("wbs_name"))
+    if not src:
+        raise EditError(f"WBS node not found: {cmd.get('wbs_code') or cmd.get('wbs_name')}")
+
+    parent_uid = src.parent_uid
+    if cmd.get("parent_code") or cmd.get("parent_name"):
+        tgt = _find_wbs(project, cmd.get("parent_code"), cmd.get("parent_name"))
+        if not tgt:
+            raise EditError(f"Target WBS not found: {cmd.get('parent_code') or cmd.get('parent_name')}")
+        parent_uid = tgt.uid
+
+    try:
+        count = max(1, int(cmd.get("count", 1)))
+    except (TypeError, ValueError):
+        count = 1
+
+    # the branch: source + all descendants
+    children_of: Dict[str, List[WBSNode]] = {}
+    for w in project.wbs_nodes:
+        children_of.setdefault(w.parent_uid, []).append(w)
+    branch: List[WBSNode] = []
+
+    def collect(node):
+        branch.append(node)
+        for c in children_of.get(node.uid, []):
+            collect(c)
+    collect(src)
+    branch_uids = {w.uid for w in branch}
+    acts_in = [a for a in project.activities if a.wbs_uid in branch_uids]
+
+    made_names = []
+    for n in range(count):
+        base = (cmd.get("new_name") or f"{src.name} (copy)").strip()
+        new_name = base if count == 1 else f"{base} {n + 1}"
+        while any(w.name == new_name for w in project.wbs_nodes):
+            new_name += "*"
+
+        wbs_map: Dict[str, str] = {}
+        for w in branch:
+            new_uid = _new_uid()
+            wbs_map[w.uid] = new_uid
+            siblings = [x for x in project.wbs_nodes
+                        if x.parent_uid == (parent_uid if w is src else wbs_map.get(w.parent_uid))]
+            project.wbs_nodes.append(WBSNode(
+                uid=new_uid,
+                name=new_name if w is src else w.name,
+                code=(w.code or "")[:20],
+                parent_uid=parent_uid if w is src else wbs_map.get(w.parent_uid),
+                sequence_num=(max(s.sequence_num for s in siblings) + 10) if siblings else 0,
+            ))
+        project.build_lookups()
+
+        act_map: Dict[str, str] = {}
+        for a in acts_in:
+            new_id = _next_activity_id(project)
+            new_uid = _new_uid()
+            act_map[a.uid] = new_uid
+            project.activities.append(Activity(
+                uid=new_uid,
+                activity_id=new_id,
+                name=a.name,
+                wbs_uid=wbs_map.get(a.wbs_uid, parent_uid or a.wbs_uid),
+                calendar_uid=a.calendar_uid,
+                activity_type=a.activity_type,
+                status="Not Started",
+                planned_duration=a.planned_duration,
+                remaining_duration=a.planned_duration,
+                constraint_type=a.constraint_type,
+                constraint_date=a.constraint_date,
+            ))
+            project.build_lookups()
+
+        # carry over logic that lived entirely inside the branch
+        for r in list(project.relations):
+            if r.predecessor_uid in act_map and r.successor_uid in act_map:
+                project.relations.append(Relation(
+                    uid=_new_uid(),
+                    predecessor_uid=act_map[r.predecessor_uid],
+                    successor_uid=act_map[r.successor_uid],
+                    type=r.type, lag=r.lag,
+                ))
+        made_names.append(new_name)
+
+    project.build_lookups()
+    return True, (f"Duplicated '{src.name}' → {', '.join(made_names)} "
+                  f"({len(acts_in)} activities each)")
+
+
+def _update_relation(project: Project, cmd: Dict) -> Tuple[bool, str]:
+    """Change an existing relationship's type and/or lag in place."""
+    pred = _find_activity(project, cmd.get("predecessor_id"))
+    succ = _find_activity(project, cmd.get("successor_id"))
+    if not pred or not succ:
+        raise EditError("Both predecessor_id and successor_id are required")
+    p_uid, s_uid = pred[0].uid, succ[0].uid
+    rel = next((r for r in project.relations
+                if r.predecessor_uid == p_uid and r.successor_uid == s_uid), None)
+    if not rel:
+        raise EditError(f"No relationship {pred[0].activity_id} → {succ[0].activity_id}")
+    rel_type_map = {"fs": "Finish to Start", "ss": "Start to Start",
+                    "ff": "Finish to Finish", "sf": "Start to Finish"}
+    if cmd.get("type"):
+        rel.type = rel_type_map.get(str(cmd["type"]).lower(), rel.type)
+    if cmd.get("lag_days") is not None:
+        rel.lag = float(cmd["lag_days"]) * 8.0
+    return True, (f"{pred[0].activity_id} → {succ[0].activity_id} set to "
+                  f"{rel.type} (lag {rel.lag / 8.0:g}d)")
+
+
+_ACTIVITY_TYPES = {
+    "task dependent": "Task Dependent",
+    "resource dependent": "Resource Dependent",
+    "level of effort": "Level of Effort",
+    "wbs summary": "WBS Summary",
+    "start milestone": "Start Milestone",
+    "finish milestone": "Finish Milestone",
+}
+
+
+def _update_activity_type(project: Project, cmd: Dict) -> Tuple[bool, str]:
+    """Change an activity's type. Milestones are zero-duration by definition."""
+    matches = _find_activity(project, cmd.get("activity_id"), cmd.get("target_name"))
+    if not matches:
+        raise EditError(f"No activity found: {cmd.get('activity_id') or cmd.get('target_name')}")
+    raw = str(cmd.get("activity_type", "")).strip()
+    new_type = _ACTIVITY_TYPES.get(raw.lower())
+    if not new_type:
+        raise EditError(f"Unknown activity type '{raw}'")
+    for a in matches:
+        a.activity_type = new_type
+        if "Milestone" in new_type:
+            a.planned_duration = 0.0
+            a.remaining_duration = 0.0
+    return True, f"Set type '{new_type}' on {len(matches)} activity/activities"
+
+
+def _update_progress(project: Project, cmd: Dict) -> Tuple[bool, str]:
+    """Set % complete, keeping status consistent with it."""
+    matches = _find_activity(project, cmd.get("activity_id"), cmd.get("target_name"))
+    if not matches:
+        raise EditError(f"No activity found: {cmd.get('activity_id') or cmd.get('target_name')}")
+    try:
+        pct = float(cmd.get("percent_complete"))
+    except (TypeError, ValueError):
+        raise EditError("percent_complete must be a number between 0 and 100")
+    pct = max(0.0, min(100.0, pct))
+    for a in matches:
+        a.percent_complete = pct
+        a.status = ("Not Started" if pct == 0 else
+                    "Completed" if pct >= 100 else "In Progress")
+        a.remaining_duration = a.planned_duration * (1 - pct / 100.0)
+    return True, f"Set {pct:g}% complete on {len(matches)} activity/activities"
 
 
 def _move_activity_wbs(project: Project, cmd: Dict) -> Tuple[bool, str]:
