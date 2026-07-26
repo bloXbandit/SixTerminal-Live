@@ -578,6 +578,110 @@
       padding:1px 4px;border-radius:3px;color:var(--accent);
     }
 
+    /* ── COMPARE PANEL ───────────────────────────────────── */
+    #panel-compare{
+      flex:1;display:none;flex-direction:column;overflow:hidden;
+    }
+    #panel-compare.active{display:flex;}
+    .cmp-toolbar{
+      padding:10px 16px;display:flex;align-items:center;gap:10px;
+      border-bottom:1px solid var(--border);background:var(--surface);flex-shrink:0;
+      flex-wrap:wrap;
+    }
+    .cmp-toolbar label{font-size:11px;color:var(--text3);font-weight:500;}
+    .cmp-select{
+      background:var(--surface2);color:var(--text);border:1px solid var(--border2);
+      border-radius:var(--r-sm);font-family:var(--font);font-size:12px;
+      padding:4px 10px;outline:none;min-width:160px;
+    }
+    .cmp-select:focus{border-color:var(--accent2);}
+    .cmp-btn{
+      padding:5px 14px;border-radius:var(--r-sm);border:1px solid var(--border2);
+      background:var(--surface2);color:var(--text);cursor:pointer;
+      font-family:var(--font);font-size:12px;font-weight:500;
+      transition:border-color .15s,background .15s;
+    }
+    .cmp-btn:hover{border-color:var(--accent2);background:var(--accent-glow2);}
+    .cmp-btn:disabled{opacity:.4;cursor:not-allowed;}
+    .cmp-btn.primary{background:var(--accent-glow);border-color:var(--accent2);color:var(--accent);}
+    .cmp-btn.primary:hover{background:rgba(0,207,255,.18);}
+    .cmp-summary{
+      padding:10px 16px;display:flex;gap:16px;align-items:center;
+      border-bottom:1px solid var(--border);background:var(--bg2);flex-shrink:0;
+      font-size:12px;
+    }
+    .cmp-stat{display:flex;align-items:center;gap:5px;}
+    .cmp-stat-val{font-family:var(--mono);font-weight:600;font-size:14px;}
+    .cmp-stat-label{color:var(--text3);font-size:10px;text-transform:uppercase;letter-spacing:.08em;}
+    .cmp-stat.added .cmp-stat-val{color:var(--green);}
+    .cmp-stat.removed .cmp-stat-val{color:var(--red);}
+    .cmp-stat.changed .cmp-stat-val{color:var(--orange);}
+    .cmp-stat.unchanged .cmp-stat-val{color:var(--text3);}
+    .cmp-body{flex:1;overflow:auto;padding:12px 16px;}
+    .cmp-section{
+      margin-bottom:14px;border:1px solid var(--border);border-radius:var(--r-md);
+      background:var(--surface);overflow:hidden;
+    }
+    .cmp-section-header{
+      padding:8px 14px;display:flex;align-items:center;gap:10px;
+      background:var(--surface2);border-bottom:1px solid var(--border);
+      cursor:pointer;user-select:none;
+    }
+    .cmp-section-header:hover{background:var(--surface3);}
+    .cmp-wbs-code{font-family:var(--mono);font-size:10px;color:var(--accent);font-weight:500;}
+    .cmp-wbs-name{font-size:13px;font-weight:500;color:var(--text);}
+    .cmp-wbs-path{font-size:10px;color:var(--text3);margin-left:auto;}
+    .cmp-section-counts{display:flex;gap:10px;font-size:11px;}
+    .cmp-section-counts .added{color:var(--green);}
+    .cmp-section-counts .removed{color:var(--red);}
+    .cmp-section-counts .changed{color:var(--orange);}
+    .cmp-section-body{padding:0;}
+    .cmp-section.collapsed .cmp-section-body{display:none;}
+    .cmp-table{width:100%;border-collapse:collapse;font-size:11px;}
+    .cmp-table th{
+      padding:5px 12px;text-align:left;font-size:9px;font-weight:600;
+      letter-spacing:.09em;text-transform:uppercase;color:var(--text3);
+      border-bottom:1px solid var(--border);background:var(--surface3);
+    }
+    .cmp-table td{padding:5px 12px;border-bottom:1px solid rgba(30,42,58,.4);vertical-align:middle;}
+    .cmp-table tr:last-child td{border-bottom:none;}
+    .cmp-table .cmp-id{font-family:var(--mono);color:var(--accent);font-size:10px;font-weight:500;}
+    .cmp-table .cmp-diff-from{color:var(--text3);text-decoration:line-through;}
+    .cmp-table .cmp-diff-to{color:var(--text);}
+    .cmp-table .cmp-arrow{color:var(--text3);padding:0 4px;}
+    .cmp-table tr.cmp-row-added{background:var(--green-bg);}
+    .cmp-table tr.cmp-row-added .cmp-id{color:var(--green);}
+    .cmp-table tr.cmp-row-removed{background:var(--red-bg);}
+    .cmp-table tr.cmp-row-removed .cmp-id{color:var(--red);}
+    .cmp-table tr.cmp-row-changed{background:var(--orange-bg);}
+    .cmp-empty{padding:40px;text-align:center;color:var(--text3);font-size:14px;}
+    .cmp-copy-modal{
+      position:fixed;top:0;left:0;right:0;bottom:0;z-index:100;
+      background:rgba(0,0,0,.6);display:flex;align-items:center;justify-content:center;
+    }
+    .cmp-copy-modal-inner{
+      background:var(--surface);border:1px solid var(--border2);border-radius:var(--r-lg);
+      padding:24px;max-width:520px;width:90%;box-shadow:var(--shadow-lg);
+    }
+    .cmp-copy-modal h3{font-family:var(--display);font-size:16px;margin-bottom:14px;color:var(--accent);}
+    .cmp-copy-modal .field{margin-bottom:12px;}
+    .cmp-copy-modal .field label{display:block;font-size:11px;color:var(--text3);margin-bottom:4px;}
+    .cmp-copy-modal .field select,.cmp-copy-modal .field input{
+      width:100%;background:var(--surface2);color:var(--text);border:1px solid var(--border2);
+      border-radius:var(--r-sm);padding:6px 10px;font-size:13px;outline:none;
+    }
+    .cmp-copy-modal .actions{display:flex;gap:10px;justify-content:flex-end;margin-top:16px;}
+    .cmp-boundary-list{
+      margin-top:12px;padding:10px;background:var(--orange-bg);border:1px solid rgba(245,158,11,.2);
+      border-radius:var(--r-sm);font-size:11px;
+    }
+    .cmp-boundary-list .boundary-item{
+      padding:4px 0;color:var(--text2);
+    }
+    .cmp-boundary-list .boundary-item code{
+      font-family:var(--mono);color:var(--orange);font-size:10px;
+    }
+
     /* ── TAB NAV ─────────────────────────────────────────── */
     .tab-nav{
       display:flex;align-items:center;gap:2px;
@@ -1209,6 +1313,9 @@
       <button class="tab-btn" id="tab-btn-schedule" onclick="switchTab('schedule')">
         ⊞ Schedule <span class="tab-pill" id="sched-count-pill">—</span>
       </button>
+      <button class="tab-btn" id="tab-btn-compare" onclick="switchTab('compare')">
+        ⇄ Compare
+      </button>
       <span class="tab-stale" id="sched-stale-notice">⚑ Changes pending — refresh to update</span>
     </div>
 
@@ -1424,9 +1531,31 @@
       </div>
     </div>
 
-  </div>
+    <!-- Compare panel -->
+    <div id="panel-compare">
+      <div class="cmp-toolbar">
+        <label>Schedule A (baseline)</label>
+        <select id="cmp-select-a" class="cmp-select" onchange="onCmpProjectChange()"></select>
+        <span style="color:var(--text3);font-size:14px;">⇄</span>
+        <label>Schedule B (updated)</label>
+        <select id="cmp-select-b" class="cmp-select" onchange="onCmpProjectChange()"></select>
+        <button class="cmp-btn primary" id="cmp-run-btn" onclick="runCompare()">Compare</button>
+        <span style="margin-left:auto;font-size:11px;color:var(--text3);">
+          Load two schedules to compare them · copy a WBS branch from B into A
+        </span>
+      </div>
+      <div class="cmp-summary" id="cmp-summary" style="display:none;">
+        <div class="cmp-stat added"><span class="cmp-stat-val" id="cmp-stat-added">0</span><span class="cmp-stat-label">Added</span></div>
+        <div class="cmp-stat removed"><span class="cmp-stat-val" id="cmp-stat-removed">0</span><span class="cmp-stat-label">Removed</span></div>
+        <div class="cmp-stat changed"><span class="cmp-stat-val" id="cmp-stat-changed">0</span><span class="cmp-stat-label">Changed</span></div>
+        <div class="cmp-stat unchanged"><span class="cmp-stat-val" id="cmp-stat-unchanged">0</span><span class="cmp-stat-label">Unchanged</span></div>
+      </div>
+      <div class="cmp-body" id="cmp-body">
+        <div class="cmp-empty">Select two loaded schedules above and click Compare.</div>
+      </div>
+    </div>
 
-    <!-- Input bar — always visible on Editor and Schedule tabs -->
+  </div>
     <div class="input-bar">
       <div class="input-wrap">
         <textarea id="instruction-input" placeholder="Type an edit or just chat…" rows="1"
@@ -1446,6 +1575,7 @@
 // ═══════════════════════════════════════════════════
 let editCount = 0;
 let undoCount = 0;
+let _activeProjectId = null;
 let pendingClarifyInstruction = null; // stores original instruction while waiting for clarification
 
 // ═══════════════════════════════════════════════════
@@ -1492,6 +1622,7 @@ async function checkExistingSession() {
       fetch('/api/messages').then(r => r.json()),
     ]);
     if (s.projects && s.projects.length) renderProjectList(s.projects);
+    if (s.active_project_id) _activeProjectId = s.active_project_id;
     if (s.loaded) {
       document.getElementById('info-acts').textContent = s.activity_count ?? '—';
       document.getElementById('info-wbs').textContent  = s.wbs_count     ?? '—';
@@ -2133,6 +2264,7 @@ async function switchProject(pid) {
       body: JSON.stringify({project_id: pid})
     }).then(r => r.json());
     if (d.error) { addMsg('system', errorCard(d.error)); return; }
+    _activeProjectId = pid;
     // Update sidebar state
     document.getElementById('info-acts').textContent  = d.activity_count ?? '—';
     document.getElementById('info-wbs').textContent   = d.wbs_count ?? '—';
@@ -2328,6 +2460,7 @@ function proceedDownload() { closeModal('report-modal'); window.location.href = 
 //  Project loaded
 // ═══════════════════════════════════════════════════
 function onProjectLoaded(d) {
+  if (d.project_id) _activeProjectId = d.project_id;
   document.getElementById('info-acts').textContent = d.activity_count ?? '—';
   document.getElementById('info-wbs').textContent  = d.wbs_count     ?? '—';
   document.getElementById('info-rels').textContent = d.relation_count ?? '—';
@@ -2410,14 +2543,19 @@ function switchTab(name) {
   currentTab = name;
   document.getElementById('tab-btn-editor').classList.toggle('active', name === 'editor');
   document.getElementById('tab-btn-schedule').classList.toggle('active', name === 'schedule');
+  document.getElementById('tab-btn-compare').classList.toggle('active', name === 'compare');
   document.getElementById('panel-editor').classList.toggle('hidden', name !== 'editor');
   document.getElementById('panel-schedule').classList.toggle('active', name === 'schedule');
+  document.getElementById('panel-compare').classList.toggle('active', name === 'compare');
   if (name === 'schedule') {
     // Auto-load if empty or stale
     const tbody = document.getElementById('sched-tbody');
     if (!tbody.children.length || document.getElementById('sched-stale-notice').classList.contains('show')) {
       loadSchedule();
     }
+  }
+  if (name === 'compare') {
+    refreshCmpProjectLists();
   }
 }
 
@@ -3983,6 +4121,283 @@ async function onSchedPaste(e){
   e.preventDefault();
   lastActWbs = wbsName;
   await directEdit(cmds, `Paste ${cmds.length} activit${cmds.length===1?'y':'ies'} into ${wbsName}`);
+}
+
+// ═══════════════════════════════════════════════════
+//  Compare panel
+// ═══════════════════════════════════════════════════
+let _cmpData = null;     // last compare result
+let _cmpProjects = [];   // cached project list for dropdowns
+
+function refreshCmpProjectLists() {
+  fetch('/api/projects').then(r => r.json()).then(d => {
+    _cmpProjects = d.projects || [];
+    const selA = document.getElementById('cmp-select-a');
+    const selB = document.getElementById('cmp-select-b');
+    const activeId = d.active_id;
+    // Preserve current selections if possible
+    const prevA = selA.value, prevB = selB.value;
+    const opts = _cmpProjects.map(p =>
+      `<option value="${p.id}">${escHtml(p.project_name)} (${p.activity_count} acts)</option>`
+    ).join('');
+    selA.innerHTML = opts;
+    selB.innerHTML = opts;
+    // Auto-select: A = first, B = active (if different)
+    if (prevA && _cmpProjects.find(p => p.id === prevA)) selA.value = prevA;
+    else if (_cmpProjects.length > 0) selA.value = _cmpProjects[0].id;
+    if (prevB && _cmpProjects.find(p => p.id === prevB)) selB.value = prevB;
+    else if (activeId && activeId !== selA.value) selB.value = activeId;
+    else if (_cmpProjects.length > 1) selB.value = _cmpProjects[1].id;
+    onCmpProjectChange();
+  }).catch(e => console.error('refreshCmpProjectLists:', e));
+}
+
+function onCmpProjectChange() {
+  const selA = document.getElementById('cmp-select-a');
+  const selB = document.getElementById('cmp-select-b');
+  const btn = document.getElementById('cmp-run-btn');
+  btn.disabled = !selA.value || !selB.value || selA.value === selB.value;
+}
+
+async function runCompare() {
+  const pidA = document.getElementById('cmp-select-a').value;
+  const pidB = document.getElementById('cmp-select-b').value;
+  if (!pidA || !pidB || pidA === pidB) return;
+  const body = document.getElementById('cmp-body');
+  body.innerHTML = '<div class="cmp-empty"><span class="spinner"></span> Comparing…</div>';
+  document.getElementById('cmp-summary').style.display = 'none';
+  try {
+    const d = await fetch('/api/compare', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({project_a_id: pidA, project_b_id: pidB}),
+    }).then(r => r.json());
+    if (d.error) { body.innerHTML = `<div class="cmp-empty" style="color:var(--red);">${escHtml(d.error)}</div>`; return; }
+    _cmpData = d;
+    renderCompare(d);
+  } catch(e) {
+    body.innerHTML = `<div class="cmp-empty" style="color:var(--red);">${escHtml(e.message)}</div>`;
+  }
+}
+
+function renderCompare(d) {
+  const diff = d.diff;
+  const s = diff.summary;
+  // Summary bar
+  document.getElementById('cmp-summary').style.display = 'flex';
+  document.getElementById('cmp-stat-added').textContent = s.added;
+  document.getElementById('cmp-stat-removed').textContent = s.removed;
+  document.getElementById('cmp-stat-changed').textContent = s.changed;
+  document.getElementById('cmp-stat-unchanged').textContent = s.unchanged;
+
+  const body = document.getElementById('cmp-body');
+  const sections = diff.sections || [];
+  if (!sections.length) {
+    body.innerHTML = '<div class="cmp-empty">No differences found — schedules are identical.</div>';
+    return;
+  }
+
+  // WBS diff note
+  let wbsNote = '';
+  if (s.wbs_added || s.wbs_removed) {
+    const parts = [];
+    if (s.wbs_added) parts.push(`<span style="color:var(--green);">+${s.wbs_added} WBS</span>`);
+    if (s.wbs_removed) parts.push(`<span style="color:var(--red);">-${s.wbs_removed} WBS</span>`);
+    wbsNote = `<div style="padding:6px 0;font-size:11px;color:var(--text3);">WBS changes: ${parts.join(' · ')}</div>`;
+  }
+
+  body.innerHTML = wbsNote + sections.map(sec => {
+    const counts = [];
+    if (sec.added.length) counts.push(`<span class="added">+${sec.added.length}</span>`);
+    if (sec.removed.length) counts.push(`<span class="removed">-${sec.removed.length}</span>`);
+    if (sec.changed.length) counts.push(`<span class="changed">~${sec.changed.length}</span>`);
+    if (sec.unchanged_count) counts.push(`<span style="color:var(--text3);">=${sec.unchanged_count}</span>`);
+
+    const hasContent = sec.added.length || sec.removed.length || sec.changed.length;
+    const copyBtn = hasContent ? `<button class="cmp-btn" style="margin-left:10px;padding:2px 10px;font-size:10px;"
+      onclick="openCopyModal('${escAttr(sec.wbs_code)}','${escAttr(sec.wbs_name)}')">⧉ Copy branch</button>` : '';
+
+    let rows = '';
+    if (sec.added.length) {
+      rows += sec.added.map(a => `<tr class="cmp-row-added">
+        <td class="cmp-id">${escHtml(a.activity_id)}</td>
+        <td>${escHtml(a.name)}</td>
+        <td style="text-align:right;">${escHtml(a.duration)}</td>
+        <td>${escHtml(a.start)}</td><td>${escHtml(a.finish)}</td>
+        <td>${escHtml(a.status)}</td>
+        <td style="color:var(--green);font-size:10px;">NEW</td>
+      </tr>`).join('');
+    }
+    if (sec.removed.length) {
+      rows += sec.removed.map(a => `<tr class="cmp-row-removed">
+        <td class="cmp-id">${escHtml(a.activity_id)}</td>
+        <td>${escHtml(a.name)}</td>
+        <td style="text-align:right;">${escHtml(a.duration)}</td>
+        <td>${escHtml(a.start)}</td><td>${escHtml(a.finish)}</td>
+        <td>${escHtml(a.status)}</td>
+        <td style="color:var(--red);font-size:10px;">REMOVED</td>
+      </tr>`).join('');
+    }
+    if (sec.changed.length) {
+      for (const c of sec.changed) {
+        for (const ch of c.changes) {
+          rows += `<tr class="cmp-row-changed">
+            <td class="cmp-id">${escHtml(c.activity_id)}</td>
+            <td>${escHtml(c.name)}</td>
+            <td colspan="3" style="font-size:10px;">
+              <strong style="color:var(--orange);">${escHtml(ch.field)}:</strong>
+              <span class="cmp-diff-from">${escHtml(ch.from || '(empty)')}</span>
+              <span class="cmp-arrow">→</span>
+              <span class="cmp-diff-to">${escHtml(ch.to || '(empty)')}</span>
+            </td>
+            <td></td><td style="color:var(--orange);font-size:10px;">CHANGED</td>
+          </tr>`;
+        }
+      }
+    }
+
+    return `<div class="cmp-section">
+      <div class="cmp-section-header" onclick="this.parentElement.classList.toggle('collapsed')">
+        <span class="cmp-wbs-code">${escHtml(sec.wbs_code)}</span>
+        <span class="cmp-wbs-name">${escHtml(sec.wbs_name)}</span>
+        <span class="cmp-wbs-path">${escHtml(sec.wbs_path)}</span>
+        <span class="cmp-section-counts">${counts.join(' ')}</span>
+        ${copyBtn}
+      </div>
+      <div class="cmp-section-body">
+        <table class="cmp-table">
+          <thead><tr><th>ID</th><th>Name</th><th style="text-align:right;">Dur</th><th>Start</th><th>Finish</th><th>Status</th><th></th></tr></thead>
+          <tbody>${rows || '<tr><td colspan="7" style="color:var(--text3);text-align:center;padding:8px;">No changes in this section</td></tr>'}</tbody>
+        </table>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+// ── Copy branch modal ──────────────────────────────────────────
+let _copyModalEl = null;
+
+function openCopyModal(wbsCode, wbsName) {
+  if (_copyModalEl) _copyModalEl.remove();
+  const pidB = document.getElementById('cmp-select-b').value;
+  const pidA = document.getElementById('cmp-select-a').value;
+  // Target = schedule A (baseline) by default, or active project
+  const targetOpts = _cmpProjects.map(p =>
+    `<option value="${p.id}" ${p.id === pidA ? 'selected' : ''}>${escHtml(p.project_name)} (${p.activity_count} acts)</option>`
+  ).join('');
+  // We need WBS codes from the source (schedule B) for parent selection
+  // For now, just allow root or type a code
+  const modal = document.createElement('div');
+  modal.className = 'cmp-copy-modal';
+  modal.innerHTML = `
+    <div class="cmp-copy-modal-inner">
+      <h3>Copy WBS Branch</h3>
+      <div class="field">
+        <label>Source schedule</label>
+        <select id="cmp-copy-src" disabled>${_cmpProjects.map(p =>
+          `<option value="${p.id}" ${p.id === pidB ? 'selected' : ''}>${escHtml(p.project_name)}</option>`).join('')}</select>
+      </div>
+      <div class="field">
+        <label>WBS to copy</label>
+        <input id="cmp-copy-code" value="${escAttr(wbsCode)}" readonly>
+        <div style="font-size:11px;color:var(--text3);margin-top:3px;">${escHtml(wbsName)}</div>
+      </div>
+      <div class="field">
+        <label>Copy into (target schedule)</label>
+        <select id="cmp-copy-tgt">${targetOpts}</select>
+      </div>
+      <div class="field">
+        <label>Nest under WBS code (optional — leave blank for root)</label>
+        <input id="cmp-copy-parent" placeholder="e.g. MDC1 or leave blank">
+      </div>
+      <div class="field">
+        <label>Activity ID mode</label>
+        <select id="cmp-copy-idmode">
+          <option value="renumber">Auto-renumber (recommended)</option>
+          <option value="keep">Keep original IDs (fails on collision)</option>
+        </select>
+      </div>
+      <div class="field">
+        <label>New WBS name (optional — leave blank to keep source name)</label>
+        <input id="cmp-copy-newname" placeholder="${escAttr(wbsName)}">
+      </div>
+      <div id="cmp-copy-result" style="display:none;"></div>
+      <div class="actions">
+        <button class="cmp-btn" onclick="closeCopyModal()">Cancel</button>
+        <button class="cmp-btn primary" onclick="executeCopyBranch()">Copy Branch</button>
+      </div>
+    </div>`;
+  document.body.appendChild(modal);
+  _copyModalEl = modal;
+}
+
+function closeCopyModal() {
+  if (_copyModalEl) { _copyModalEl.remove(); _copyModalEl = null; }
+}
+
+async function executeCopyBranch() {
+  const srcPid = document.getElementById('cmp-copy-src').value;
+  const srcCode = document.getElementById('cmp-copy-code').value;
+  const tgtPid = document.getElementById('cmp-copy-tgt').value;
+  const parentCode = document.getElementById('cmp-copy-parent').value.trim() || null;
+  const idMode = document.getElementById('cmp-copy-idmode').value;
+  const newName = document.getElementById('cmp-copy-newname').value.trim() || null;
+  const resultDiv = document.getElementById('cmp-copy-result');
+
+  resultDiv.style.display = 'block';
+  resultDiv.innerHTML = '<span class="spinner"></span> Copying…';
+
+  try {
+    const d = await fetch('/api/copy-branch', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        source_project_id: srcPid,
+        source_wbs_code: srcCode,
+        target_project_id: tgtPid,
+        target_parent_code: parentCode,
+        id_mode: idMode,
+        new_wbs_name: newName,
+      }),
+    }).then(r => r.json());
+
+    if (d.error) {
+      resultDiv.innerHTML = `<div style="color:var(--red);font-size:12px;">${escHtml(d.error)}</div>`;
+      return;
+    }
+
+    let html = `<div style="color:var(--green);font-size:12px;margin-bottom:8px;">✓ ${escHtml(d.message)}</div>`;
+    html += `<div style="font-size:11px;color:var(--text3);">
+      WBS nodes: ${d.detail.wbs_copied} · Activities: ${d.detail.activities_copied} · Relations: ${d.detail.relations_copied}
+    </div>`;
+    if (d.detail.boundary_links_dropped && d.detail.boundary_links_dropped.length) {
+      html += `<div class="cmp-boundary-list">
+        <strong style="color:var(--orange);">⚠ Boundary links dropped (${d.detail.boundary_links_dropped.length}):</strong>
+        <div>These relationships connected to activities outside the copied branch and were not carried over.</div>`;
+      for (const b of d.detail.boundary_links_dropped) {
+        html += `<div class="boundary-item">
+          <code>${escHtml(b.inside_id)}</code> (${escHtml(b.inside_name)})
+          ← ${escHtml(b.direction)} —
+          <code>${escHtml(b.outside_id)}</code> (${escHtml(b.outside_name)})
+          [${escHtml(b.type)}]
+        </div>`;
+      }
+      html += `</div>`;
+    }
+    html += `<div style="margin-top:10px;font-size:11px;color:var(--text3);">
+      Undo available (${d.undo_count} on stack). Switch to the Schedule tab and refresh to see the copied branch.
+    </div>`;
+    resultDiv.innerHTML = html;
+
+    // Update sidebar counts if target is active
+    if (tgtPid === _activeProjectId) {
+      document.getElementById('info-acts').textContent = d.activity_count;
+      document.getElementById('info-wbs').textContent = d.wbs_count;
+      document.getElementById('info-rels').textContent = d.relation_count;
+      document.getElementById('sched-count-pill').textContent = d.activity_count;
+      markScheduleStale();
+    }
+  } catch(e) {
+    resultDiv.innerHTML = `<div style="color:var(--red);font-size:12px;">${escHtml(e.message)}</div>`;
+  }
 }
 
 // Attach the delegated dbl-click handler once

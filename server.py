@@ -30,6 +30,7 @@ from engine.edit_engine import (
 )
 from interpreter.llm_interpreter import interpret, create_project, MODELS, DEFAULT_MODEL
 from engine.importer import extract as import_extract, build_project_from_contract
+from engine.compare import compare_projects, copy_wbs_branch
 
 TEMPLATE_DIR = str(ROOT / "ui" / "templates")
 STATIC_DIR   = str(ROOT / "ui" / "static")
@@ -991,6 +992,111 @@ def delete_project():
         _active_id[0] = next(iter(_projects), None)
     return jsonify({"success": True, "active_id": _active_id[0],
                     "projects": [_project_list_item(k) for k in _projects]})
+
+
+@app.route("/api/compare", methods=["POST"])
+def compare_schedules():
+    """
+    Compare two loaded schedules and return a structured diff.
+    Body: {"project_a_id": "...", "project_b_id": "..."}
+    """
+    data = request.get_json() or {}
+    pid_a = data.get("project_a_id")
+    pid_b = data.get("project_b_id")
+    if not pid_a or not pid_b:
+        return jsonify({"error": "project_a_id and project_b_id are required"}), 400
+    sess_a = _projects.get(pid_a)
+    sess_b = _projects.get(pid_b)
+    if not sess_a or not sess_a["project"]:
+        return jsonify({"error": f"Project '{pid_a}' not found or not loaded"}), 404
+    if not sess_b or not sess_b["project"]:
+        return jsonify({"error": f"Project '{pid_b}' not found or not loaded"}), 404
+    try:
+        diff = compare_projects(sess_a["project"], sess_b["project"])
+        return jsonify({
+            "success": True,
+            "diff": diff,
+            "project_a": {"id": pid_a, "name": sess_a["project"].name,
+                          "activities": len(sess_a["project"].activities)},
+            "project_b": {"id": pid_b, "name": sess_b["project"].name,
+                          "activities": len(sess_b["project"].activities)},
+        })
+    except Exception as e:
+        return jsonify({"error": f"Compare failed: {str(e)}",
+                        "trace": traceback.format_exc()}), 500
+
+
+@app.route("/api/copy-branch", methods=["POST"])
+def copy_branch():
+    """
+    Copy a WBS branch from one loaded schedule into another.
+    Body: {
+      "source_project_id": "...",
+      "source_wbs_code": "...",
+      "target_project_id": "...",       (optional — defaults to active)
+      "target_parent_code": "...",       (optional — nest under this WBS)
+      "id_mode": "renumber" | "keep",    (default "renumber")
+      "new_wbs_name": "..."              (optional — override root name)
+    }
+    """
+    data = request.get_json() or {}
+    src_pid = data.get("source_project_id")
+    src_code = data.get("source_wbs_code")
+    if not src_pid or not src_code:
+        return jsonify({"error": "source_project_id and source_wbs_code are required"}), 400
+
+    tgt_pid = data.get("target_project_id") or _active_id[0]
+    if not tgt_pid:
+        return jsonify({"error": "No target project — load a schedule first"}), 400
+
+    sess_src = _projects.get(src_pid)
+    sess_tgt = _projects.get(tgt_pid)
+    if not sess_src or not sess_src["project"]:
+        return jsonify({"error": f"Source project '{src_pid}' not found"}), 404
+    if not sess_tgt or not sess_tgt["project"]:
+        return jsonify({"error": f"Target project '{tgt_pid}' not found"}), 404
+
+    try:
+        # Push undo for the TARGET session (not necessarily the active one)
+        tgt_stack = sess_tgt["undo_stack"]
+        tgt_stack.append((f"Copy branch from {sess_src['project'].name}",
+                          _snapshot_project(sess_tgt["project"])))
+        if len(tgt_stack) > _MAX_UNDO:
+            tgt_stack.pop(0)
+
+        ok, msg, detail = copy_wbs_branch(
+            sess_src["project"],
+            src_code,
+            sess_tgt["project"],
+            tgt_parent_code=data.get("target_parent_code"),
+            id_mode=data.get("id_mode", "renumber"),
+            new_wbs_name=data.get("new_wbs_name"),
+        )
+        if not ok:
+            sess_tgt["undo_stack"].pop()
+            return jsonify({"error": msg}), 400
+
+        sess_tgt["redo_stack"].clear()
+        sess_tgt["last_undone"] = None
+        sess_tgt["edit_history"].append({
+            "instruction": f"[copy-branch] {msg}",
+            "commands": [],
+            "results": [{"action": "copy_wbs_branch", "success": True, "message": msg}],
+        })
+
+        return jsonify({
+            "success": True,
+            "message": msg,
+            "detail": detail,
+            "undo_count": len(sess_tgt["undo_stack"]),
+            "redo_count": len(sess_tgt["redo_stack"]),
+            "activity_count": len(sess_tgt["project"].activities),
+            "wbs_count": len(sess_tgt["project"].wbs_nodes),
+            "relation_count": len(sess_tgt["project"].relations),
+        })
+    except Exception as e:
+        return jsonify({"error": f"Copy failed: {str(e)}",
+                        "trace": traceback.format_exc()}), 500
 
 
 @app.route("/api/schedule", methods=["GET"])
