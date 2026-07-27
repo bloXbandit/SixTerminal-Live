@@ -7,3 +7,4 @@
 2026-07-22 · quorum · QUIET — gate green (23 tests), goals PASS, 1/3 actionable votes (below threshold); dissenting vote cited compost-inbox proposal needing human signature, not a code item
 2026-07-23 · quorum · QUIET — gate green (31 tests), goals PASS, 0/3 actionable votes; no new signal since 2026-07-22
 2026-07-24 · quorum · QUIET — gate green (31 tests), goals PASS, 0/3 actionable votes (unanimous); no new signal since 2026-07-23
+2026-07-27 · quorum · QUIET — gate green (47 tests), both standing goals PASS, 0/3 actionable votes (unanimous); no new signal since 2026-07-24
