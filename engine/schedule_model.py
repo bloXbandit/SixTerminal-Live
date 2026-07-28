@@ -118,7 +118,7 @@ class Project:
             f"  Calendars: {len(self.calendars)}"
         )
 
-    def llm_context(self, max_activities: int = 400) -> str:
+    def llm_context(self, max_activities: int = 3000) -> str:
         """
         Rich context string for the LLM.
         Includes WBS structure, full activity list with pred/succ links,
@@ -364,52 +364,120 @@ class Project:
                 lines.append(f"  {lr}")
 
         # ── Activity list ───────────────────────────────────────────────────
+        # Two-tier strategy:
+        #   ≤400 activities  → full format (per-line pred/succ, flags, float)
+        #   >400 activities  → compact WBS-grouped format (scales to 3000+)
+        #     Each activity: "A1000 Name | 5d | NS | C" (~45 chars vs ~120)
+        #     Relations listed separately in a compact block at the end.
+        total_acts = len(self.activities)
         lines.append("")
-        lines.append(f"ACTIVITIES ({len(self.activities)} total):")
+        lines.append(f"ACTIVITIES ({total_acts} total):")
 
-        shown = self.activities[:max_activities]
-        for a in shown:
-            wbs      = wbs_map.get(a.wbs_uid)
-            wbs_name = wbs.name if wbs else "?"
-            dur_days = f"{a.planned_duration / 8:.0f}d" if a.planned_duration else "0d"
+        if total_acts <= max_activities:
+            # ── Full format (≤400) ──────────────────────────────────────────
+            for a in self.activities:
+                wbs      = wbs_map.get(a.wbs_uid)
+                wbs_name = wbs.name if wbs else "?"
+                dur_days = f"{a.planned_duration / 8:.0f}d" if a.planned_duration else "0d"
 
-            fh = float_hrs(a)
-            if fh is None:
-                float_tag = " [no float data]"
-            elif fh <= 0:
-                float_tag = " [CRITICAL, float=0]"
-            elif fh <= 80:
-                float_tag = f" [NEAR-CRITICAL, float={fh/8:.1f}d]"
-            else:
-                float_tag = f" [float={fh/8:.0f}d]"
+                fh = float_hrs(a)
+                if fh is None:
+                    float_tag = " [no float data]"
+                elif fh <= 0:
+                    float_tag = " [CRITICAL, float=0]"
+                elif fh <= 80:
+                    float_tag = f" [NEAR-CRITICAL, float={fh/8:.1f}d]"
+                else:
+                    float_tag = f" [float={fh/8:.0f}d]"
 
-            flags = []
-            if a.constraint_type in HARD_CONSTRAINT_TYPES:
-                flags.append(f"HARD-CON:{a.constraint_type}")
-            elif a.constraint_type:
-                flags.append(f"CON:{a.constraint_type}")
-            if a.planned_duration and a.planned_duration > 352:
-                flags.append("LONG-DUR")
-            if not a.planned_duration and a.activity_type not in MILESTONE_TYPES:
-                flags.append("ZERO-DUR")
-            flag_str = (" [" + " | ".join(flags) + "]") if flags else ""
+                flags = []
+                if a.constraint_type in HARD_CONSTRAINT_TYPES:
+                    flags.append(f"HARD-CON:{a.constraint_type}")
+                elif a.constraint_type:
+                    flags.append(f"CON:{a.constraint_type}")
+                if a.planned_duration and a.planned_duration > 352:
+                    flags.append("LONG-DUR")
+                if not a.planned_duration and a.activity_type not in MILESTONE_TYPES:
+                    flags.append("ZERO-DUR")
+                flag_str = (" [" + " | ".join(flags) + "]") if flags else ""
 
-            preds_str = "PREDS: " + ", ".join(preds_of.get(a.uid, [])) if preds_of.get(a.uid) else "NO-PRED"
-            succs_str = "SUCCS: " + ", ".join(succs_of.get(a.uid, [])) if succs_of.get(a.uid) else "NO-SUCC"
-            rel_str   = f"  |  {preds_str}  |  {succs_str}"
+                preds_str = "PREDS: " + ", ".join(preds_of.get(a.uid, [])) if preds_of.get(a.uid) else "NO-PRED"
+                succs_str = "SUCCS: " + ", ".join(succs_of.get(a.uid, [])) if succs_of.get(a.uid) else "NO-SUCC"
+                rel_str   = f"  |  {preds_str}  |  {succs_str}"
 
-            lines.append(
-                f"  {a.activity_id} — {a.name}"
-                f"  |  WBS: {wbs_name}"
-                f"  |  {dur_days}"
-                f"  |  {a.status}"
-                f"{rel_str}"
-                f"{float_tag}"
-                f"{flag_str}"
-            )
+                lines.append(
+                    f"  {a.activity_id} — {a.name}"
+                    f"  |  WBS: {wbs_name}"
+                    f"  |  {dur_days}"
+                    f"  |  {a.status}"
+                    f"{rel_str}"
+                    f"{float_tag}"
+                    f"{flag_str}"
+                )
+        else:
+            # ── Compact format (>400, scales to 3000+) ─────────────────────
+            # Group activities by WBS, one line per activity but much shorter.
+            # Abbreviations: NS=Not Started, IP=In Progress, CP=Completed
+            #                C=Critical, NC=Near-Critical, MS=Milestone
+            _STATUS_ABBR = {"Not Started": "NS", "In Progress": "IP", "Completed": "CP"}
+            _MILESTONE_TYPES = {"Start Milestone", "Finish Milestone"}
 
-        if len(self.activities) > max_activities:
-            lines.append(f"  ... ({len(self.activities) - max_activities} more activities not shown)")
+            # Build WBS → activities map (preserve WBS order from self.wbs_nodes)
+            _wbs_acts: dict = {}
+            _acts_no_wbs: list = []
+            for a in self.activities:
+                w = wbs_map.get(a.wbs_uid)
+                if w:
+                    _wbs_acts.setdefault(w.uid, []).append(a)
+                else:
+                    _acts_no_wbs.append(a)
+
+            for w in self.wbs_nodes:
+                acts = _wbs_acts.get(w.uid)
+                if not acts:
+                    continue
+                lines.append(f"  [{w.code} — {w.name}] ({len(acts)} acts)")
+                for a in acts:
+                    dur = f"{a.planned_duration / 8:.0f}d" if a.planned_duration else "0d"
+                    st = _STATUS_ABBR.get(a.status, a.status[:2])
+                    fh = float_hrs(a)
+                    if fh is None:
+                        ft = ""
+                    elif fh <= 0:
+                        ft = " C"
+                    elif fh <= 80:
+                        ft = " NC"
+                    else:
+                        ft = ""
+                    ms = " MS" if a.activity_type in _MILESTONE_TYPES else ""
+                    lines.append(f"    {a.activity_id} {a.name} | {dur} | {st}{ft}{ms}")
+
+            if _acts_no_wbs:
+                lines.append(f"  [No WBS] ({len(_acts_no_wbs)} acts)")
+                for a in _acts_no_wbs:
+                    dur = f"{a.planned_duration / 8:.0f}d" if a.planned_duration else "0d"
+                    st = _STATUS_ABBR.get(a.status, a.status[:2])
+                    lines.append(f"    {a.activity_id} {a.name} | {dur} | {st}")
+
+            # ── Compact relations block (only for large schedules) ──────────
+            # Instead of per-activity pred/succ, list relations as
+            # "A1000→A1010 FS" — much denser than embedding in each activity line.
+            lines.append("")
+            lines.append(f"RELATIONSHIPS ({len(self.relations)} total, compact):")
+            for rel in self.relations:
+                p = act_by_uid.get(rel.predecessor_uid)
+                s = act_by_uid.get(rel.successor_uid)
+                if not p or not s:
+                    continue
+                rt = rel.type
+                abbr = ("FS" if "Finish to Start" in rt else
+                        "SS" if "Start to Start"  in rt else
+                        "FF" if "Finish to Finish" in rt else "SF")
+                lag = ""
+                if rel.lag and rel.lag != 0:
+                    ld = rel.lag / 8.0
+                    lag = f"+{ld:.0f}d" if ld > 0 else f"{ld:.0f}d"
+                lines.append(f"  {p.activity_id}→{s.activity_id} {abbr}{lag}")
 
         # ── Suggested next activity ID ───────────────────────────────────────
         numeric_ids = []

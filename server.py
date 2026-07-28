@@ -43,7 +43,7 @@ STATIC_DIR   = str(ROOT / "ui" / "static")
 
 # ── Enriched LLM context (lives here to avoid touching engine/ subdirectory) ──
 
-def build_llm_context(project, max_activities: int = 120) -> str:
+def build_llm_context(project, max_activities: int = 3000) -> str:
     """
     Rich context string for the LLM.
     Includes WBS, full activity list with pred/succ links,
