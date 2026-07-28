@@ -1541,7 +1541,7 @@
         <select id="cmp-select-b" class="cmp-select" onchange="onCmpProjectChange()"></select>
         <button class="cmp-btn primary" id="cmp-run-btn" onclick="runCompare()">Compare</button>
         <span style="margin-left:auto;font-size:11px;color:var(--text3);">
-          Load two schedules to compare them · copy a WBS branch from B into A
+          B → A actions: <b>Copy</b> appends · <b>Replace</b> swaps a section keeping logic · <b>apply</b> pulls single fields
         </span>
       </div>
       <div class="cmp-summary" id="cmp-summary" style="display:none;">
@@ -1740,7 +1740,25 @@ async function importFile(file, useLlm=false) {
   loading.innerHTML = `<span class="spinner"></span> Extracting <strong style="color:var(--text)">${escHtml(file.name)}</strong>… (offline)`;
   document.body.appendChild(loading);
   try {
-    const d = await fetch('/api/import/extract', {method:'POST', body: fd}).then(r => r.json());
+    const res = await fetch('/api/import/extract', {method:'POST', body: fd});
+    // A big PDF can be killed by the host (gateway timeout / out-of-memory)
+    // BEFORE our JSON error handler runs — the body is then an HTML error page,
+    // not JSON. Read as text and parse defensively so the user sees why.
+    const raw = await res.text();
+    let d;
+    try { d = JSON.parse(raw); }
+    catch(_) {
+      document.getElementById('upload-loading')?.remove();
+      const big = (file.size||0) > 4*1024*1024;
+      const hint = (res.status===502||res.status===504||res.status===0)
+        ? `The server didn't finish extracting <strong>${escHtml(file.name)}</strong> in time`
+          + (big ? ' — this file is large.' : '.')
+          + ' On the free tier, very large or scan-heavy PDFs can exceed the request limit.'
+          + ' Try splitting it into fewer pages, or export the schedule to Excel (.xlsx) and import that — Excel extraction is far faster and more exact.'
+        : `Unexpected server response (HTTP ${res.status}). ${escHtml(raw.slice(0,180))}`;
+      addMsg('system', errorCard(hint));
+      return;
+    }
     document.getElementById('upload-loading')?.remove();
     if (d.error) {
       if (/text layer|ai[- ]assist|scanned|offline/i.test(d.error)) {
@@ -4213,8 +4231,13 @@ function renderCompare(d) {
     if (sec.unchanged_count) counts.push(`<span style="color:var(--text3);">=${sec.unchanged_count}</span>`);
 
     const hasContent = sec.added.length || sec.removed.length || sec.changed.length;
+    const stop = 'event.stopPropagation();';
     const copyBtn = hasContent ? `<button class="cmp-btn" style="margin-left:10px;padding:2px 10px;font-size:10px;"
-      onclick="openCopyModal('${escAttr(sec.wbs_code)}','${escAttr(sec.wbs_name)}')">⧉ Copy branch</button>` : '';
+      onclick="${stop}openCopyModal('${escAttr(sec.wbs_code)}','${escAttr(sec.wbs_name)}')">⧉ Copy into A</button>` : '';
+    const replaceBtn = hasContent ? `<button class="cmp-btn" style="margin-left:6px;padding:2px 10px;font-size:10px;"
+      onclick="${stop}openReplaceModal('${escAttr(sec.wbs_code)}','${escAttr(sec.wbs_name)}')" title="Replace A's version of this section with B's, keeping the surrounding logic">⇄ Replace in A</button>` : '';
+    const applyAllBtn = sec.changed.length ? `<button class="cmp-btn" style="margin-left:6px;padding:2px 10px;font-size:10px;"
+      onclick="${stop}applyAllInSection('${escAttr(sec.wbs_code)}')" title="Pull every changed field in this section from B into A">✓ Apply all changes</button>` : '';
 
     let rows = '';
     if (sec.added.length) {
@@ -4239,19 +4262,22 @@ function renderCompare(d) {
     }
     if (sec.changed.length) {
       for (const c of sec.changed) {
-        for (const ch of c.changes) {
+        c.changes.forEach((ch, i) => {
+          const applyCell = `<button class="cmp-btn" style="padding:1px 8px;font-size:9px;"
+            onclick="applyChanges('${escAttr(c.activity_id)}','${escAttr(ch.attr||'')}')"
+            title="Set A's ${escAttr(ch.field)} to B's value">apply →A</button>`;
           rows += `<tr class="cmp-row-changed">
-            <td class="cmp-id">${escHtml(c.activity_id)}</td>
-            <td>${escHtml(c.name)}</td>
+            <td class="cmp-id">${i === 0 ? escHtml(c.activity_id) : ''}</td>
+            <td>${i === 0 ? escHtml(c.name) : ''}</td>
             <td colspan="3" style="font-size:10px;">
               <strong style="color:var(--orange);">${escHtml(ch.field)}:</strong>
               <span class="cmp-diff-from">${escHtml(ch.from || '(empty)')}</span>
               <span class="cmp-arrow">→</span>
               <span class="cmp-diff-to">${escHtml(ch.to || '(empty)')}</span>
             </td>
-            <td></td><td style="color:var(--orange);font-size:10px;">CHANGED</td>
+            <td>${applyCell}</td><td style="color:var(--orange);font-size:10px;">CHANGED</td>
           </tr>`;
-        }
+        });
       }
     }
 
@@ -4261,7 +4287,7 @@ function renderCompare(d) {
         <span class="cmp-wbs-name">${escHtml(sec.wbs_name)}</span>
         <span class="cmp-wbs-path">${escHtml(sec.wbs_path)}</span>
         <span class="cmp-section-counts">${counts.join(' ')}</span>
-        ${copyBtn}
+        ${applyAllBtn}${copyBtn}${replaceBtn}
       </div>
       <div class="cmp-section-body">
         <table class="cmp-table">
@@ -4395,6 +4421,124 @@ async function executeCopyBranch() {
       document.getElementById('sched-count-pill').textContent = d.activity_count;
       markScheduleStale();
     }
+  } catch(e) {
+    resultDiv.innerHTML = `<div style="color:var(--red);font-size:12px;">${escHtml(e.message)}</div>`;
+  }
+}
+
+// ── Activity-level apply (combine differences): pull B's fields into A ──────
+function _cmpEnds() {
+  // A = baseline (target we modify), B = updated (source of truth)
+  return { src: _cmpData?.project_b?.id, tgt: _cmpData?.project_a?.id };
+}
+
+async function _postApply(changes, label) {
+  const { src, tgt } = _cmpEnds();
+  if (!src || !tgt) { flashSched('Run a comparison first', true); return; }
+  try {
+    const d = await fetch('/api/apply-changes', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({source_project_id: src, target_project_id: tgt, changes}),
+    }).then(r => r.json());
+    if (d.error) { flashSched(d.error, true); return; }
+    flashSched(label || d.message);
+    if (tgt === _activeProjectId) markScheduleStale();
+    await runCompare();   // refresh the diff so applied fields disappear
+  } catch(e) { flashSched(e.message, true); }
+}
+
+function applyChanges(activityId, attr) {
+  const attrs = attr ? [attr] : ['*'];
+  _postApply([{activity_id: activityId, attrs}], `Applied ${attr || 'all fields'} on ${activityId}`);
+}
+
+function applyAllInSection(wbsCode) {
+  const sec = (_cmpData?.diff?.sections || []).find(s => s.wbs_code === wbsCode);
+  if (!sec || !sec.changed.length) return;
+  const changes = sec.changed.map(c => ({activity_id: c.activity_id, attrs: ['*']}));
+  _postApply(changes, `Applied all changes in ${sec.wbs_name}`);
+}
+
+// ── Replace section (Feature C — seam-preserving) ──────────────────────────
+function openReplaceModal(wbsCode, wbsName) {
+  if (_copyModalEl) _copyModalEl.remove();
+  const { src, tgt } = _cmpEnds();
+  const modal = document.createElement('div');
+  modal.className = 'cmp-copy-modal';
+  modal.innerHTML = `
+    <div class="cmp-copy-modal-inner">
+      <h3>Replace Section (keep the logic)</h3>
+      <div style="font-size:11px;color:var(--text3);margin-bottom:12px;line-height:1.5;">
+        Swaps <b>A</b>'s version of <b>${escHtml(wbsName)}</b> for <b>B</b>'s. The links
+        feeding into and out of the section (the "seam") are reconnected to the incoming
+        activities where they match; any that can't reconnect are left as open ends and listed.
+      </div>
+      <div class="field">
+        <label>Section (same WBS code in both A and B)</label>
+        <input id="cmp-rep-code" value="${escAttr(wbsCode)}" readonly>
+        <div style="font-size:11px;color:var(--text3);margin-top:3px;">${escHtml(wbsName)}</div>
+      </div>
+      <div class="field">
+        <label>Reconnect the seam by</label>
+        <select id="cmp-rep-match">
+          <option value="id">Activity ID — best when B keeps the same IDs (recommended)</option>
+          <option value="name">Activity name — use if B renumbered the activities</option>
+        </select>
+      </div>
+      <div class="field">
+        <label>Incoming activity IDs</label>
+        <select id="cmp-rep-idmode">
+          <option value="keep">Keep B's IDs (recommended for replace)</option>
+          <option value="renumber">Renumber into A's scheme</option>
+        </select>
+      </div>
+      <div id="cmp-rep-result" style="display:none;"></div>
+      <div class="actions">
+        <button class="cmp-btn" onclick="closeCopyModal()">Cancel</button>
+        <button class="cmp-btn primary" onclick="executeReplaceBranch()">Replace Section</button>
+      </div>
+    </div>`;
+  document.body.appendChild(modal);
+  _copyModalEl = modal;
+}
+
+async function executeReplaceBranch() {
+  const { src, tgt } = _cmpEnds();
+  const code = document.getElementById('cmp-rep-code').value;
+  const match = document.getElementById('cmp-rep-match').value;
+  const idMode = document.getElementById('cmp-rep-idmode').value;
+  const resultDiv = document.getElementById('cmp-rep-result');
+  resultDiv.style.display = 'block';
+  resultDiv.innerHTML = '<span class="spinner"></span> Replacing…';
+  try {
+    const d = await fetch('/api/replace-branch', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        source_project_id: src, target_project_id: tgt,
+        source_wbs_code: code, target_wbs_code: code,
+        id_mode: idMode, match,
+      }),
+    }).then(r => r.json());
+    if (d.error) { resultDiv.innerHTML = `<div style="color:var(--red);font-size:12px;">${escHtml(d.error)}</div>`; return; }
+    let html = `<div style="color:var(--green);font-size:12px;margin-bottom:8px;">✓ ${escHtml(d.message)}</div>`;
+    html += `<div style="font-size:11px;color:var(--text3);">
+      Out: ${d.detail.activities_removed} · In: ${d.detail.activities_copied} ·
+      Seams reconnected: ${d.detail.seams_reconnected}/${d.detail.seams_total}
+    </div>`;
+    const dropped = d.detail.seams_dropped || [];
+    if (dropped.length) {
+      html += `<div class="cmp-boundary-list"><strong style="color:var(--orange);">⚠ ${dropped.length} seam link(s) could not reconnect (open ends):</strong>`;
+      for (const s of dropped) {
+        html += `<div class="boundary-item"><code>${escHtml(s.outside_id)}</code> ⇢ <code>${escHtml(s.inside_id)}</code> [${escHtml(s.type)}] — no matching activity in B</div>`;
+      }
+      html += `</div>`;
+    }
+    resultDiv.innerHTML = html;
+    if (tgt === _activeProjectId) {
+      if (d.activity_count != null) document.getElementById('info-acts').textContent = d.activity_count;
+      markScheduleStale();
+    }
+    setTimeout(() => { closeCopyModal(); runCompare(); }, dropped.length ? 4000 : 1400);
   } catch(e) {
     resultDiv.innerHTML = `<div style="color:var(--red);font-size:12px;">${escHtml(e.message)}</div>`;
   }

@@ -30,7 +30,8 @@ from engine.edit_engine import (
 )
 from interpreter.llm_interpreter import interpret, create_project, MODELS, DEFAULT_MODEL
 from engine.importer import extract as import_extract, build_project_from_contract
-from engine.compare import compare_projects, copy_wbs_branch
+from engine.compare import (compare_projects, copy_wbs_branch,
+                            replace_wbs_branch, apply_activity_changes)
 
 TEMPLATE_DIR = str(ROOT / "ui" / "templates")
 STATIC_DIR   = str(ROOT / "ui" / "static")
@@ -1096,6 +1097,129 @@ def copy_branch():
         })
     except Exception as e:
         return jsonify({"error": f"Copy failed: {str(e)}",
+                        "trace": traceback.format_exc()}), 500
+
+
+@app.route("/api/replace-branch", methods=["POST"])
+def replace_branch():
+    """
+    Feature C — replace a WBS section in the target with the source version,
+    reconnecting the surrounding logic (seams) where possible.
+    Body: {
+      "source_project_id", "source_wbs_code",
+      "target_project_id" (optional — defaults to active), "target_wbs_code",
+      "id_mode": "keep" | "renumber"   (default "keep"),
+      "match":   "id" | "name"          (default "id" — how seams re-attach),
+      "new_wbs_name" (optional)
+    }
+    """
+    data = request.get_json() or {}
+    src_pid = data.get("source_project_id")
+    src_code = data.get("source_wbs_code")
+    tgt_code = data.get("target_wbs_code")
+    if not src_pid or not src_code or not tgt_code:
+        return jsonify({"error": "source_project_id, source_wbs_code and "
+                                 "target_wbs_code are required"}), 400
+    tgt_pid = data.get("target_project_id") or _active_id[0]
+    if not tgt_pid:
+        return jsonify({"error": "No target project — load a schedule first"}), 400
+
+    sess_src = _projects.get(src_pid)
+    sess_tgt = _projects.get(tgt_pid)
+    if not sess_src or not sess_src["project"]:
+        return jsonify({"error": f"Source project '{src_pid}' not found"}), 404
+    if not sess_tgt or not sess_tgt["project"]:
+        return jsonify({"error": f"Target project '{tgt_pid}' not found"}), 404
+
+    try:
+        tgt_stack = sess_tgt["undo_stack"]
+        tgt_stack.append((f"Replace section from {sess_src['project'].name}",
+                          _snapshot_project(sess_tgt["project"])))
+        if len(tgt_stack) > _MAX_UNDO:
+            tgt_stack.pop(0)
+
+        ok, msg, detail = replace_wbs_branch(
+            sess_src["project"], src_code,
+            sess_tgt["project"], tgt_code,
+            id_mode=data.get("id_mode", "keep"),
+            match=data.get("match", "id"),
+            new_wbs_name=data.get("new_wbs_name"),
+        )
+        if not ok:
+            sess_tgt["undo_stack"].pop()
+            return jsonify({"error": msg}), 400
+
+        sess_tgt["redo_stack"].clear()
+        sess_tgt["last_undone"] = None
+        sess_tgt["edit_history"].append({
+            "instruction": f"[replace-branch] {msg}", "commands": [],
+            "results": [{"action": "replace_wbs_branch", "success": True, "message": msg}],
+        })
+        return jsonify({
+            "success": True, "message": msg, "detail": detail,
+            "undo_count": len(sess_tgt["undo_stack"]),
+            "redo_count": len(sess_tgt["redo_stack"]),
+            "activity_count": len(sess_tgt["project"].activities),
+            "wbs_count": len(sess_tgt["project"].wbs_nodes),
+            "relation_count": len(sess_tgt["project"].relations),
+        })
+    except Exception as e:
+        return jsonify({"error": f"Replace failed: {str(e)}",
+                        "trace": traceback.format_exc()}), 500
+
+
+@app.route("/api/apply-changes", methods=["POST"])
+def apply_changes():
+    """
+    Pull individual activity field values from the source schedule into the
+    target — the "combine the differences" path.
+    Body: {
+      "source_project_id", "target_project_id" (optional — defaults to active),
+      "changes": [{"activity_id": "A1000", "attrs": ["name", "planned_duration"]}]
+                 attrs omitted or ["*"] applies every comparable field.
+    }
+    """
+    data = request.get_json() or {}
+    src_pid = data.get("source_project_id")
+    changes = data.get("changes") or []
+    if not src_pid or not changes:
+        return jsonify({"error": "source_project_id and a non-empty changes list "
+                                 "are required"}), 400
+    tgt_pid = data.get("target_project_id") or _active_id[0]
+    sess_src = _projects.get(src_pid)
+    sess_tgt = _projects.get(tgt_pid)
+    if not sess_src or not sess_src["project"]:
+        return jsonify({"error": f"Source project '{src_pid}' not found"}), 404
+    if not sess_tgt or not sess_tgt["project"]:
+        return jsonify({"error": f"Target project '{tgt_pid}' not found"}), 404
+
+    try:
+        tgt_stack = sess_tgt["undo_stack"]
+        tgt_stack.append((f"Apply changes from {sess_src['project'].name}",
+                          _snapshot_project(sess_tgt["project"])))
+        if len(tgt_stack) > _MAX_UNDO:
+            tgt_stack.pop(0)
+
+        ok, msg, detail = apply_activity_changes(
+            sess_src["project"], sess_tgt["project"], changes)
+        if not ok:
+            sess_tgt["undo_stack"].pop()
+            return jsonify({"error": msg}), 400
+
+        sess_tgt["redo_stack"].clear()
+        sess_tgt["last_undone"] = None
+        sess_tgt["edit_history"].append({
+            "instruction": f"[apply-changes] {msg}", "commands": [],
+            "results": [{"action": "apply_activity_changes", "success": True, "message": msg}],
+        })
+        return jsonify({
+            "success": True, "message": msg, "detail": detail,
+            "undo_count": len(sess_tgt["undo_stack"]),
+            "redo_count": len(sess_tgt["redo_stack"]),
+            "activity_count": len(sess_tgt["project"].activities),
+        })
+    except Exception as e:
+        return jsonify({"error": f"Apply failed: {str(e)}",
                         "trace": traceback.format_exc()}), 500
 
 

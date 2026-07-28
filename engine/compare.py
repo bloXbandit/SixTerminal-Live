@@ -151,7 +151,7 @@ def compare_projects(proj_a: Project, proj_b: Project) -> Dict[str, Any]:
             va = _fmt_val(field, a_act)
             vb = _fmt_val(field, b_act)
             if va != vb:
-                diffs.append({"field": label, "from": va, "to": vb})
+                diffs.append({"field": label, "attr": field, "from": va, "to": vb})
         if diffs:
             changed_list.append({
                 "activity_id": aid,
@@ -159,6 +159,9 @@ def compare_projects(proj_a: Project, proj_b: Project) -> Dict[str, Any]:
                 "wbs_uid": b_act.wbs_uid,
                 "changes": diffs,
             })
+            # remember the attr names so the UI can apply individual fields
+            changed_list[-1]["attrs"] = [f for f, _ in _FIELDS_TO_DIFF
+                                         if _fmt_val(f, a_act) != _fmt_val(f, b_act)]
         else:
             unchanged_count += 1
 
@@ -522,3 +525,214 @@ def copy_wbs_branch(
         msg += f" — {len(boundary_dropped)} boundary link(s) dropped (open ends)"
 
     return True, msg, detail
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Feature C — seam-preserving replace-in-place
+# ──────────────────────────────────────────────────────────────────────────────
+
+def replace_wbs_branch(
+    src_project: Project,
+    src_wbs_code: str,
+    tgt_project: Project,
+    tgt_wbs_code: str,
+    id_mode: str = "keep",
+    match: str = "id",
+    new_wbs_name: Optional[str] = None,
+) -> Tuple[bool, str, Dict[str, Any]]:
+    """
+    Replace an existing WBS branch in the target with the source branch, keeping
+    the surrounding logic (the "seam") intact wherever it can be reconnected.
+
+    How it differs from copy_wbs_branch:
+      • copy  → APPENDS the source branch as a new folder; boundary logic dropped.
+      • replace → DELETES the target's version of the branch, drops the source
+        branch in the same place, and RE-STITCHES the target's boundary links
+        (predecessors feeding in, successors fed from it) onto the incoming
+        activities. Seams that can't be matched dead-end as open ends and are
+        reported — nothing is silently rewired to the wrong activity.
+
+    Matching of a seam's inside endpoint to an incoming activity:
+      match="id"   → by activity_id (natural when id_mode="keep" and the source
+                     is an updated version of the same section)
+      match="name" → by activity name (use when IDs were renumbered)
+
+    Returns (success, message, detail) where detail includes:
+      wbs_removed, activities_removed, activities_copied, relations_copied,
+      seams_reconnected, seams_dropped:[{outside_id, inside_id, direction, type}],
+      boundary_links_dropped (from the source side, same shape as copy).
+    """
+    # ── Validate BOTH ends before mutating anything ─────────────────────────
+    src_wbs = next((w for w in src_project.wbs_nodes
+                    if w.code.lower() == src_wbs_code.lower()), None)
+    if not src_wbs:
+        return False, f"WBS '{src_wbs_code}' not found in source schedule", {}
+
+    tgt_wbs = next((w for w in tgt_project.wbs_nodes
+                    if w.code.lower() == tgt_wbs_code.lower()), None)
+    if not tgt_wbs:
+        return False, f"WBS '{tgt_wbs_code}' not found in target schedule", {}
+
+    _, src_acts = _collect_branch(src_project, src_wbs)
+    if not src_acts:
+        return False, f"Source WBS '{src_wbs.name}' has no activities to copy", {}
+
+    # Parent code of the target branch — the source drops into the same slot.
+    tgt_parent_uid = tgt_wbs.parent_uid
+    tgt_parent_code = None
+    if tgt_parent_uid:
+        p = next((w for w in tgt_project.wbs_nodes if w.uid == tgt_parent_uid), None)
+        tgt_parent_code = p.code if p else None
+
+    # ── Record the target branch + its seams BEFORE deleting ────────────────
+    branch_nodes, branch_acts = _collect_branch(tgt_project, tgt_wbs)
+    branch_node_uids = {w.uid for w in branch_nodes}
+    branch_act_uids = {a.uid for a in branch_acts}
+    tgt_act_by_uid = {a.uid: a for a in tgt_project.activities}
+
+    seams: List[Dict[str, Any]] = []
+    for r in tgt_project.relations:
+        p_in = r.predecessor_uid in branch_act_uids
+        s_in = r.successor_uid in branch_act_uids
+        if p_in == s_in:          # both in (internal) or both out (unrelated)
+            continue
+        inside_uid = r.predecessor_uid if p_in else r.successor_uid
+        outside_uid = r.successor_uid if p_in else r.predecessor_uid
+        inside_act = tgt_act_by_uid.get(inside_uid)
+        outside_act = tgt_act_by_uid.get(outside_uid)
+        if not inside_act or not outside_act:
+            continue
+        seams.append({
+            "outside_uid": outside_uid,
+            "outside_id": outside_act.activity_id,
+            "inside_id": inside_act.activity_id,
+            "inside_name": inside_act.name,
+            # "in" = inside activity is the successor (outside feeds into branch)
+            # "out" = inside activity is the predecessor (branch feeds outside)
+            "direction": "out" if p_in else "in",
+            "type": r.type,
+            "lag": r.lag,
+        })
+
+    # ── Delete the target branch (activities, its relations, WBS nodes) ─────
+    tgt_project.activities = [a for a in tgt_project.activities
+                              if a.uid not in branch_act_uids]
+    tgt_project.relations = [r for r in tgt_project.relations
+                             if r.predecessor_uid not in branch_act_uids
+                             and r.successor_uid not in branch_act_uids]
+    tgt_project.wbs_nodes = [w for w in tgt_project.wbs_nodes
+                             if w.uid not in branch_node_uids]
+    tgt_project.build_lookups()
+
+    # ── Drop the source branch into the same slot ───────────────────────────
+    ok, copy_msg, detail = copy_wbs_branch(
+        src_project, src_wbs_code, tgt_project,
+        tgt_parent_code=tgt_parent_code, id_mode=id_mode, new_wbs_name=new_wbs_name)
+    if not ok:
+        return False, f"Replace failed while copying source: {copy_msg}", {}
+
+    # ── Re-stitch seams onto the incoming activities ────────────────────────
+    reconnected = 0
+    seams_dropped: List[Dict[str, str]] = []
+    for s in seams:
+        if match == "name":
+            new_inside = next((a for a in tgt_project.activities
+                               if a.name.lower() == s["inside_name"].lower()
+                               and a.wbs_uid in {w.uid for w in tgt_project.wbs_nodes}), None)
+        else:  # id
+            new_inside = tgt_project.get_activity(activity_id=s["inside_id"])
+        outside = tgt_project.get_activity(uid=s["outside_uid"])
+        if new_inside and outside:
+            if s["direction"] == "out":     # inside was predecessor
+                pred, succ = new_inside.uid, outside.uid
+            else:                            # inside was successor
+                pred, succ = outside.uid, new_inside.uid
+            tgt_project.relations.append(Relation(
+                uid=_new_uid(), predecessor_uid=pred, successor_uid=succ,
+                type=s["type"], lag=s["lag"],
+            ))
+            reconnected += 1
+        else:
+            seams_dropped.append({
+                "outside_id": s["outside_id"],
+                "inside_id": s["inside_id"],
+                "direction": s["direction"],
+                "type": s["type"],
+            })
+
+    tgt_project.build_lookups()
+    from .schedule_model import compute_dates
+    try:
+        compute_dates(tgt_project)
+    except Exception:
+        pass
+
+    detail.update({
+        "wbs_removed": len(branch_nodes),
+        "activities_removed": len(branch_acts),
+        "seams_total": len(seams),
+        "seams_reconnected": reconnected,
+        "seams_dropped": seams_dropped,
+    })
+    msg = (f"Replaced '{tgt_wbs.name}' — {len(branch_acts)} activities out, "
+           f"{detail['activities_copied']} in, "
+           f"{reconnected}/{len(seams)} seam link(s) reconnected")
+    if seams_dropped:
+        msg += f", {len(seams_dropped)} could not reconnect (open ends)"
+    return True, msg, detail
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Activity-level replace / merge
+# ──────────────────────────────────────────────────────────────────────────────
+
+_APPLIABLE_ATTRS = {f for f, _ in _FIELDS_TO_DIFF}
+
+
+def apply_activity_changes(
+    src_project: Project,
+    tgt_project: Project,
+    changes: List[Dict[str, Any]],
+) -> Tuple[bool, str, Dict[str, Any]]:
+    """
+    Pull individual activity field values from src into tgt — the "combine the
+    differences" path. For each change, the matched target activity takes the
+    source's value for the named attributes.
+
+    changes: [{"activity_id": "A1000", "attrs": ["name", "planned_duration"]}]
+             attrs omitted or ["*"] → apply every comparable field.
+
+    Returns (success, message, {applied, skipped:[activity_id], fields_set}).
+    """
+    applied = 0
+    fields_set = 0
+    skipped: List[str] = []
+    for ch in changes:
+        aid = str(ch.get("activity_id") or "").strip()
+        src_act = src_project.get_activity(activity_id=aid)
+        tgt_act = tgt_project.get_activity(activity_id=aid)
+        if not src_act or not tgt_act:
+            skipped.append(aid)
+            continue
+        attrs = ch.get("attrs") or ["*"]
+        if "*" in attrs:
+            attrs = list(_APPLIABLE_ATTRS)
+        touched = False
+        for attr in attrs:
+            if attr not in _APPLIABLE_ATTRS:
+                continue
+            setattr(tgt_act, attr, getattr(src_act, attr, None))
+            fields_set += 1
+            touched = True
+        if touched:
+            applied += 1
+    tgt_project.build_lookups()
+    from .schedule_model import compute_dates
+    try:
+        compute_dates(tgt_project)
+    except Exception:
+        pass
+    msg = f"Applied {fields_set} field(s) across {applied} activit(y/ies)"
+    if skipped:
+        msg += f"; {len(skipped)} not found in both schedules"
+    return True, msg, {"applied": applied, "fields_set": fields_set, "skipped": skipped}

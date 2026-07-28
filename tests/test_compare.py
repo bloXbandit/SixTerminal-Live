@@ -121,3 +121,106 @@ def test_copy_branch_nests_under_target_parent():
     by = {w.uid: w for w in tgt.wbs_nodes}
     er = next(w for w in tgt.wbs_nodes if w.name == "ER 209")
     assert by[er.parent_uid].name == "Building"
+
+
+# ── Feature C: seam-preserving replace ───────────────────────────────────────
+
+def _target_with_section_and_seams():
+    """Target has section ER209 (A1000->A1010) plus outside activities linked
+    across the boundary: OUT_PRE -> A1000 (feeds in) and A1010 -> OUT_SUC
+    (feeds out). Replacing ER209 should reconnect BOTH seams to the new
+    same-ID activities."""
+    p = Project(uid="T", name="T", id="T")
+    p.calendars = [Calendar(uid="1", name="S")]
+    p.wbs_nodes = [
+        WBSNode(uid="root", name="Building", code="BLD"),
+        WBSNode(uid="sec", name="ER 209", code="ER209", parent_uid="root"),
+        WBSNode(uid="oth", name="Sitework", code="SITE", parent_uid="root"),
+    ]
+    p.activities = [
+        Activity(uid="pre", activity_id="OUT_PRE", name="Permit", wbs_uid="oth", calendar_uid="1", planned_duration=8.0),
+        Activity(uid="t1", activity_id="A1000", name="Old rough-in", wbs_uid="sec", calendar_uid="1", planned_duration=80.0),
+        Activity(uid="t2", activity_id="A1010", name="Old terminate", wbs_uid="sec", calendar_uid="1", planned_duration=80.0),
+        Activity(uid="suc", activity_id="OUT_SUC", name="Inspection", wbs_uid="oth", calendar_uid="1", planned_duration=8.0),
+    ]
+    p.relations = [
+        Relation(uid="ri", predecessor_uid="t1", successor_uid="t2"),   # internal (will be replaced)
+        Relation(uid="s_in", predecessor_uid="pre", successor_uid="t1"),  # seam IN
+        Relation(uid="s_out", predecessor_uid="t2", successor_uid="suc"), # seam OUT
+    ]
+    p.build_lookups()
+    return p
+
+
+def _source_updated_section():
+    """A newer ER209 keeping the same activity IDs but shorter durations, so a
+    keep+id replace reconnects the seams by ID."""
+    p = Project(uid="S", name="S", id="S")
+    p.calendars = [Calendar(uid="1", name="S")]
+    p.wbs_nodes = [WBSNode(uid="e", name="ER 209", code="ER209")]
+    p.activities = [
+        Activity(uid="n1", activity_id="A1000", name="New rough-in", wbs_uid="e", calendar_uid="1", planned_duration=16.0),
+        Activity(uid="n2", activity_id="A1010", name="New terminate", wbs_uid="e", calendar_uid="1", planned_duration=16.0),
+    ]
+    p.relations = [Relation(uid="nr", predecessor_uid="n1", successor_uid="n2")]
+    p.build_lookups()
+    return p
+
+
+def test_replace_swaps_activities_and_reconnects_both_seams():
+    from engine.compare import replace_wbs_branch
+    tgt = _target_with_section_and_seams()
+    src = _source_updated_section()
+    ok, msg, d = replace_wbs_branch(src, "ER209", tgt, "ER209", id_mode="keep", match="id")
+    assert ok, msg
+    # old section content is gone, new content is in
+    assert tgt.get_activity(activity_id="A1000").name == "New rough-in"
+    assert d["activities_removed"] == 2 and d["activities_copied"] == 2
+    # BOTH seams reconnected (OUT_PRE->A1000, A1010->OUT_SUC)
+    assert d["seams_reconnected"] == 2 and d["seams_dropped"] == []
+    new_a1000 = tgt.get_activity(activity_id="A1000").uid
+    new_a1010 = tgt.get_activity(activity_id="A1010").uid
+    pre = tgt.get_activity(activity_id="OUT_PRE").uid
+    suc = tgt.get_activity(activity_id="OUT_SUC").uid
+    pairs = {(r.predecessor_uid, r.successor_uid) for r in tgt.relations}
+    assert (pre, new_a1000) in pairs   # feeds-in seam restored
+    assert (new_a1010, suc) in pairs   # feeds-out seam restored
+
+
+def test_replace_drops_unmatchable_seam_as_open_end():
+    from engine.compare import replace_wbs_branch
+    tgt = _target_with_section_and_seams()
+    src = _source_updated_section()
+    # source no longer has A1010 -> the feeds-out seam has nothing to land on
+    src.activities = [a for a in src.activities if a.activity_id != "A1010"]
+    src.relations = []
+    src.build_lookups()
+    ok, msg, d = replace_wbs_branch(src, "ER209", tgt, "ER209", id_mode="keep", match="id")
+    assert ok, msg
+    assert d["seams_reconnected"] == 1       # only the feeds-in seam
+    assert len(d["seams_dropped"]) == 1
+    assert d["seams_dropped"][0]["inside_id"] == "A1010"
+
+
+def test_replace_validates_before_deleting_target():
+    from engine.compare import replace_wbs_branch
+    tgt = _target_with_section_and_seams()
+    src = _source_updated_section()
+    before = len(tgt.activities)
+    ok, msg, d = replace_wbs_branch(src, "NOPE", tgt, "ER209")
+    assert not ok
+    assert len(tgt.activities) == before      # target untouched on failure
+
+
+def test_apply_activity_changes_pulls_named_fields():
+    from engine.compare import apply_activity_changes
+    a = _src()
+    b = _src()
+    b.get_activity(activity_id="A1000").name = "Renamed in B"
+    b.get_activity(activity_id="A1000").planned_duration = 999.0
+    # pull only the name from b into a
+    ok, msg, d = apply_activity_changes(b, a, [{"activity_id": "A1000", "attrs": ["name"]}])
+    assert ok
+    assert a.get_activity(activity_id="A1000").name == "Renamed in B"
+    assert a.get_activity(activity_id="A1000").planned_duration == 40.0   # untouched
+    assert d["applied"] == 1
