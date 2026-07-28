@@ -1885,12 +1885,21 @@ async function importFileChunked(file, useLlm=false) {
       }).then(r => r.json());
 
       if (chunkD.error) {
-        await fetch('/api/import/extract-cancel', {
-          method: 'POST', headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({extract_id: extractId}),
-        }).catch(()=>{});
+        // If the server already cleaned up (scanned PDF), don't call cancel
+        if (!chunkD.scanned) {
+          await fetch('/api/import/extract-cancel', {
+            method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({extract_id: extractId}),
+          }).catch(()=>{});
+        }
+        extractId = null;  // server already cleaned up
         document.getElementById('upload-loading')?.remove();
-        addMsg('system', errorCard(chunkD.error));
+        if (chunkD.scanned) {
+          _importState.contract = null;
+          openImportModal(null, chunkD.error);
+        } else {
+          addMsg('system', errorCard(chunkD.error));
+        }
         return;
       }
       page = chunkD.pages_done;

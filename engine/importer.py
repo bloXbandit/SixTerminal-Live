@@ -638,6 +638,14 @@ def _read_pdf(path: str, engine: str = "auto") -> Tuple[List[List[Any]], str]:
 
 def _pdf_page_count(path: str) -> int:
     """Return the number of pages in a PDF (0 on error)."""
+    # Try pypdf first — it's much faster than pdfplumber for just counting
+    try:
+        from pypdf import PdfReader
+        reader = PdfReader(path)
+        return len(reader.pages)
+    except Exception:
+        pass
+    # Fall back to pdfplumber
     try:
         import pdfplumber
         with pdfplumber.open(path) as pdf:

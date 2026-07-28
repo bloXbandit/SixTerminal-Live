@@ -7,6 +7,7 @@ lxml>=5.0.0
 # Deterministic schedule import (offline, no LLM)
 openpyxl>=3.1.0          # Excel (.xlsx) extraction
 pdfplumber>=0.11.0       # text-layer PDF extraction
+pypdf>=4.0.0             # fast PDF page count (avoids pdfplumber overhead on large files)
 
 # Optional cloud persistence — Cloudflare R2 (S3-compatible) via boto3.
 # Inactive unless the R2_* env vars are set; the app runs in-memory otherwise.

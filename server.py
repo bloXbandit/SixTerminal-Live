@@ -465,12 +465,14 @@ def import_extract_route():
 
 # ── Chunked PDF extraction (avoids gateway timeouts on 20+ page PDFs) ──────────
 _extract_sessions: dict = {}   # extract_id -> {path, rows, total_pages, engine, filename}
-_CHUNK_SIZE = 4                # pages per request — tuned for ~5s max per chunk
+_CHUNK_SIZE = 3                # pages per request — tuned for Render free tier (~30s gateway timeout)
 
 
 @app.route("/api/import/extract-start", methods=["POST"])
 def import_extract_start():
-    """Upload a PDF, get page count + extract_id. Does NOT extract yet."""
+    """Upload a PDF, get page count + extract_id. Does NOT extract yet.
+    Kept as fast as possible: save file + count pages only. Text layer
+    check is deferred to the first chunk to avoid opening the PDF twice."""
     if "file" not in request.files:
         return jsonify({"error": "No file provided"}), 400
     f = request.files["file"]
@@ -484,6 +486,7 @@ def import_extract_start():
     f.save(tmp.name)
     tmp.close()
 
+    # Fast page count via pypdf (no pdfplumber overhead)
     total = _pdf_page_count(tmp.name)
     if total == 0:
         try:
@@ -492,16 +495,6 @@ def import_extract_start():
             pass
         return jsonify({"error": "Could not read PDF — file may be corrupted or password-protected."}), 400
 
-    has_text = _text_layer_present(tmp.name)
-    if not has_text:
-        try:
-            os.unlink(tmp.name)
-        except Exception:
-            pass
-        return jsonify({"error": "This PDF has no text layer (looks scanned/photographed). "
-                                 "Chunked extraction only works on digital PDFs with a text layer. "
-                                 "Enable AI assist on the regular import, or export to Excel."}), 400
-
     extract_id = f"ext_{os.path.basename(tmp.name)}"
     _extract_sessions[extract_id] = {
         "path": tmp.name,
@@ -509,6 +502,7 @@ def import_extract_start():
         "total_pages": total,
         "engine": "pdfplumber",
         "filename": filename,
+        "text_checked": False,     # text layer check deferred to first chunk
         "created_at": time.time(),
     }
     return jsonify({
@@ -531,6 +525,22 @@ def import_extract_chunk():
     sess = _extract_sessions[extract_id]
     page_start = data.get("page_start", 0)
     page_end = data.get("page_end", page_start + _CHUNK_SIZE)
+
+    # On the first chunk, check for text layer (deferred from extract-start
+    # to keep the upload request as fast as possible).
+    if page_start == 0 and not sess.get("text_checked"):
+        sess["text_checked"] = True
+        if not _text_layer_present(sess["path"]):
+            # Clean up and return a descriptive error
+            try:
+                os.unlink(sess["path"])
+            except Exception:
+                pass
+            _extract_sessions.pop(extract_id, None)
+            return jsonify({"error": "This PDF has no text layer (looks scanned/photographed). "
+                                     "Chunked extraction only works on digital PDFs with a text layer. "
+                                     "Enable AI assist on the regular import, or export to Excel.",
+                            "scanned": True}), 400
 
     try:
         chunk_rows = _read_pdf_pages(sess["path"], page_start, page_end)
