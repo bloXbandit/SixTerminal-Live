@@ -8,6 +8,10 @@ lxml>=5.0.0
 openpyxl>=3.1.0          # Excel (.xlsx) extraction
 pdfplumber>=0.11.0       # text-layer PDF extraction
 
+# Optional cloud persistence — Cloudflare R2 (S3-compatible) via boto3.
+# Inactive unless the R2_* env vars are set; the app runs in-memory otherwise.
+boto3>=1.34.0
+
 # Optional: stronger ruled-table PDF extraction. Requires a Java runtime, which
 # Render's Python image does NOT provide — the importer detects this and falls
 # back to pdfplumber automatically. For local use: pip install tabula-py

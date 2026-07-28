@@ -1290,6 +1290,10 @@
       <button class="btn btn-primary btn-full" id="download-btn" disabled onclick="startDownload()">
         ↓ Export XML
       </button>
+      <button class="btn btn-ghost btn-full" id="cloud-save-btn" onclick="saveToCloud()"
+              style="display:none;" title="Save all loaded schedules to Cloudflare R2">
+        ☁ Save to cloud <span class="undo-badge" id="cloud-badge" style="display:none"></span>
+      </button>
       <button class="btn btn-ghost btn-full" id="undo-btn" disabled onclick="doUndo()">
         ↩ Undo <span class="undo-badge" id="undo-badge" style="display:none">0</span>
       </button>
@@ -1651,6 +1655,39 @@ async function checkExistingSession() {
 }
 checkExistingSession();
 
+// ── Cloud (Cloudflare R2) persistence ──────────────────────────────────────
+let _cloudOn = false;
+async function checkCloudStatus() {
+  try {
+    const s = await fetch('/api/cloud/status').then(r => r.json());
+    _cloudOn = !!s.configured;
+    const btn = document.getElementById('cloud-save-btn');
+    if (btn) {
+      btn.style.display = _cloudOn ? 'block' : 'none';
+      btn.title = _cloudOn
+        ? `Save all loaded schedules to Cloudflare R2 (bucket: ${s.bucket})`
+        : 'Cloud storage not configured';
+    }
+  } catch(e) { _cloudOn = false; }
+}
+checkCloudStatus();
+
+async function saveToCloud() {
+  const btn = document.getElementById('cloud-save-btn');
+  const badge = document.getElementById('cloud-badge');
+  if (btn) btn.disabled = true;
+  if (badge) { badge.style.display = 'inline-block'; badge.textContent = '…'; }
+  try {
+    const d = await fetch('/api/cloud/save', {method:'POST'}).then(r => r.json());
+    if (d.error) { flashSched(d.error, true); }
+    else { flashSched(d.message); }
+  } catch(e) { flashSched(e.message, true); }
+  finally {
+    if (btn) btn.disabled = false;
+    if (badge) badge.style.display = 'none';
+  }
+}
+
 function updateModelIndicator(key, keySet) {
   const el = document.getElementById('model-indicator');
   const labels = {'gpt-4.1-mini':'GPT-4.1 Mini','gpt-4.1-nano':'GPT-4.1 Nano','claude':'Claude Sonnet'};
@@ -1730,6 +1767,18 @@ let _importState = { file: null, contract: null };
 
 async function importFile(file, useLlm=false) {
   _importState.file = file;
+  const isPdf = file.name.toLowerCase().endsWith('.pdf');
+
+  // For PDFs, use chunked extraction to avoid gateway timeouts on 20+ page files.
+  // For Excel and other formats, keep the original single-request path.
+  if (isPdf) {
+    await importFileChunked(file, useLlm);
+  } else {
+    await importFileSingle(file, useLlm);
+  }
+}
+
+async function importFileSingle(file, useLlm=false) {
   const fd = new FormData();
   fd.append('file', file);
   fd.append('pdf_engine', 'auto');
@@ -1773,6 +1822,111 @@ async function importFile(file, useLlm=false) {
     openImportModal(d.contract, null);
   } catch(e) {
     document.getElementById('upload-loading')?.remove();
+    addMsg('system', errorCard(e.message));
+  }
+}
+
+async function importFileChunked(file, useLlm=false) {
+  // Phase 1: upload the file and get page count
+  const loading = document.createElement('div');
+  loading.id = 'upload-loading';
+  loading.style.cssText = 'position:fixed;bottom:80px;left:50%;transform:translateX(-50%);background:var(--surface2,#111820);border:1px solid var(--border2);border-radius:8px;padding:12px 22px;font-size:12px;color:var(--text2);z-index:90;display:flex;align-items:center;gap:10px;min-width:320px;';
+  loading.innerHTML = `<span class="spinner"></span> <span id="chunk-status">Uploading <strong style="color:var(--text)">${escHtml(file.name)}</strong>…</span>`;
+  document.body.appendChild(loading);
+
+  let extractId = null;
+  let totalPages = 0;
+  let chunkSize = 4;
+
+  try {
+    // ── Start: upload file ──────────────────────────────────────────────
+    const fd = new FormData();
+    fd.append('file', file);
+    const startRes = await fetch('/api/import/extract-start', {method:'POST', body: fd});
+    const startRaw = await startRes.text();
+    let startD;
+    try { startD = JSON.parse(startRaw); }
+    catch(_) {
+      document.getElementById('upload-loading')?.remove();
+      addMsg('system', errorCard(`Server returned an unexpected response (HTTP ${startRes.status}). The file may be too large to upload.`));
+      return;
+    }
+    if (startD.error) {
+      document.getElementById('upload-loading')?.remove();
+      if (/text layer|scanned/i.test(startD.error)) {
+        _importState.contract = null;
+        openImportModal(null, startD.error);
+      } else {
+        addMsg('system', errorCard(startD.error));
+      }
+      return;
+    }
+    extractId = startD.extract_id;
+    totalPages = startD.total_pages;
+    chunkSize = startD.chunk_size || 4;
+
+    // ── Chunk loop: extract pages in batches ────────────────────────────
+    const progressBar = `<div style="width:200px;height:6px;background:var(--surface3);border-radius:3px;overflow:hidden;margin-top:4px;">
+      <div id="chunk-progress-fill" style="width:0%;height:100%;background:var(--accent);transition:width .3s;"></div>
+    </div>`;
+    loading.innerHTML = `<span class="spinner"></span> <span id="chunk-status">Extracting page 0/${totalPages}…</span> ${progressBar}`;
+
+    let page = 0;
+    while (page < totalPages) {
+      const pageEnd = Math.min(page + chunkSize, totalPages);
+      const statusEl = document.getElementById('chunk-status');
+      if (statusEl) statusEl.textContent = `Extracting pages ${page + 1}-${pageEnd} of ${totalPages}…`;
+      const fillEl = document.getElementById('chunk-progress-fill');
+      if (fillEl) fillEl.style.width = `${Math.round((page / totalPages) * 100)}%`;
+
+      const chunkD = await fetch('/api/import/extract-chunk', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({extract_id: extractId, page_start: page, page_end: pageEnd}),
+      }).then(r => r.json());
+
+      if (chunkD.error) {
+        await fetch('/api/import/extract-cancel', {
+          method: 'POST', headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({extract_id: extractId}),
+        }).catch(()=>{});
+        document.getElementById('upload-loading')?.remove();
+        addMsg('system', errorCard(chunkD.error));
+        return;
+      }
+      page = chunkD.pages_done;
+    }
+
+    // Update progress to 100%
+    const fillEl = document.getElementById('chunk-progress-fill');
+    if (fillEl) fillEl.style.width = '100%';
+    const statusEl = document.getElementById('chunk-status');
+    if (statusEl) statusEl.textContent = `Assembling schedule from ${totalPages} pages…`;
+
+    // ── Finish: assemble contract ───────────────────────────────────────
+    const finishD = await fetch('/api/import/extract-finish', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({extract_id: extractId}),
+    }).then(r => r.json());
+
+    document.getElementById('upload-loading')?.remove();
+    extractId = null;  // finish cleans up server-side
+
+    if (finishD.error) {
+      addMsg('system', errorCard(finishD.error));
+      return;
+    }
+    _importState.contract = finishD.contract;
+    openImportModal(finishD.contract, null);
+
+  } catch(e) {
+    document.getElementById('upload-loading')?.remove();
+    // Clean up server-side session if we still have one
+    if (extractId) {
+      fetch('/api/import/extract-cancel', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({extract_id: extractId}),
+      }).catch(()=>{});
+    }
     addMsg('system', errorCard(e.message));
   }
 }

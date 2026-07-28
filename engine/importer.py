@@ -636,6 +636,47 @@ def _read_pdf(path: str, engine: str = "auto") -> Tuple[List[List[Any]], str]:
     return rows, used
 
 
+def _pdf_page_count(path: str) -> int:
+    """Return the number of pages in a PDF (0 on error)."""
+    try:
+        import pdfplumber
+        with pdfplumber.open(path) as pdf:
+            return len(pdf.pages)
+    except Exception:
+        return 0
+
+
+def _read_pdf_pages(path: str, page_start: int, page_end: int,
+                    engine: str = "pdfplumber") -> List[List[Any]]:
+    """
+    Extract rows from a specific page range [page_start, page_end) (0-indexed,
+    half-open).  Used for chunked extraction so each HTTP request only processes
+    a few pages and stays well under gateway timeouts.
+
+    Currently only supports pdfplumber (the pure-Python default).  Tabula doesn't
+    support per-page ranges cleanly, so chunked extraction falls back to
+    pdfplumber — which is fine because tabula is only a fallback for sparse PDFs
+    and the full-file path remains available.
+    """
+    import pdfplumber
+    out: List[List[Any]] = []
+    with pdfplumber.open(path) as pdf:
+        total = len(pdf.pages)
+        lo = max(0, page_start)
+        hi = min(total, page_end)
+        for i in range(lo, hi):
+            page = pdf.pages[i]
+            tables = page.extract_tables() or []
+            for tbl in tables:
+                for r in tbl:
+                    out.append([("" if c is None else str(c).replace("\n", " ").strip())
+                                for c in r])
+            if not tables:
+                words = page.extract_words(use_text_flow=True) or []
+                out.extend(_cluster_words(words))
+    return out
+
+
 def _cluster_words(words: List[Dict]) -> List[List[str]]:
     """Group extracted words into rows by y, then columns by x gaps."""
     if not words:

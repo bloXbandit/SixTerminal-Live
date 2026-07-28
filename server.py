@@ -12,6 +12,7 @@ import os
 import sys
 import copy
 import json
+import time
 import tempfile
 import traceback
 from pathlib import Path
@@ -29,9 +30,11 @@ from engine.edit_engine import (
     generate_schedule_report,
 )
 from interpreter.llm_interpreter import interpret, create_project, MODELS, DEFAULT_MODEL
-from engine.importer import extract as import_extract, build_project_from_contract
+from engine.importer import extract as import_extract, build_project_from_contract, \
+    _pdf_page_count, _read_pdf_pages, _rows_to_contract, _text_layer_present
 from engine.compare import (compare_projects, copy_wbs_branch,
                             replace_wbs_branch, apply_activity_changes)
+from engine import cloud_store
 
 TEMPLATE_DIR = str(ROOT / "ui" / "templates")
 STATIC_DIR   = str(ROOT / "ui" / "static")
@@ -257,6 +260,89 @@ def _push_undo(label: str):
     stack.append((label, _snapshot_project(sess["project"])))
     if len(stack) > _MAX_UNDO:
         stack.pop(0)
+    _mark_dirty(_active_id[0])
+
+
+# ── Cloud persistence (Cloudflare R2, optional) ────────────────────────────────
+_dirty_pids: set = set()          # projects edited since the last cloud flush
+
+
+def _mark_dirty(pid):
+    """Queue a project to be saved to cloud after the request finishes."""
+    if pid and cloud_store.is_configured():
+        _dirty_pids.add(pid)
+
+
+def _project_to_xml_bytes(project) -> bytes:
+    """Serialize a project to P6 XML bytes using the existing writer."""
+    tmp = tempfile.NamedTemporaryFile(suffix=".xml", delete=False)
+    tmp.close()
+    try:
+        write_p6_xml(project, tmp.name)
+        with open(tmp.name, "rb") as fh:
+            return fh.read()
+    finally:
+        try:
+            os.unlink(tmp.name)
+        except Exception:
+            pass
+
+
+def _persist(pid):
+    """Save one project to cloud now. Non-fatal on failure."""
+    sess = _projects.get(pid)
+    if not sess or not sess["project"]:
+        return False, "no project"
+    try:
+        xml = _project_to_xml_bytes(sess["project"])
+        return cloud_store.save(pid, xml, {
+            "source_name": sess.get("source_name"),
+            "project_name": sess["project"].name,
+            "activity_count": len(sess["project"].activities),
+        })
+    except Exception as e:
+        return False, f"serialize failed: {e}"
+
+
+@app.after_request
+def _flush_dirty_to_cloud(resp):
+    """Autosave: after any request, persist projects that were edited."""
+    if not _dirty_pids:
+        return resp
+    pids = list(_dirty_pids)
+    _dirty_pids.clear()
+    for pid in pids:
+        try:
+            _persist(pid)
+        except Exception:
+            pass  # never let a cloud save break the response
+    return resp
+
+
+def _restore_from_cloud():
+    """On startup, load every schedule stored in R2 back into memory."""
+    if not cloud_store.is_configured():
+        return
+    try:
+        items = cloud_store.load_all()
+    except Exception:
+        return
+    for it in items:
+        pid = it["pid"]
+        try:
+            tmp = tempfile.NamedTemporaryFile(suffix=".xml", delete=False)
+            tmp.write(it["xml_bytes"])
+            tmp.close()
+            project = load_xml(tmp.name)
+            os.unlink(tmp.name)
+        except Exception:
+            continue
+        meta = it.get("meta") or {}
+        sess = _make_session(pid, meta.get("source_name") or f"{pid}.xml")
+        sess["project"] = project
+        _projects[pid] = sess
+        if _active_id[0] is None:
+            _active_id[0] = pid
 
 
 def _project_list_item(pid: str) -> dict:
@@ -313,6 +399,7 @@ def upload_file():
         sess["source_path"] = tmp.name
         _projects[pid]      = sess
         _active_id[0]       = pid
+        _mark_dirty(pid)
 
         return jsonify({
             "success":        True,
@@ -376,6 +463,137 @@ def import_extract_route():
             pass
 
 
+# ── Chunked PDF extraction (avoids gateway timeouts on 20+ page PDFs) ──────────
+_extract_sessions: dict = {}   # extract_id -> {path, rows, total_pages, engine, filename}
+_CHUNK_SIZE = 4                # pages per request — tuned for ~5s max per chunk
+
+
+@app.route("/api/import/extract-start", methods=["POST"])
+def import_extract_start():
+    """Upload a PDF, get page count + extract_id. Does NOT extract yet."""
+    if "file" not in request.files:
+        return jsonify({"error": "No file provided"}), 400
+    f = request.files["file"]
+    filename = f.filename or "schedule"
+    ext = Path(filename).suffix.lower()
+    if ext != ".pdf":
+        return jsonify({"error": "Chunked extraction is for PDFs only. "
+                                 "Use /api/import/extract for Excel."}), 400
+
+    tmp = tempfile.NamedTemporaryFile(suffix=".pdf", delete=False)
+    f.save(tmp.name)
+    tmp.close()
+
+    total = _pdf_page_count(tmp.name)
+    if total == 0:
+        try:
+            os.unlink(tmp.name)
+        except Exception:
+            pass
+        return jsonify({"error": "Could not read PDF — file may be corrupted or password-protected."}), 400
+
+    has_text = _text_layer_present(tmp.name)
+    if not has_text:
+        try:
+            os.unlink(tmp.name)
+        except Exception:
+            pass
+        return jsonify({"error": "This PDF has no text layer (looks scanned/photographed). "
+                                 "Chunked extraction only works on digital PDFs with a text layer. "
+                                 "Enable AI assist on the regular import, or export to Excel."}), 400
+
+    extract_id = f"ext_{os.path.basename(tmp.name)}"
+    _extract_sessions[extract_id] = {
+        "path": tmp.name,
+        "rows": [],
+        "total_pages": total,
+        "engine": "pdfplumber",
+        "filename": filename,
+        "created_at": time.time(),
+    }
+    return jsonify({
+        "success": True,
+        "extract_id": extract_id,
+        "total_pages": total,
+        "chunk_size": _CHUNK_SIZE,
+        "filename": filename,
+    })
+
+
+@app.route("/api/import/extract-chunk", methods=["POST"])
+def import_extract_chunk():
+    """Process one chunk of pages and accumulate rows server-side."""
+    data = request.get_json() or {}
+    extract_id = data.get("extract_id")
+    if not extract_id or extract_id not in _extract_sessions:
+        return jsonify({"error": "Invalid or expired extract_id"}), 400
+
+    sess = _extract_sessions[extract_id]
+    page_start = data.get("page_start", 0)
+    page_end = data.get("page_end", page_start + _CHUNK_SIZE)
+
+    try:
+        chunk_rows = _read_pdf_pages(sess["path"], page_start, page_end)
+        sess["rows"].extend(chunk_rows)
+        pages_done = page_end
+        return jsonify({
+            "success": True,
+            "pages_done": pages_done,
+            "total_pages": sess["total_pages"],
+            "rows_in_chunk": len(chunk_rows),
+            "total_rows": len(sess["rows"]),
+        })
+    except Exception as e:
+        return jsonify({"error": f"Chunk extraction failed: {str(e)}"}), 500
+
+
+@app.route("/api/import/extract-finish", methods=["POST"])
+def import_extract_finish():
+    """Assemble accumulated rows into a contract, clean up temp file."""
+    data = request.get_json() or {}
+    extract_id = data.get("extract_id")
+    if not extract_id or extract_id not in _extract_sessions:
+        return jsonify({"error": "Invalid or expired extract_id"}), 400
+
+    sess = _extract_sessions[extract_id]
+    try:
+        rows = sess["rows"]
+        meta = {
+            "source_name": sess["filename"],
+            "project_name": Path(sess["filename"]).stem,
+            "engine": sess["engine"],
+            "file_type": "pdf",
+            "warnings": [],
+        }
+        contract = _rows_to_contract(rows, meta)
+        contract["meta"]["source_name"] = sess["filename"]
+        contract["meta"]["project_name"] = Path(sess["filename"]).stem
+        return jsonify({"success": True, "contract": contract})
+    except Exception as e:
+        return jsonify({"error": f"Contract assembly failed: {str(e)}",
+                        "trace": traceback.format_exc()}), 500
+    finally:
+        try:
+            os.unlink(sess["path"])
+        except Exception:
+            pass
+        _extract_sessions.pop(extract_id, None)
+
+
+@app.route("/api/import/extract-cancel", methods=["POST"])
+def import_extract_cancel():
+    """Cancel a chunked extraction and clean up the temp file."""
+    data = request.get_json() or {}
+    extract_id = data.get("extract_id")
+    if extract_id and extract_id in _extract_sessions:
+        sess = _extract_sessions.pop(extract_id)
+        try:
+            os.unlink(sess["path"])
+        except Exception:
+            pass
+    return jsonify({"success": True})
+
+
 @app.route("/api/import/commit", methods=["POST"])
 def import_commit_route():
     """Materialize a reviewed extraction contract and load it as the active schedule."""
@@ -409,6 +627,7 @@ def import_commit_route():
             sess["project"] = project
             _projects[pid] = sess
             _active_id[0] = pid
+        _mark_dirty(pid)
 
         return jsonify({
             "success": True, "project_id": pid, "project_name": project.name,
@@ -748,6 +967,7 @@ def undo():
     sess["last_undone"] = label
     sess["project"] = snapshot
     project = snapshot
+    _mark_dirty(_active_id[0])
     return jsonify({"success": True, "undone_label": label, "undo_count": len(stack),
                     "redo_count": len(sess["redo_stack"]), "project_name": project.name,
                     "activity_count": len(project.activities), "wbs_count": len(project.wbs_nodes),
@@ -982,6 +1202,32 @@ def switch_project():
     })
 
 
+@app.route("/api/cloud/status", methods=["GET"])
+def cloud_status():
+    """Secret-free view of whether R2 persistence is active."""
+    st = cloud_store.status()
+    st["saved_projects"] = len(_projects) if st.get("configured") else 0
+    return jsonify(st)
+
+
+@app.route("/api/cloud/save", methods=["POST"])
+def cloud_save():
+    """Manual 'Save to cloud' — flushes every loaded project to R2 now."""
+    if not cloud_store.is_configured():
+        return jsonify({"error": "Cloud storage isn't configured. Set the R2_* "
+                                 "environment variables to enable it."}), 400
+    saved, failed = [], []
+    for pid in list(_projects):
+        ok, _msg = _persist(pid)
+        (saved if ok else failed).append(pid)
+    _dirty_pids.clear()
+    if failed:
+        return jsonify({"error": f"Saved {len(saved)}, failed {len(failed)}: "
+                                 f"{', '.join(failed)}", "saved": saved}), 502
+    return jsonify({"success": True, "saved": saved,
+                    "message": f"Saved {len(saved)} schedule(s) to Cloudflare R2"})
+
+
 @app.route("/api/projects/delete", methods=["POST"])
 def delete_project():
     data = request.get_json() or {}
@@ -989,6 +1235,12 @@ def delete_project():
     if pid not in _projects:
         return jsonify({"error": f"Project '{pid}' not found"}), 404
     del _projects[pid]
+    _dirty_pids.discard(pid)
+    if cloud_store.is_configured():
+        try:
+            cloud_store.delete(pid)
+        except Exception:
+            pass
     if _active_id[0] == pid:
         _active_id[0] = next(iter(_projects), None)
     return jsonify({"success": True, "active_id": _active_id[0],
@@ -1084,6 +1336,7 @@ def copy_branch():
             "commands": [],
             "results": [{"action": "copy_wbs_branch", "success": True, "message": msg}],
         })
+        _mark_dirty(tgt_pid)
 
         return jsonify({
             "success": True,
@@ -1155,6 +1408,7 @@ def replace_branch():
             "instruction": f"[replace-branch] {msg}", "commands": [],
             "results": [{"action": "replace_wbs_branch", "success": True, "message": msg}],
         })
+        _mark_dirty(tgt_pid)
         return jsonify({
             "success": True, "message": msg, "detail": detail,
             "undo_count": len(sess_tgt["undo_stack"]),
@@ -1212,6 +1466,7 @@ def apply_changes():
             "instruction": f"[apply-changes] {msg}", "commands": [],
             "results": [{"action": "apply_activity_changes", "success": True, "message": msg}],
         })
+        _mark_dirty(tgt_pid)
         return jsonify({
             "success": True, "message": msg, "detail": detail,
             "undo_count": len(sess_tgt["undo_stack"]),
@@ -1449,6 +1704,14 @@ def clear_session():
     _projects.clear()
     _active_id[0] = None
     return jsonify({"success": True})
+
+
+# Restore any cloud-persisted schedules at startup (no-op unless R2 is
+# configured). Runs at import time so it also applies under gunicorn.
+try:
+    _restore_from_cloud()
+except Exception:
+    pass
 
 
 if __name__ == "__main__":
