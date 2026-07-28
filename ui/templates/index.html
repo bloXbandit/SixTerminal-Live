@@ -1827,30 +1827,49 @@ async function importFileSingle(file, useLlm=false) {
 }
 
 async function importFileChunked(file, useLlm=false) {
-  // Phase 1: upload the file and get page count
   const loading = document.createElement('div');
   loading.id = 'upload-loading';
-  loading.style.cssText = 'position:fixed;bottom:80px;left:50%;transform:translateX(-50%);background:var(--surface2,#111820);border:1px solid var(--border2);border-radius:8px;padding:12px 22px;font-size:12px;color:var(--text2);z-index:90;display:flex;align-items:center;gap:10px;min-width:320px;';
+  loading.style.cssText = 'position:fixed;bottom:80px;left:50%;transform:translateX(-50%);background:var(--surface2,#111820);border:1px solid var(--border2);border-radius:8px;padding:12px 22px;font-size:12px;color:var(--text2);z-index:90;display:flex;flex-direction:column;align-items:center;gap:6px;min-width:340px;';
   loading.innerHTML = `<span class="spinner"></span> <span id="chunk-status">Uploading <strong style="color:var(--text)">${escHtml(file.name)}</strong>…</span>`;
   document.body.appendChild(loading);
 
   let extractId = null;
   let totalPages = 0;
-  let chunkSize = 4;
+  let chunkSize = 3;
+  let currentPage = 0;
+
+  // Helper: safe fetch that handles empty/truncated responses (the main
+  // symptom of Render killing the connection — "Unexpected end of JSON input")
+  async function safeJson(url, opts, retries=2) {
+    for (let attempt = 0; attempt <= retries; attempt++) {
+      try {
+        const res = await fetch(url, opts);
+        const raw = await res.text();
+        if (!raw || !raw.trim()) {
+          // Empty body — server was killed mid-response
+          if (attempt < retries) {
+            await new Promise(r => setTimeout(r, 1500));
+            continue;
+          }
+          return {error: `Server returned an empty response (HTTP ${res.status}). The connection may have been dropped — this happens on Render's free tier with large PDFs.`, empty: true};
+        }
+        return JSON.parse(raw);
+      } catch(e) {
+        if (attempt < retries) {
+          await new Promise(r => setTimeout(r, 1500));
+          continue;
+        }
+        return {error: e.message, network: true};
+      }
+    }
+    return {error: 'Request failed after retries'};
+  }
 
   try {
     // ── Start: upload file ──────────────────────────────────────────────
     const fd = new FormData();
     fd.append('file', file);
-    const startRes = await fetch('/api/import/extract-start', {method:'POST', body: fd});
-    const startRaw = await startRes.text();
-    let startD;
-    try { startD = JSON.parse(startRaw); }
-    catch(_) {
-      document.getElementById('upload-loading')?.remove();
-      addMsg('system', errorCard(`Server returned an unexpected response (HTTP ${startRes.status}). The file may be too large to upload.`));
-      return;
-    }
+    const startD = await safeJson('/api/import/extract-start', {method:'POST', body: fd}, 1);
     if (startD.error) {
       document.getElementById('upload-loading')?.remove();
       if (/text layer|scanned/i.test(startD.error)) {
@@ -1863,46 +1882,65 @@ async function importFileChunked(file, useLlm=false) {
     }
     extractId = startD.extract_id;
     totalPages = startD.total_pages;
-    chunkSize = startD.chunk_size || 4;
+    chunkSize = startD.chunk_size || 3;
 
-    // ── Chunk loop: extract pages in batches ────────────────────────────
-    const progressBar = `<div style="width:200px;height:6px;background:var(--surface3);border-radius:3px;overflow:hidden;margin-top:4px;">
+    // ── Chunk loop: extract pages in batches with retry + adaptive sizing ──
+    const progressBar = `<div style="width:240px;height:6px;background:var(--surface3);border-radius:3px;overflow:hidden;margin-top:4px;">
       <div id="chunk-progress-fill" style="width:0%;height:100%;background:var(--accent);transition:width .3s;"></div>
     </div>`;
     loading.innerHTML = `<span class="spinner"></span> <span id="chunk-status">Extracting page 0/${totalPages}…</span> ${progressBar}`;
 
-    let page = 0;
-    while (page < totalPages) {
-      const pageEnd = Math.min(page + chunkSize, totalPages);
-      const statusEl = document.getElementById('chunk-status');
-      if (statusEl) statusEl.textContent = `Extracting pages ${page + 1}-${pageEnd} of ${totalPages}…`;
-      const fillEl = document.getElementById('chunk-progress-fill');
-      if (fillEl) fillEl.style.width = `${Math.round((page / totalPages) * 100)}%`;
+    currentPage = 0;
+    let consecutiveFailures = 0;
 
-      const chunkD = await fetch('/api/import/extract-chunk', {
+    while (currentPage < totalPages) {
+      const pageEnd = Math.min(currentPage + chunkSize, totalPages);
+      const statusEl = document.getElementById('chunk-status');
+      if (statusEl) statusEl.textContent = `Extracting pages ${currentPage + 1}-${pageEnd} of ${totalPages}…`;
+      const fillEl = document.getElementById('chunk-progress-fill');
+      if (fillEl) fillEl.style.width = `${Math.round((currentPage / totalPages) * 100)}%`;
+
+      const chunkD = await safeJson('/api/import/extract-chunk', {
         method: 'POST', headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({extract_id: extractId, page_start: page, page_end: pageEnd}),
-      }).then(r => r.json());
+        body: JSON.stringify({extract_id: extractId, page_start: currentPage, page_end: pageEnd}),
+      }, 2);
 
       if (chunkD.error) {
-        // If the server already cleaned up (scanned PDF), don't call cancel
-        if (!chunkD.scanned) {
-          await fetch('/api/import/extract-cancel', {
+        consecutiveFailures++;
+        if (chunkD.scanned) {
+          extractId = null;
+          document.getElementById('upload-loading')?.remove();
+          _importState.contract = null;
+          openImportModal(null, chunkD.error);
+          return;
+        }
+        if (chunkD.empty || chunkD.network) {
+          // Connection dropped — try reducing chunk size before giving up
+          if (chunkSize > 1 && consecutiveFailures < 3) {
+            chunkSize = Math.max(1, Math.floor(chunkSize / 2));
+            if (statusEl) statusEl.textContent = `Retrying with ${chunkSize} page${chunkSize>1?'s':''} at a time…`;
+            await new Promise(r => setTimeout(r, 2000));
+            continue;
+          }
+          // Too many failures — offer to finish with what we have so far
+          document.getElementById('upload-loading')?.remove();
+          _showChunkResumeDialog(extractId, currentPage, totalPages, file.name);
+          return;
+        }
+        // Other error — clean up and show
+        if (extractId) {
+          fetch('/api/import/extract-cancel', {
             method: 'POST', headers: {'Content-Type': 'application/json'},
             body: JSON.stringify({extract_id: extractId}),
           }).catch(()=>{});
         }
-        extractId = null;  // server already cleaned up
         document.getElementById('upload-loading')?.remove();
-        if (chunkD.scanned) {
-          _importState.contract = null;
-          openImportModal(null, chunkD.error);
-        } else {
-          addMsg('system', errorCard(chunkD.error));
-        }
+        addMsg('system', errorCard(chunkD.error));
         return;
       }
-      page = chunkD.pages_done;
+
+      consecutiveFailures = 0;
+      currentPage = chunkD.pages_done;
     }
 
     // Update progress to 100%
@@ -1912,13 +1950,13 @@ async function importFileChunked(file, useLlm=false) {
     if (statusEl) statusEl.textContent = `Assembling schedule from ${totalPages} pages…`;
 
     // ── Finish: assemble contract ───────────────────────────────────────
-    const finishD = await fetch('/api/import/extract-finish', {
+    const finishD = await safeJson('/api/import/extract-finish', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({extract_id: extractId}),
-    }).then(r => r.json());
+    }, 1);
 
     document.getElementById('upload-loading')?.remove();
-    extractId = null;  // finish cleans up server-side
+    extractId = null;
 
     if (finishD.error) {
       addMsg('system', errorCard(finishD.error));
@@ -1929,7 +1967,6 @@ async function importFileChunked(file, useLlm=false) {
 
   } catch(e) {
     document.getElementById('upload-loading')?.remove();
-    // Clean up server-side session if we still have one
     if (extractId) {
       fetch('/api/import/extract-cancel', {
         method: 'POST', headers: {'Content-Type': 'application/json'},
@@ -1938,6 +1975,94 @@ async function importFileChunked(file, useLlm=false) {
     }
     addMsg('system', errorCard(e.message));
   }
+}
+
+function _showChunkResumeDialog(extractId, pagesDone, totalPages, filename) {
+  const pct = Math.round((pagesDone / totalPages) * 100);
+  const banner = document.createElement('div');
+  banner.style.cssText = 'position:fixed;bottom:80px;left:50%;transform:translateX(-50%);background:var(--surface2,#111820);border:1px solid var(--orange);border-radius:10px;padding:16px 24px;font-size:13px;color:var(--text2);z-index:95;max-width:480px;text-align:center;';
+  banner.innerHTML = `
+    <div style="color:var(--orange);font-weight:700;margin-bottom:8px;">⚠ Extraction interrupted</div>
+    <div>Extracted <strong style="color:var(--text)">${pagesDone} of ${totalPages}</strong> pages (${pct}%) from <strong style="color:var(--text)">${escHtml(filename)}</strong>.</div>
+    <div style="margin-top:6px;color:var(--text3);font-size:11px;">The server connection was dropped — common on Render's free tier with large PDFs.</div>
+    <div style="margin-top:12px;display:flex;gap:8px;justify-content:center;">
+      <button id="resume-finish-btn" style="padding:6px 16px;border-radius:6px;border:1px solid var(--border2);background:var(--accent);color:white;cursor:pointer;font-weight:600;">Finish with ${pagesDone} pages</button>
+      <button id="resume-retry-btn" style="padding:6px 16px;border-radius:6px;border:1px solid var(--border2);background:var(--surface3);color:var(--text);cursor:pointer;">Retry remaining ${totalPages - pagesDone} pages</button>
+      <button id="resume-cancel-btn" style="padding:6px 16px;border-radius:6px;border:1px solid var(--border2);background:transparent;color:var(--text3);cursor:pointer;">Cancel</button>
+    </div>`;
+  document.body.appendChild(banner);
+
+  banner.querySelector('#resume-finish-btn').onclick = async () => {
+    banner.remove();
+    const loading = document.createElement('div');
+    loading.id = 'upload-loading';
+    loading.style.cssText = 'position:fixed;bottom:80px;left:50%;transform:translateX(-50%);background:var(--surface2,#111820);border:1px solid var(--border2);border-radius:8px;padding:10px 18px;font-size:12px;color:var(--text2);z-index:90;';
+    loading.innerHTML = `<span class="spinner"></span> Assembling from ${pagesDone} pages…`;
+    document.body.appendChild(loading);
+    try {
+      const finishD = await fetch('/api/import/extract-finish', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({extract_id: extractId}),
+      }).then(r => r.json());
+      loading.remove();
+      if (finishD.error) { addMsg('system', errorCard(finishD.error)); return; }
+      _importState.contract = finishD.contract;
+      openImportModal(finishD.contract, null);
+    } catch(e) { loading.remove(); addMsg('system', errorCard(e.message)); }
+  };
+
+  banner.querySelector('#resume-retry-btn').onclick = async () => {
+    banner.remove();
+    // Continue the chunk loop from where we left off, 1 page at a time
+    const loading = document.createElement('div');
+    loading.id = 'upload-loading';
+    loading.style.cssText = 'position:fixed;bottom:80px;left:50%;transform:translateX(-50%);background:var(--surface2,#111820);border:1px solid var(--border2);border-radius:8px;padding:12px 22px;font-size:12px;color:var(--text2);z-index:90;display:flex;flex-direction:column;align-items:center;gap:6px;min-width:340px;';
+    loading.innerHTML = `<span class="spinner"></span> <span id="chunk-status">Retrying page ${pagesDone + 1} of ${totalPages}…</span>
+      <div style="width:240px;height:6px;background:var(--surface3);border-radius:3px;overflow:hidden;margin-top:4px;">
+        <div id="chunk-progress-fill" style="width:${Math.round((pagesDone/totalPages)*100)}%;height:100%;background:var(--accent);transition:width .3s;"></div>
+      </div>`;
+    document.body.appendChild(loading);
+    let page = pagesDone;
+    let failCount = 0;
+    while (page < totalPages) {
+      const pageEnd = Math.min(page + 1, totalPages); // 1 page at a time for retry
+      const statusEl = document.getElementById('chunk-status');
+      if (statusEl) statusEl.textContent = `Retrying page ${page + 1} of ${totalPages}…`;
+      const fillEl = document.getElementById('chunk-progress-fill');
+      if (fillEl) fillEl.style.width = `${Math.round((page / totalPages) * 100)}%`;
+      try {
+        const chunkD = await fetch('/api/import/extract-chunk', {
+          method: 'POST', headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({extract_id: extractId, page_start: page, page_end: pageEnd}),
+        }).then(r => r.json());
+        if (chunkD.error) { failCount++; if (failCount > 3) break; await new Promise(r=>setTimeout(r,2000)); continue; }
+        page = chunkD.pages_done;
+        failCount = 0;
+      } catch(e) { failCount++; if (failCount > 3) break; await new Promise(r=>setTimeout(r,2000)); }
+    }
+    loading.remove();
+    if (page > 0) {
+      // Try to finish with whatever we got
+      try {
+        const finishD = await fetch('/api/import/extract-finish', {
+          method: 'POST', headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({extract_id: extractId}),
+        }).then(r => r.json());
+        if (finishD.contract) { _importState.contract = finishD.contract; openImportModal(finishD.contract, null); return; }
+      } catch(e) {}
+    }
+    addMsg('system', errorCard('Could not resume extraction. The server may have restarted — try uploading again.'));
+  };
+
+  banner.querySelector('#resume-cancel-btn').onclick = () => {
+    banner.remove();
+    if (extractId) {
+      fetch('/api/import/extract-cancel', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({extract_id: extractId}),
+      }).catch(()=>{});
+    }
+  };
 }
 
 function openImportModal(contract, errMsg) {

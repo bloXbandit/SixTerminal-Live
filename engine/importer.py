@@ -685,6 +685,43 @@ def _read_pdf_pages(path: str, page_start: int, page_end: int,
     return out
 
 
+def open_pdf_handle(path: str):
+    """Open a PDF with pdfplumber and return the handle. Caller must close it."""
+    import pdfplumber
+    return pdfplumber.open(path)
+
+
+def _read_pdf_pages_from_handle(pdf, page_start: int, page_end: int) -> List[List[Any]]:
+    """
+    Extract rows from an already-open pdfplumber PDF handle.
+    Avoids re-parsing the entire PDF on every chunk — critical for large PDFs
+    on memory-constrained hosts (Render free tier = 512MB).
+    """
+    out: List[List[Any]] = []
+    total = len(pdf.pages)
+    lo = max(0, page_start)
+    hi = min(total, page_end)
+    for i in range(lo, hi):
+        page = pdf.pages[i]
+        tables = page.extract_tables() or []
+        for tbl in tables:
+            for r in tbl:
+                out.append([("" if c is None else str(c).replace("\n", " ").strip())
+                            for c in r])
+        if not tables:
+            words = page.extract_words(use_text_flow=True) or []
+            out.extend(_cluster_words(words))
+    return out
+
+
+def _text_layer_from_handle(pdf) -> bool:
+    """Check text layer from an already-open pdfplumber handle (first 3 pages)."""
+    for page in pdf.pages[:3]:
+        if (page.extract_text() or "").strip():
+            return True
+    return False
+
+
 def _cluster_words(words: List[Dict]) -> List[List[str]]:
     """Group extracted words into rows by y, then columns by x gaps."""
     if not words:

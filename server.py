@@ -31,7 +31,8 @@ from engine.edit_engine import (
 )
 from interpreter.llm_interpreter import interpret, create_project, MODELS, DEFAULT_MODEL
 from engine.importer import extract as import_extract, build_project_from_contract, \
-    _pdf_page_count, _read_pdf_pages, _rows_to_contract, _text_layer_present
+    _pdf_page_count, _read_pdf_pages, _rows_to_contract, _text_layer_present, \
+    open_pdf_handle, _read_pdf_pages_from_handle, _text_layer_from_handle
 from engine.compare import (compare_projects, copy_wbs_branch,
                             replace_wbs_branch, apply_activity_changes)
 from engine import cloud_store
@@ -468,6 +469,25 @@ _extract_sessions: dict = {}   # extract_id -> {path, rows, total_pages, engine,
 _CHUNK_SIZE = 3                # pages per request — tuned for Render free tier (~30s gateway timeout)
 
 
+def _cleanup_extract_session(extract_id: str):
+    """Close pdfplumber handle, delete temp file, and remove session."""
+    sess = _extract_sessions.pop(extract_id, None)
+    if not sess:
+        return
+    # Close the pdfplumber handle if open
+    try:
+        h = sess.get("pdf_handle")
+        if h:
+            h.close()
+    except Exception:
+        pass
+    # Delete the temp file
+    try:
+        os.unlink(sess["path"])
+    except Exception:
+        pass
+
+
 @app.route("/api/import/extract-start", methods=["POST"])
 def import_extract_start():
     """Upload a PDF, get page count + extract_id. Does NOT extract yet.
@@ -516,7 +536,10 @@ def import_extract_start():
 
 @app.route("/api/import/extract-chunk", methods=["POST"])
 def import_extract_chunk():
-    """Process one chunk of pages and accumulate rows server-side."""
+    """Process one chunk of pages and accumulate rows server-side.
+    Uses a persistent pdfplumber handle stored in the session — avoids
+    re-parsing the entire PDF on every chunk (the main cause of OOM kills
+    and gateway timeouts on large PDFs)."""
     data = request.get_json() or {}
     extract_id = data.get("extract_id")
     if not extract_id or extract_id not in _extract_sessions:
@@ -526,24 +549,30 @@ def import_extract_chunk():
     page_start = data.get("page_start", 0)
     page_end = data.get("page_end", page_start + _CHUNK_SIZE)
 
-    # On the first chunk, check for text layer (deferred from extract-start
-    # to keep the upload request as fast as possible).
+    # On the first chunk, open the pdfplumber handle and check text layer.
+    # The handle stays open across all subsequent chunks — this is the key
+    # optimization: we parse the PDF structure once, not N times.
     if page_start == 0 and not sess.get("text_checked"):
         sess["text_checked"] = True
-        if not _text_layer_present(sess["path"]):
-            # Clean up and return a descriptive error
-            try:
-                os.unlink(sess["path"])
-            except Exception:
-                pass
-            _extract_sessions.pop(extract_id, None)
+        try:
+            sess["pdf_handle"] = open_pdf_handle(sess["path"])
+        except Exception as e:
+            _cleanup_extract_session(extract_id)
+            return jsonify({"error": f"Failed to open PDF: {str(e)}"}), 500
+        if not _text_layer_from_handle(sess["pdf_handle"]):
+            _cleanup_extract_session(extract_id)
             return jsonify({"error": "This PDF has no text layer (looks scanned/photographed). "
                                      "Chunked extraction only works on digital PDFs with a text layer. "
                                      "Enable AI assist on the regular import, or export to Excel.",
                             "scanned": True}), 400
 
     try:
-        chunk_rows = _read_pdf_pages(sess["path"], page_start, page_end)
+        pdf = sess.get("pdf_handle")
+        if pdf is None:
+            # Handle was lost (server restart?) — re-open as fallback
+            sess["pdf_handle"] = open_pdf_handle(sess["path"])
+            pdf = sess["pdf_handle"]
+        chunk_rows = _read_pdf_pages_from_handle(pdf, page_start, page_end)
         sess["rows"].extend(chunk_rows)
         pages_done = page_end
         return jsonify({
@@ -583,24 +612,16 @@ def import_extract_finish():
         return jsonify({"error": f"Contract assembly failed: {str(e)}",
                         "trace": traceback.format_exc()}), 500
     finally:
-        try:
-            os.unlink(sess["path"])
-        except Exception:
-            pass
-        _extract_sessions.pop(extract_id, None)
+        _cleanup_extract_session(extract_id)
 
 
 @app.route("/api/import/extract-cancel", methods=["POST"])
 def import_extract_cancel():
-    """Cancel a chunked extraction and clean up the temp file."""
+    """Cancel a chunked extraction and clean up the temp file + handle."""
     data = request.get_json() or {}
     extract_id = data.get("extract_id")
     if extract_id and extract_id in _extract_sessions:
-        sess = _extract_sessions.pop(extract_id)
-        try:
-            os.unlink(sess["path"])
-        except Exception:
-            pass
+        _cleanup_extract_session(extract_id)
     return jsonify({"success": True})
 
 
