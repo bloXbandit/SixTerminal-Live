@@ -8,3 +8,4 @@ date	votes	woke	outcome
 2026-07-23	Q0/3	no	QUIET — gate green (31 tests), goals PASS, 0/3 actionable votes; compost-inbox proposals await human signature only
 2026-07-24	0/3	no	quiet — gate green (31 tests), both standing goals PASS, clean tree; 3/3 voters unanimous QUIET, compost-inbox proposals still await human signature (LAWS #8), no new signal since 2026-07-23
 2026-07-27	0/3	no	quiet — gate green (47 tests), both standing goals PASS, no FAILED lines, no VIOLATED goals; 3/3 voters unanimous QUIET, uncommitted changes are routine goal-ledger timestamp bumps only
+2026-07-28	0/3	no	quiet — gate green (47 tests), both standing goals PASS, no FAILED lines, no VIOLATED goals; 3/3 voters unanimous QUIET, uncommitted changes are routine goal-ledger timestamp bumps only, no new code signal since 2026-07-24
