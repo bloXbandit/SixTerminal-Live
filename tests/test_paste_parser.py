@@ -119,3 +119,22 @@ def test_empty_paste_is_reported_not_crashed():
 def test_names_only_paste_warns_about_missing_ids():
     rows, info = parse_pasted_text("Pour slab\nStrip forms\nCure")
     assert any("ID" in w for w in info["warnings"])
+
+
+# ── No-date rows: duration must not vanish into the name ─────────────────────
+
+def test_duration_survives_when_the_row_has_no_dates():
+    """A paste of just id + name + duration is common. Without dates to anchor
+    on, the column gap is the only signal — but the duration must still land in
+    the duration column rather than being glued onto the name."""
+    rows, _ = parse_pasted_text("MDC1.FDG.1290   Team Approach Award   45")
+    _, name, dur, _, _ = rows[1]
+    assert name == "Team Approach Award"
+    assert dur == "45"
+
+
+def test_a_number_inside_the_name_is_not_a_duration_when_there_are_no_dates():
+    rows, _ = parse_pasted_text("MDC1.FDG.1290   Install Panel 42")
+    _, name, dur, _, _ = rows[1]
+    assert name == "Install Panel 42"
+    assert dur == ""

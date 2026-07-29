@@ -99,12 +99,22 @@ def _split_line(line: str) -> List[str]:
 
     head = raw[:head_end].rstrip()
 
-    # ── duration: the trailing integer of the head, just before the dates ────
+    # ── duration: the trailing number of the head, just before the dates ─────
     duration = ""
     m = re.search(r"(?:^|\s)(\d+(?:\.\d+)?\s*[dhwDHW]?)$", head)
     if m and dates:
+        # dates anchor the row, so a trailing number here is unambiguous
         duration = m.group(1).strip()
         head = head[:m.start()].rstrip()
+    elif not dates:
+        # No dates to anchor against, so "Install Panel 42" and "Rough-in  10"
+        # look alike. Fall back to the column gap: a duration is separated from
+        # the name by the run of spaces that used to be a column boundary, while
+        # a number belonging to the name sits one space away.
+        m2 = re.search(r"\s{2,}(\d+(?:\.\d+)?\s*[dhwDHW]?)$", head)
+        if m2:
+            duration = m2.group(1).strip()
+            head = head[:m2.start()].rstrip()
 
     # ── id: a leading token with the shape of an activity code ───────────────
     act_id = ""
