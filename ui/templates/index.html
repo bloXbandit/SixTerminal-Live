@@ -1239,6 +1239,73 @@
   </div>
 </div>
 
+<!-- ══ PASTE ROWS MODAL ═══════════════════════════════════ -->
+<div class="modal-overlay" id="paste-modal" onclick="closeModal('paste-modal',event)">
+  <div class="modal wide">
+    <div class="modal-head">
+      <h2><span class="mh-icon">⎘</span> Paste Activities</h2>
+    </div>
+    <div class="modal-body">
+      <!-- STEP 1 -->
+      <div id="paste-step-1">
+        <div style="font-size:12px;color:var(--text2);line-height:1.6;margin-bottom:10px;">
+          Select the activity rows in your PDF (or Excel), copy them, and paste below.
+          Columns are read automatically — no upload, so schedule size doesn't matter.
+        </div>
+        <div style="font-size:11px;color:var(--text3);margin-bottom:8px;">
+          Expected layout — extra columns are ignored, missing ones are fine:
+          <code style="color:var(--accent);">ID &nbsp; Activity Name &nbsp; Duration &nbsp; Start &nbsp; Finish</code><br>
+          <span style="opacity:.8;">A trailing <b>A</b> marks an actual date (sets % complete);
+          <b>*</b> marks a constraint. A line with no ID is treated as a section heading.</span>
+        </div>
+        <textarea id="paste-text" spellcheck="false" placeholder="MDC1.FDG.1290   Team Approach Trades Award (A Trades)   1   02-Jul-25 A   02-Jul-25 A&#10;MDC1.FDG.1670   LLE Selection / Pricing Generators (4MW)  77   25-Aug-25 A   12-Dec-25"
+          style="width:100%;height:200px;background:var(--panel2,#0d1117);color:var(--text);border:1px solid var(--border2);border-radius:8px;font-family:var(--mono);font-size:11px;padding:10px;outline:none;resize:vertical;white-space:pre;overflow-wrap:normal;overflow-x:auto;"></textarea>
+      </div>
+
+      <!-- STEP 2 -->
+      <div id="paste-step-2" style="display:none;">
+        <div id="paste-summary" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:10px;font-size:12px;"></div>
+        <div id="paste-warnings" style="margin-bottom:10px;"></div>
+        <div style="font-size:11px;color:var(--text3);margin-bottom:6px;">Preview — check a few rows before loading:</div>
+        <div style="max-height:260px;overflow:auto;border:1px solid var(--border);border-radius:8px;">
+          <table class="sched-table" style="min-width:640px;">
+            <thead><tr>
+              <th>ID</th><th>Activity Name</th><th style="text-align:right;">Dur</th>
+              <th>Start</th><th>Finish</th><th>Status</th><th>WBS</th>
+            </tr></thead>
+            <tbody id="paste-preview-body"></tbody>
+          </table>
+        </div>
+        <div style="margin-top:14px;padding-top:12px;border-top:1px solid var(--border);">
+          <div style="font-size:12px;color:var(--text);font-weight:500;margin-bottom:8px;">Where should these go?</div>
+          <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;font-size:11px;">
+            <label style="display:inline-flex;align-items:center;gap:6px;cursor:pointer;">
+              <input type="radio" name="paste-dest" value="existing" checked onchange="onPasteDestChange()"> Into an existing folder
+            </label>
+            <select id="paste-wbs-select" class="cmp-select" style="min-width:220px;"></select>
+            <label style="display:inline-flex;align-items:center;gap:6px;cursor:pointer;">
+              <input type="radio" name="paste-dest" value="new" onchange="onPasteDestChange()"> Into a new folder
+            </label>
+            <input id="paste-new-wbs" placeholder="New folder name" disabled
+              style="background:var(--panel2,#0d1117);color:var(--text);border:1px solid var(--border2);border-radius:6px;font-size:11px;padding:5px 9px;min-width:180px;">
+          </div>
+          <label style="display:inline-flex;align-items:center;gap:6px;margin-top:10px;font-size:11px;color:var(--text3);cursor:pointer;">
+            <input type="checkbox" id="paste-keep-structure"> Keep the section headings from the paste as sub-folders
+          </label>
+        </div>
+      </div>
+    </div>
+    <div class="modal-foot">
+      <span id="paste-back" style="margin-right:auto;display:none;">
+        <button class="btn btn-ghost" onclick="pasteBackToEdit()">‹ Back to text</button>
+      </span>
+      <button class="btn btn-ghost" onclick="closeModal('paste-modal')">Cancel</button>
+      <button class="btn btn-primary" id="paste-next-btn" onclick="parsePastedRows()">Read rows →</button>
+      <button class="btn btn-primary" id="paste-commit-btn" style="display:none;" onclick="commitPastedRows()">Add to schedule</button>
+    </div>
+  </div>
+</div>
+
 <!-- ══ TOP BAR ════════════════════════════════════════════ -->
 <div class="topbar">
   <div class="logo-block">
@@ -1378,6 +1445,8 @@
         <button class="col-toggle edit-toggle" id="edit-toggle-btn" onclick="toggleEditMode()">✎ Edit</button>
         <button class="col-toggle" id="add-act-btn" onclick="toggleActForm()">＋ Activity</button>
         <button class="col-toggle" id="add-wbs-btn" onclick="toggleWbsForm()">＋ WBS</button>
+        <button class="col-toggle" id="paste-rows-btn" onclick="openPasteModal()"
+                title="Paste a block of activities copied from a PDF or Excel">⎘ Paste rows</button>
         <span class="sched-sep"></span>
         <button class="col-toggle" id="sched-undo-btn" onclick="doUndo()" disabled
                 title="Undo last change (Ctrl/Cmd+Z)">↩ Undo <span class="undo-badge" id="sched-undo-badge" style="display:none">0</span></button>
@@ -2183,6 +2252,147 @@ function retryImportWithLlm() {
   if (!_importState.file) return;
   closeModal('import-modal');
   importFile(_importState.file, useLlm);
+}
+
+// ═══════════════════════════════════════════════════
+//  Paste activities (copied out of a PDF or Excel)
+// ═══════════════════════════════════════════════════
+let _pasteContract = null;
+
+function openPasteModal() {
+  if (!lastSchedData) { flashSched('Load a schedule first', true); return; }
+  _pasteContract = null;
+  pasteBackToEdit();
+  document.getElementById('paste-text').value = '';
+  // folder list, indented by depth so the hierarchy reads properly
+  const sel = document.getElementById('paste-wbs-select');
+  const secs = lastSchedData?.wbs_sections || [];
+  sel.innerHTML = secs.map(w =>
+    `<option value="${escAttr(w.code)}">${'&nbsp;'.repeat((w.depth||0)*3)}${escHtml(w.name)}</option>`
+  ).join('');
+  // default to the folder of whatever is selected, else the last one used
+  let want = lastActWbs;
+  if (selectedIds.size) {
+    const first = [...selectedIds][0];
+    secs.forEach(w => (w.activities||[]).forEach(a => { if (a.activity_id === first) want = w.name; }));
+  }
+  if (want) { const m = secs.find(w => w.name === want); if (m) sel.value = m.code; }
+  openModal('paste-modal');
+  setTimeout(() => document.getElementById('paste-text').focus(), 60);
+}
+
+function pasteBackToEdit() {
+  document.getElementById('paste-step-1').style.display = '';
+  document.getElementById('paste-step-2').style.display = 'none';
+  document.getElementById('paste-next-btn').style.display = '';
+  document.getElementById('paste-commit-btn').style.display = 'none';
+  document.getElementById('paste-back').style.display = 'none';
+}
+
+function onPasteDestChange() {
+  const useNew = document.querySelector('input[name="paste-dest"]:checked')?.value === 'new';
+  document.getElementById('paste-new-wbs').disabled = !useNew;
+  document.getElementById('paste-wbs-select').disabled = useNew;
+  if (useNew) document.getElementById('paste-new-wbs').focus();
+}
+
+async function parsePastedRows() {
+  const text = document.getElementById('paste-text').value;
+  if (!text.trim()) { flashSched('Paste some rows first', true); return; }
+  const btn = document.getElementById('paste-next-btn');
+  btn.disabled = true; btn.textContent = 'Reading…';
+  try {
+    const d = await fetch('/api/import/paste', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ text })
+    }).then(r => r.json());
+    btn.disabled = false; btn.textContent = 'Read rows →';
+    if (d.error) { flashSched(d.error, true); return; }
+    _pasteContract = d.contract;
+    renderPastePreview(d.contract);
+  } catch(e) {
+    btn.disabled = false; btn.textContent = 'Read rows →';
+    flashSched(e.message, true);
+  }
+}
+
+function renderPastePreview(c) {
+  const m = c.meta;
+  const chip = (t, bg) => `<span style="padding:3px 9px;border-radius:12px;background:${bg};font-weight:600;">${t}</span>`;
+  document.getElementById('paste-summary').innerHTML =
+    chip(`${m.activity_count} activities`, 'var(--accent-glow)') +
+    chip(`${m.wbs_count} section${m.wbs_count===1?'':'s'}`, 'rgba(148,163,184,.12)') +
+    chip(`confidence ${Math.round((m.extraction_confidence||0)*100)}%`,
+         (m.extraction_confidence>=0.8) ? 'var(--green-bg)' : 'var(--orange-bg)');
+
+  const warns = m.warnings || [];
+  document.getElementById('paste-warnings').innerHTML = warns.length
+    ? warns.map(w => `<div style="font-size:11px;color:var(--orange);padding:2px 0;">⚠ ${escHtml(w)}</div>`).join('')
+    : '';
+
+  const byCode = {}; (c.wbs||[]).forEach(w => byCode[w.code] = w.name);
+  document.getElementById('paste-preview-body').innerHTML = (c.activities||[]).map(a => {
+    const flags = (a._review?.flags) || [];
+    const warn = flags.length ? ` title="${escAttr(flags.join(', '))}"` : '';
+    const rowBg = flags.length ? ' style="background:var(--orange-bg);"' : '';
+    return `<tr${rowBg}${warn}>
+      <td class="sched-id">${escHtml(a.activity_id)}</td>
+      <td>${escHtml(a.name)}</td>
+      <td style="text-align:right;">${a.duration_days}d</td>
+      <td>${escHtml(fmtDate(a.planned_start || a.actual_start || '—'))}</td>
+      <td>${escHtml(fmtDate(a.planned_finish || a.actual_finish || '—'))}</td>
+      <td style="font-size:10px;">${escHtml(a.status)}</td>
+      <td style="font-size:10px;color:var(--text3);">${escHtml(byCode[a.wbs_code] || a.wbs_code || '—')}</td>
+    </tr>`;
+  }).join('') || '<tr><td colspan="7" style="text-align:center;padding:14px;color:var(--text3);">No activity rows were recognised</td></tr>';
+
+  document.getElementById('paste-step-1').style.display = 'none';
+  document.getElementById('paste-step-2').style.display = '';
+  document.getElementById('paste-next-btn').style.display = 'none';
+  document.getElementById('paste-back').style.display = '';
+  const commit = document.getElementById('paste-commit-btn');
+  commit.style.display = '';
+  commit.disabled = (m.activity_count === 0);
+  onPasteDestChange();
+}
+
+async function commitPastedRows() {
+  if (!_pasteContract) return;
+  const useNew = document.querySelector('input[name="paste-dest"]:checked')?.value === 'new';
+  const body = {
+    contract: _pasteContract,
+    mode: 'merge',
+    // "keep structure" off (the default) drops the section folders the parser
+    // inferred and drops every row straight into the chosen target
+    flatten: !document.getElementById('paste-keep-structure').checked,
+  };
+  if (useNew) {
+    const nm = document.getElementById('paste-new-wbs').value.trim();
+    if (!nm) { flashSched('Name the new folder', true); return; }
+    body.new_wbs_name = nm;
+    const sel = document.getElementById('paste-wbs-select').value;
+    if (sel) body.target_wbs_code = sel;      // nest the new folder under this one
+  } else {
+    body.target_wbs_code = document.getElementById('paste-wbs-select').value;
+  }
+  const btn = document.getElementById('paste-commit-btn');
+  btn.disabled = true; btn.textContent = 'Adding…';
+  try {
+    const d = await fetch('/api/import/commit', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify(body)
+    }).then(r => r.json());
+    btn.disabled = false; btn.textContent = 'Add to schedule';
+    if (d.error) { flashSched(d.error, true); return; }
+    closeModal('paste-modal');
+    const n = _pasteContract.meta.activity_count;
+    flashSched(`Added ${n} activit${n===1?'y':'ies'} — Undo if that's not what you wanted`);
+    _pasteContract = null;
+    await loadSchedule();
+  } catch(e) {
+    btn.disabled = false; btn.textContent = 'Add to schedule';
+    flashSched(e.message, true);
+  }
 }
 
 // ═══════════════════════════════════════════════════

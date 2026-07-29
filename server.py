@@ -9,9 +9,11 @@ Runs on http://localhost:5100
 """
 
 import os
+import re
 import sys
 import copy
 import json
+import uuid
 import time
 import tempfile
 import traceback
@@ -625,6 +627,31 @@ def import_extract_cancel():
     return jsonify({"success": True})
 
 
+@app.route("/api/import/paste", methods=["POST"])
+def import_paste_route():
+    """
+    Parse a block of text copied out of a PDF (or Excel) into the same review
+    contract the file importers produce, then hand it to /api/import/commit.
+
+    This is the fast lane for big schedules: no upload, no PDF engine, no OCR —
+    a few KB of text parsed in milliseconds, so it can't hit the request limits
+    that kill a 27-page PDF on a small host.
+    Body: {"text": "...", "project_name": "..."}
+    """
+    data = request.get_json() or {}
+    text = data.get("text") or ""
+    if not text.strip():
+        return jsonify({"error": "No text was pasted"}), 400
+    try:
+        from engine.paste_parser import contract_from_paste
+        contract = contract_from_paste(
+            text, project_name=data.get("project_name") or "Pasted activities")
+        return jsonify({"success": True, "contract": contract})
+    except Exception as e:
+        return jsonify({"error": f"Could not read the pasted text: {e}",
+                        "trace": traceback.format_exc()}), 500
+
+
 @app.route("/api/import/commit", methods=["POST"])
 def import_commit_route():
     """Materialize a reviewed extraction contract and load it as the active schedule."""
@@ -634,6 +661,10 @@ def import_commit_route():
         return jsonify({"error": "contract is required"}), 400
     mode = (data.get("mode") or "replace").lower()   # replace | merge
     name = data.get("project_name")
+    # Optional placement for a merge: land the block under an existing folder,
+    # or under a brand-new one created on the spot.
+    target_wbs_code = data.get("target_wbs_code")     # existing folder to nest under
+    new_wbs_name    = data.get("new_wbs_name")        # create this folder first
     if name:
         contract.setdefault("meta", {})["project_name"] = name
 
@@ -643,7 +674,31 @@ def import_commit_route():
             # append imported WBS + activities into the current active project
             base = _get_session()["project"]
             _push_undo(f"Import (merge) {contract['meta'].get('source_name','file')}")
-            _merge_projects(base, project)
+
+            target_uid = None
+            if target_wbs_code:
+                tw = next((w for w in base.wbs_nodes
+                           if w.code.lower() == str(target_wbs_code).lower()), None)
+                if not tw:
+                    return jsonify({"error": f"Target WBS '{target_wbs_code}' not found"}), 400
+                target_uid = tw.uid
+            if new_wbs_name:
+                from engine.schedule_model import WBSNode
+                code = re.sub(r"[^A-Za-z0-9]", "", new_wbs_name).upper()[:12] or "PASTED"
+                n = 1
+                existing = {w.code for w in base.wbs_nodes}
+                base_code = code
+                while code in existing:
+                    n += 1
+                    code = f"{base_code}{n}"
+                node = WBSNode(uid=str(uuid.uuid4().int)[:10], name=new_wbs_name,
+                               code=code, parent_uid=target_uid,
+                               sequence_num=len(base.wbs_nodes) * 10)
+                base.wbs_nodes.append(node)
+                target_uid = node.uid
+
+            _merge_projects(base, project, target_wbs_uid=target_uid,
+                            flatten=bool(data.get("flatten")))
             base.build_lookups()
             from engine.schedule_model import compute_dates
             try:
@@ -817,20 +872,60 @@ def run_schedule():
                         "trace": traceback.format_exc()}), 500
 
 
-def _merge_projects(base, incoming):
-    """Append incoming WBS nodes + activities into base, de-duplicating IDs."""
+def _merge_projects(base, incoming, target_wbs_uid=None, flatten=False):
+    """
+    Append incoming WBS nodes + activities into base, de-duplicating IDs.
+
+    When target_wbs_uid is given, the incoming branch is nested under that
+    folder: any incoming node that has no parent of its own (a root of the
+    pasted/imported block) is re-parented to the target, and activities that
+    never resolved to a folder land directly in it. That is what lets a pasted
+    block drop into an existing section instead of piling up at the root.
+    """
+    # flatten: drop the incoming folder structure entirely and drop every
+    # activity straight into the target. This is what "load these under
+    # Electrical" means — without it, folders inferred from an id prefix
+    # (MDC1 > MDC1.FDG) get rebuilt inside the target as noise.
+    if flatten and target_wbs_uid:
+        existing_ids = {a.activity_id for a in base.activities}
+        for a in incoming.activities:
+            aid = a.activity_id
+            while aid in existing_ids:
+                aid += "-i"
+            a.activity_id = aid
+            existing_ids.add(aid)
+            a.wbs_uid = target_wbs_uid
+            base.activities.append(a)
+        base.relations.extend(incoming.relations)
+        return
+
+    by_uid_incoming = {w.uid for w in incoming.wbs_nodes}
     existing_wbs_codes = {w.code for w in base.wbs_nodes}
+    code_to_uid = {w.code: w.uid for w in base.wbs_nodes}
+    remap = {}                      # incoming uid -> uid actually used in base
     for w in incoming.wbs_nodes:
-        if w.code not in existing_wbs_codes:
-            base.wbs_nodes.append(w)
-            existing_wbs_codes.add(w.code)
+        if w.code in existing_wbs_codes:
+            remap[w.uid] = code_to_uid[w.code]      # folder already exists — reuse it
+            continue
+        # a root of the incoming block hangs off the target folder
+        if target_wbs_uid and (not w.parent_uid or w.parent_uid not in by_uid_incoming):
+            w.parent_uid = target_wbs_uid
+        base.wbs_nodes.append(w)
+        existing_wbs_codes.add(w.code)
+        code_to_uid[w.code] = w.uid
+        remap[w.uid] = w.uid
+
     existing_ids = {a.activity_id for a in base.activities}
+    base_uids = {w.uid for w in base.wbs_nodes}
     for a in incoming.activities:
         aid = a.activity_id
         while aid in existing_ids:
             aid += "-i"
         a.activity_id = aid
         existing_ids.add(aid)
+        a.wbs_uid = remap.get(a.wbs_uid, a.wbs_uid)
+        if a.wbs_uid not in base_uids:
+            a.wbs_uid = target_wbs_uid or (base.wbs_nodes[0].uid if base.wbs_nodes else a.wbs_uid)
         base.activities.append(a)
     base.relations.extend(incoming.relations)
 
