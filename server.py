@@ -1537,7 +1537,7 @@ def _fmt_date(d):
 
 
 def _build_rel_maps(project):
-    """uid -> [{activity_id, type, lag}] predecessor and successor lists."""
+    """uid -> [{activity_id, name, type, lag}] predecessor and successor lists."""
     preds_map: dict = {}
     succs_map: dict = {}
     for rel in project.relations:
@@ -1545,9 +1545,11 @@ def _build_rel_maps(project):
         succ_act = project.get_activity(uid=rel.successor_uid)
         if pred_act and succ_act:
             succs_map.setdefault(rel.predecessor_uid, []).append(
-                {"activity_id": succ_act.activity_id, "type": rel.type, "lag": rel.lag})
+                {"activity_id": succ_act.activity_id, "name": succ_act.name,
+                 "type": rel.type, "lag": rel.lag})
             preds_map.setdefault(rel.successor_uid, []).append(
-                {"activity_id": pred_act.activity_id, "type": rel.type, "lag": rel.lag})
+                {"activity_id": pred_act.activity_id, "name": pred_act.name,
+                 "type": rel.type, "lag": rel.lag})
     return preds_map, succs_map
 
 
@@ -1656,11 +1658,13 @@ def _schedule_view_inner():
         if pred_act and succ_act:
             succs_map.setdefault(rel.predecessor_uid, []).append({
                 "activity_id": succ_act.activity_id,
+                "name": succ_act.name,
                 "type": rel.type,
                 "lag": rel.lag,
             })
             preds_map.setdefault(rel.successor_uid, []).append({
                 "activity_id": pred_act.activity_id,
+                "name": pred_act.name,
                 "type": rel.type,
                 "lag": rel.lag,
             })

@@ -224,3 +224,21 @@ def test_apply_activity_changes_pulls_named_fields():
     assert a.get_activity(activity_id="A1000").name == "Renamed in B"
     assert a.get_activity(activity_id="A1000").planned_duration == 40.0   # untouched
     assert d["applied"] == 1
+
+
+# ── Relationship payload carries the linked activity's NAME ──────────────────
+
+def test_rel_maps_include_linked_activity_names():
+    """The grid shows 'A1010 — Terminate' and offers a goto jump, so the
+    predecessor/successor payload must carry the name, not just the id."""
+    import server
+    p = _src()
+    preds, succs = server._build_rel_maps(p)
+    # a1 -> a2 : the successor entry on a1 must name a2
+    s = succs["a1"][0]
+    assert s["activity_id"] == "A1010"
+    assert s["name"] == "Terminate"
+    # and the mirrored predecessor entry on a2 must name a1
+    pr = preds["a2"][0]
+    assert pr["activity_id"] == "A1000"
+    assert pr["name"] == "Rough-in"

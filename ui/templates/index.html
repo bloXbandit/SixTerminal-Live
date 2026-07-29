@@ -849,11 +849,28 @@
       max-width:160px;overflow:hidden;text-overflow:ellipsis;
     }
     .sched-links .link-chip{
-      display:inline-block;background:var(--surface3);
+      display:inline-flex;align-items:center;gap:3px;background:var(--surface3);
       border:1px solid var(--border);border-radius:3px;
       padding:1px 5px;margin:1px 2px 1px 0;color:var(--text2);
-      font-size:9px;white-space:nowrap;
+      font-size:9px;white-space:nowrap;max-width:100%;
     }
+    .link-chip .chip-id{font-family:var(--mono);color:var(--accent);font-weight:500;}
+    .link-chip .chip-name{
+      color:var(--text2);max-width:130px;overflow:hidden;
+      text-overflow:ellipsis;white-space:nowrap;
+    }
+    .link-chip .chip-rel{color:var(--text3);font-family:var(--mono);}
+    .link-chip .chip-goto{
+      cursor:pointer;color:var(--text3);font-size:10px;line-height:1;
+      padding:0 1px;border-radius:2px;
+    }
+    .link-chip .chip-goto:hover{color:var(--accent);background:var(--accent-glow2,rgba(0,207,255,.12));}
+    /* brief pulse on the row you jumped to */
+    @keyframes gotoPulse{
+      0%,100%{box-shadow:none;}
+      15%,60%{box-shadow:inset 0 0 0 2px var(--accent);}
+    }
+    tr.goto-flash > td{animation:gotoPulse 1.4s ease-in-out;}
     .sched-status{
       font-size:9px;padding:2px 7px;border-radius:10px;
       font-weight:600;letter-spacing:.04em;text-transform:uppercase;white-space:nowrap;
@@ -926,6 +943,10 @@
       border:1px solid var(--border2);border-radius:4px;font-size:11px;padding:3px 6px;outline:none;
     }
     /* Row / link edit-mode controls */
+    /* while sweeping, kill text selection so the drag reads as a row sweep */
+    #sched-table.sweeping, #sched-table.sweeping *{
+      user-select:none; -webkit-user-select:none; cursor:cell;
+    }
     .row-add-link, .link-chip .chip-x{
       display:none;
     }
@@ -2979,16 +3000,21 @@ function renderActivityRow(a, wbsUid, hidden) {
 
   // Predecessors / successors as chips (with in-edit-mode delete + add controls)
   const aid = a.activity_id;
-  const predChips = (a.predecessors || []).map(p => {
-    const lag = p.lag ? (p.lag > 0 ? `+${Math.round(p.lag/8)}d` : `${Math.round(p.lag/8)}d`) : '';
-    const abbr = relAbbr(p.type);
-    return `<span class="link-chip" onclick="editLink(event, ${escAttrJs(p.activity_id)}, ${escAttrJs(aid)})" title="Click to change type or lag">${escHtml(p.activity_id)} ${abbr}${lag}<span class="chip-x" onclick="deleteLink(${escAttrJs(p.activity_id)}, ${escAttrJs(aid)});event.stopPropagation();">&times;</span></span>`;
-  }).join('');
-  const succChips = (a.successors || []).map(s => {
-    const abbr = relAbbr(s.type);
-    const slag = s.lag ? (s.lag > 0 ? `+${Math.round(s.lag/8)}d` : `${Math.round(s.lag/8)}d`) : '';
-    return `<span class="link-chip" onclick="editLink(event, ${escAttrJs(aid)}, ${escAttrJs(s.activity_id)})" title="Click to change type or lag">${escHtml(s.activity_id)} ${abbr}${slag}<span class="chip-x" onclick="deleteLink(${escAttrJs(aid)}, ${escAttrJs(s.activity_id)});event.stopPropagation();">&times;</span></span>`;
-  }).join('');
+  const linkChip = (other, predId, succId) => {
+    const lagH = other.lag || 0;
+    const lag = lagH ? (lagH > 0 ? `+${Math.round(lagH/8)}d` : `${Math.round(lagH/8)}d`) : '';
+    const abbr = relAbbr(other.type);
+    const nm = other.name || '';
+    // ⤢ jumps to the linked activity; the name makes the link readable at a glance
+    return `<span class="link-chip" onclick="editLink(event, ${escAttrJs(predId)}, ${escAttrJs(succId)})" title="${escAttr(other.activity_id + (nm ? ' — ' + nm : ''))} · click to change type or lag">`
+      + `<span class="chip-goto" title="Go to ${escAttr(other.activity_id)}" onclick="gotoActivity(${escAttrJs(other.activity_id)});event.stopPropagation();">⤢</span>`
+      + `<span class="chip-id">${escHtml(other.activity_id)}</span>`
+      + (nm ? `<span class="chip-name">${escHtml(nm)}</span>` : '')
+      + `<span class="chip-rel">${abbr}${lag}</span>`
+      + `<span class="chip-x" onclick="deleteLink(${escAttrJs(predId)}, ${escAttrJs(succId)});event.stopPropagation();">&times;</span></span>`;
+  };
+  const predChips = (a.predecessors || []).map(p => linkChip(p, p.activity_id, aid)).join('');
+  const succChips = (a.successors   || []).map(s => linkChip(s, aid, s.activity_id)).join('');
   const predAdd = `<span class="row-add-link" title="Add predecessor" onclick="addLink(${escAttrJs(aid)}, 'pred')">+</span>`;
   const succAdd = `<span class="row-add-link" title="Add successor" onclick="addLink(${escAttrJs(aid)}, 'succ')">+</span>`;
 
@@ -3347,6 +3373,42 @@ function rowByActId(id){
   return [...document.querySelectorAll('tr[data-actid]')].find(tr => tr.dataset.actid === id);
 }
 
+/**
+ * Jump to an activity from a predecessor/successor chip.
+ * Clears whatever is hiding it (find filter, trace filter, collapsed folders),
+ * scrolls it into the middle of the grid and pulses the row.
+ */
+function gotoActivity(id){
+  if(!id) return;
+  let tr = rowByActId(id);
+
+  // If it's filtered or traced out of view, drop those filters and look again.
+  if(!tr || tr.style.display === 'none' || tr.classList.contains('trace-hidden')){
+    if(_traceState || _tracePicking) clearTrace();
+    const box = document.getElementById('sched-find');
+    if(box && box.value){ box.value = ''; applyFind(''); }
+    tr = rowByActId(id);
+  }
+  if(!tr){ flashSched(`${id} isn't in this schedule`, true); return; }
+
+  // Expand every collapsed ancestor folder so the row can actually show.
+  const secs = lastSchedData?.wbs_sections || [];
+  const byUid = {}; secs.forEach(w => byUid[w.uid] = w);
+  let cur = tr.dataset.wbs, guard = 0, changed = false;
+  while(cur && guard++ < 200){
+    if(collapsedWbs.has(cur)){ collapsedWbs.delete(cur); changed = true; }
+    cur = byUid[cur]?.parent_uid;
+  }
+  if(changed) applyWbsVisibility();   // also refreshes the folder collapse icons
+
+  tr.scrollIntoView({behavior:'smooth', block:'center'});
+  tr.classList.remove('goto-flash');
+  void tr.offsetWidth;                 // restart the animation
+  tr.classList.add('goto-flash');
+  setTimeout(() => tr.classList.remove('goto-flash'), 1600);
+  _lastSelectedId = id;
+}
+
 // ── Core: send structured commands straight to the engine ──
 async function directEdit(commands, label){
   try{
@@ -3462,9 +3524,15 @@ function onSchedDblClick(e){
   _lastSelectedId = id;
 }
 
-/** Shift+click extends the selection from the last row you touched. */
+/**
+ * Modifier clicks on a row:
+ *   Shift+click        — extend the selection from the last row you touched
+ *   Ctrl/Cmd+click     — toggle this one row, so you can pick scattered rows
+ */
 function onRowShiftClick(e){
-  if(!isEditMode || !e.shiftKey) return;
+  if(!isEditMode) return;
+  const mod = e.shiftKey || e.ctrlKey || e.metaKey;
+  if(!mod) return;
   if(_pickState || _tracePicking) return;
   if(e.target.closest('input,select,button,.chip-x,.row-add-link')) return;
   const tr = e.target.closest('tr.sched-act-row');
@@ -3472,8 +3540,68 @@ function onRowShiftClick(e){
   if(!id) return;
   e.preventDefault();
   window.getSelection()?.removeAllRanges();   // suppress browser text-selection
-  selectRange(_lastSelectedId || id, id);
+  if(e.shiftKey){
+    selectRange(_lastSelectedId || id, id);
+  } else {
+    toggleSel(id, !selectedIds.has(id));      // additive pick, keeps the rest
+  }
   _lastSelectedId = id;
+}
+
+// ── Click-and-hold sweep select ────────────────────────────────────────────
+// Press on a row and drag across the grid to select everything you pass over.
+// We only start sweeping once the pointer actually leaves the starting row, so
+// a plain click and a double-click still behave normally.
+let _sweep = null;   // {anchorId, additive, moved}
+
+function onRowSweepStart(e){
+  if(!isEditMode || e.button !== 0) return;
+  if(_pickState || _tracePicking) return;
+  if(e.shiftKey) return;                       // shift+click owns range-select
+  if(e.target.closest('input,select,button,.chip-x,.row-add-link,td.editable .cell-input')) return;
+  const tr = e.target.closest('tr.sched-act-row');
+  const id = tr && tr.dataset.actid;
+  if(!id) return;
+  // Ctrl/Cmd held → add this sweep to what's already picked; otherwise replace.
+  const base = (e.ctrlKey || e.metaKey) ? new Set(selectedIds) : new Set();
+  _sweep = { anchorId: id, base, moved: false };
+}
+
+function onRowSweepMove(e){
+  if(!_sweep || !isEditMode) return;
+  if(e.buttons === 0){ onRowSweepEnd(); return; }   // button released off-grid
+  const tr = e.target.closest('tr.sched-act-row');
+  const id = tr && tr.dataset.actid;
+  if(!id || id === _sweep.anchorId && _sweep.moved) return;
+  if(!id) return;
+  if(!_sweep.moved){
+    if(id === _sweep.anchorId) return;      // still on the start row — not a sweep yet
+    _sweep.moved = true;
+    document.getElementById('sched-table')?.classList.add('sweeping');
+  }
+  window.getSelection()?.removeAllRanges();
+  // Rebuild from the base each move so dragging back up de-selects again.
+  applySelection(_sweep.base);
+  selectRange(_sweep.anchorId, id);
+  _lastSelectedId = id;
+}
+
+/** Replace the current selection with exactly `ids`. */
+function applySelection(ids){
+  selectedIds.clear();
+  ids.forEach(i => selectedIds.add(i));
+  document.querySelectorAll('tr.sched-act-row').forEach(tr => {
+    const on = selectedIds.has(tr.dataset.actid);
+    tr.classList.toggle('sel-selected', on);
+    const cb = tr.querySelector('td.col-sel .sel-box');
+    if(cb) cb.checked = on;
+  });
+}
+
+function onRowSweepEnd(){
+  if(!_sweep) return;
+  document.getElementById('sched-table')?.classList.remove('sweeping');
+  _sweep = null;
 }
 
 /** Select every visible row between two activities, inclusive. */
@@ -4334,6 +4462,10 @@ function closeCtxMenu(){
 
 function onSchedContextMenu(e){
   if(!isEditMode) return;
+  // On macOS Ctrl+left-click also raises contextmenu — but here Ctrl+click is
+  // the additive multi-select gesture, so let it through to the click handler.
+  // A genuine right-click reports button 2.
+  if(e.ctrlKey && e.button !== 2) return;
   const tr = e.target.closest('tr.sched-act-row, tr.sched-wbs-row');
   if(!tr) return;
   e.preventDefault();
@@ -4358,7 +4490,8 @@ function onSchedContextMenu(e){
     ['＋ Add successor',            () => addLink(actId, 'succ')],
     ['⤳ Trace what drives this',    () => { startTrace(); applyTrace(actId); }],
     ['📌 Set constraint…',          () => { const c = findCell(actId, 'constraint'); if(c) beginCellEdit(c); }],
-    ['🗑 Delete selected',           () => bulkDelete()],
+    [`🗑 Delete ${selectedIds.size > 1 ? selectedIds.size + ' selected' : 'this activity'}`,
+                                    () => bulkDelete()],
   ];
 
   const menu = document.createElement('div');
@@ -4368,9 +4501,15 @@ function onSchedContextMenu(e){
   document.body.appendChild(menu);
   menu.style.top  = (window.scrollY + Math.min(e.clientY, window.innerHeight - menu.offsetHeight - 10)) + 'px';
   menu.style.left = (window.scrollX + Math.min(e.clientX, window.innerWidth - 230)) + 'px';
-  menu.addEventListener('click', ev => {
+  // Activate on mousedown, not click: the document-level closer below also fires
+  // on mousedown and detaches the menu, which would cancel the click entirely
+  // (that silently killed every menu item, Delete included). stopPropagation
+  // keeps the closer from running before we've read the item.
+  menu.addEventListener('mousedown', ev => {
     const el = ev.target.closest('.ctx-item');
     if(!el) return;
+    ev.preventDefault();
+    ev.stopPropagation();
     closeCtxMenu();
     items[+el.dataset.i][1]();
   });
@@ -4861,6 +5000,10 @@ async function executeReplaceBranch() {
     }
     // stop the browser from text-selecting rows during a shift+click drag
     tb.addEventListener('mousedown', e => { if(e.shiftKey) e.preventDefault(); });
+    // click-and-hold sweep select
+    tb.addEventListener('mousedown', onRowSweepStart);
+    tb.addEventListener('mousemove', onRowSweepMove);
+    document.addEventListener('mouseup', onRowSweepEnd);
     tb.addEventListener('contextmenu', onSchedContextMenu);
   }
   document.addEventListener('paste', onSchedPaste);
@@ -4871,6 +5014,12 @@ async function executeReplaceBranch() {
       if(_pickState) cancelPick();
       if(_traceState || _tracePicking) clearTrace();
       closeCtxMenu();
+    }
+    // Delete / Backspace removes the selected activities (not while typing)
+    if(e.key === 'Delete' || e.key === 'Backspace'){
+      const t = e.target;
+      if(t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+      if(isEditMode && selectedIds.size){ e.preventDefault(); bulkDelete(); }
     }
     // Ctrl/Cmd+F focuses the grid's find box
     if((e.metaKey || e.ctrlKey) && (e.key || '').toLowerCase() === 'f'){
