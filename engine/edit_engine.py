@@ -175,6 +175,8 @@ def apply_command(project: Project, command: Dict[str, Any]) -> Tuple[bool, str]
             return _move_wbs(project, command)
         elif action == "duplicate_wbs":
             return _duplicate_wbs(project, command)
+        elif action == "copy_activities":
+            return _copy_activities(project, command)
         elif action == "update_relation":
             return _update_relation(project, command)
         elif action == "update_activity_type":
@@ -742,6 +744,95 @@ def _duplicate_wbs(project: Project, cmd: Dict) -> Tuple[bool, str]:
     project.build_lookups()
     return True, (f"Duplicated '{src.name}' → {', '.join(made_names)} "
                   f"({len(acts_in)} activities each)")
+
+
+def _copy_activities(project: Project, cmd: Dict) -> Tuple[bool, str]:
+    """
+    Copy a set of activities into a folder, carrying the logic *between* them.
+
+    This is the in-schedule counterpart to copy_wbs_branch: relationships whose
+    two ends are both inside the selection come along, and links that leave the
+    selection are dropped (a copy cannot inherit a predecessor it does not own
+    without silently rewiring the schedule). Full row data — duration, type,
+    constraints, dates — travels with the copy; status resets to Not Started,
+    since a copy has not been worked yet.
+
+      activity_ids : ids to copy
+      wbs_name / wbs_code : destination folder (default: each row's own folder)
+      count : how many copies (default 1)
+    """
+    ids = cmd.get("activity_ids") or []
+    if not ids:
+        raise EditError("activity_ids is required for copy_activities")
+
+    src_acts = []
+    seen = set()
+    for aid in ids:
+        matches = _find_activity(project, aid)
+        if not matches:
+            raise EditError(f"Activity not found: {aid}")
+        a = matches[0]
+        if a.uid not in seen:
+            seen.add(a.uid)
+            src_acts.append(a)
+
+    target_uid = None
+    if cmd.get("wbs_code") or cmd.get("wbs_name"):
+        tgt = _find_wbs(project, cmd.get("wbs_code"), cmd.get("wbs_name"))
+        if not tgt:
+            raise EditError(f"Target WBS not found: {cmd.get('wbs_code') or cmd.get('wbs_name')}")
+        target_uid = tgt.uid
+
+    try:
+        count = max(1, int(cmd.get("count", 1)))
+    except (TypeError, ValueError):
+        count = 1
+
+    src_uids = {a.uid for a in src_acts}
+    internal = [r for r in project.relations
+                if r.predecessor_uid in src_uids and r.successor_uid in src_uids]
+    boundary = [r for r in project.relations
+                if (r.predecessor_uid in src_uids) != (r.successor_uid in src_uids)]
+
+    total_new = 0
+    rels_made = 0
+    for _ in range(count):
+        act_map: Dict[str, str] = {}
+        for a in src_acts:
+            new_uid = _new_uid()
+            new_id = _next_activity_id(project)
+            act_map[a.uid] = new_uid
+            project.activities.append(Activity(
+                uid=new_uid,
+                activity_id=new_id,
+                name=a.name,
+                wbs_uid=target_uid or a.wbs_uid,
+                calendar_uid=a.calendar_uid,
+                activity_type=a.activity_type,
+                status="Not Started",
+                planned_duration=a.planned_duration,
+                remaining_duration=a.planned_duration,
+                planned_start=a.planned_start,
+                planned_finish=a.planned_finish,
+                constraint_type=a.constraint_type,
+                constraint_date=a.constraint_date,
+            ))
+            project.build_lookups()
+            total_new += 1
+        for r in internal:
+            project.relations.append(Relation(
+                uid=_new_uid(),
+                predecessor_uid=act_map[r.predecessor_uid],
+                successor_uid=act_map[r.successor_uid],
+                type=r.type, lag=r.lag,
+            ))
+            rels_made += 1
+
+    project.build_lookups()
+    msg = f"Copied {total_new} activity/activities carrying {rels_made} relationship(s)"
+    if boundary:
+        msg += f"; {len(boundary)} link(s) to activities outside the selection were not carried"
+    return True, msg
 
 
 def _update_relation(project: Project, cmd: Dict) -> Tuple[bool, str]:

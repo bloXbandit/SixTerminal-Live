@@ -1617,8 +1617,10 @@
         <button class="mini-btn" onclick="bulkLinkSequence()" title="Chain the selected activities FS in row order">⛓ Link in sequence</button>
         <button class="mini-btn" onclick="bulkFillDown()" title="Copy the first selected row's duration to the rest">⇊ Fill down</button>
         <span class="sched-sep"></span>
-        <button class="mini-btn" onclick="bulkCopy()">Copy</button>
+        <button class="mini-btn" onclick="bulkCopy()" title="Copy the selected rows with their data and the logic between them">Copy</button>
         <button class="mini-btn" id="bulk-paste-btn" onclick="bulkPaste()" disabled>Paste →</button>
+        <button class="mini-btn" id="bulk-paste-new-btn" onclick="bulkPasteIntoNewFolder()" disabled
+                title="Create a sub-folder under the chosen WBS and paste the copied rows into it">Paste → new sub-folder</button>
         <span class="sched-sep"></span>
         <button class="mini-btn bb-danger" onclick="bulkDelete()">Delete</button>
         <button class="mini-btn" onclick="clearSelection()">Clear</button>
@@ -1859,12 +1861,58 @@ async function importFile(file, useLlm=false) {
   _importState.file = file;
   const isPdf = file.name.toLowerCase().endsWith('.pdf');
 
-  // For PDFs, use chunked extraction to avoid gateway timeouts on 20+ page files.
-  // For Excel and other formats, keep the original single-request path.
+  if (isPdf && !useLlm) {
+    // Read the PDF in the browser first: no upload, no server memory, no page
+    // limit. Only if it has no text layer (a scan) do we fall back to the
+    // server path, which can chunk it and offer AI assist.
+    const got = await importPdfInBrowser(file);
+    if (got) return;
+  }
   if (isPdf) {
     await importFileChunked(file, useLlm);
   } else {
     await importFileSingle(file, useLlm);
+  }
+}
+
+/**
+ * Client-side PDF import. Returns true if it handled the file, false to let the
+ * server path take over (scanned PDF, or pdf.js unavailable).
+ */
+async function importPdfInBrowser(file) {
+  const box = document.createElement('div');
+  box.id = 'upload-loading';
+  box.style.cssText = 'position:fixed;bottom:80px;left:50%;transform:translateX(-50%);background:var(--surface2,#111820);border:1px solid var(--border2);border-radius:8px;padding:12px 22px;font-size:12px;color:var(--text2);z-index:90;display:flex;align-items:center;gap:8px;min-width:300px;';
+  box.innerHTML = `<span class="spinner"></span> <span id="pdfjs-status">Reading <strong style="color:var(--text)">${escHtml(file.name)}</strong> on this device…</span>`;
+  document.body.appendChild(box);
+  try {
+    const mod = await import('/static/pdf-extract.js');
+    const res = await mod.extractPdfText(file, (done, total) => {
+      const el = document.getElementById('pdfjs-status');
+      if (el) el.innerHTML = `Reading <strong style="color:var(--text)">${escHtml(file.name)}</strong> — page ${done} of ${total} <span style="color:var(--text3)">(nothing uploaded)</span>`;
+    });
+    if (res.empty) { box.remove(); return false; }   // no text layer → server tries
+    // Same parser as the paste flow — only the text reached the server, never
+    // the file. Then the normal import review modal, which already handles
+    // "no schedule loaded yet" and replace-vs-merge.
+    const d = await fetch('/api/import/paste', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ text: res.text,
+                             project_name: file.name.replace(/\.[^.]+$/, '') })
+    }).then(r => r.json());
+    box.remove();
+    if (d.error || !d.contract) return false;
+    if (!d.contract.meta.activity_count) return false;   // parsed nothing useful
+    d.contract.meta.engine = `pdf.js (in browser, ${res.pages} page${res.pages===1?'':'s'})`;
+    d.contract.meta.source_name = file.name;
+    d.contract.meta.source_type = 'pdf';
+    _importState.contract = d.contract;
+    openImportModal(d.contract, null);
+    return true;
+  } catch (e) {
+    box.remove();
+    console.warn('client-side PDF read failed, falling back to server:', e);
+    return false;
   }
 }
 
@@ -2843,7 +2891,9 @@ async function switchProject(pid) {
 /** Clear per-project edit state so nothing leaks across projects. */
 function resetEditState() {
   selectedIds.clear();
-  clipboard = [];
+  // The clipboard deliberately SURVIVES a project switch — that's what makes
+  // "copy here, paste over there" work. _clipMeta records which schedule the
+  // rows came from, so paste knows whether the logic can travel with them.
   lastActWbs = null;
   _importState.contract = null;
   if (typeof closeLinkEditor === 'function') closeLinkEditor();
@@ -3118,7 +3168,9 @@ const collapsedWbs = new Set();
 let isEditMode   = false;
 let lastSchedData = null;         // last /api/schedule payload (for WBS lists)
 const selectedIds = new Set();    // activity_ids currently selected
-let clipboard    = [];            // copied activity specs for paste
+let clipboard    = [];            // copied activity specs (cross-schedule fallback)
+let _clipMeta    = null;          // {ids, projectId, rels} — lets a same-schedule
+                                  // paste carry the logic between the copied rows
 let lastActWbs   = null;          // remember the WBS the user last added into
 let _lastSelectedId = null;       // anchor row for shift+click range selection
 
@@ -4589,7 +4641,9 @@ function refreshBulkBar(){
   const n = selectedIds.size;
   document.getElementById('bulk-count').textContent = n + ' selected';
   bar.classList.toggle('show', isEditMode && n > 0);
-  const pb = document.getElementById('bulk-paste-btn'); if(pb) pb.disabled = clipboard.length === 0;
+  const canPaste = clipboard.length > 0 || !!(_clipMeta && (_clipMeta.ids||[]).length);
+  const pb = document.getElementById('bulk-paste-btn'); if(pb) pb.disabled = !canPaste;
+  const pnb = document.getElementById('bulk-paste-new-btn'); if(pnb) pnb.disabled = !canPaste;
 }
 function bulkSetDuration(){
   const v = parseFloat(document.getElementById('bulk-dur').value);
@@ -4637,22 +4691,85 @@ function bulkFillDown(){
   directEdit(cmds, `Fill ${days}d down ${cmds.length} activities`);
 }
 
+/**
+ * Copy the selected rows.
+ *
+ * Two things are remembered: the activity IDs (so a paste back into the SAME
+ * schedule can carry the relationships between them), and a plain data copy
+ * (so a paste into a DIFFERENT schedule still works, minus the logic — those
+ * activities don't exist over there to link to).
+ */
 function bulkCopy(){
+  const order = visibleActRows().map(r => r.dataset.actid).filter(id => selectedIds.has(id));
+  if(!order.length){ flashSched('Select some rows first', true); return; }
   clipboard = [];
-  const sel = new Set(selectedIds);
-  (lastSchedData?.wbs_sections || []).forEach(w => w.activities.forEach(a => {
-    if(sel.has(a.activity_id)) clipboard.push({name:a.name, duration_days:a.duration_days, activity_type:a.activity_type});
+  const sel = new Set(order);
+  let internal = 0;
+  (lastSchedData?.wbs_sections || []).forEach(w => (w.activities||[]).forEach(a => {
+    if(!sel.has(a.activity_id)) return;
+    clipboard.push({name:a.name, duration_days:a.duration_days, activity_type:a.activity_type});
+    // count links whose BOTH ends are inside the selection — those travel
+    (a.successors || []).forEach(s => { if(sel.has(s.activity_id)) internal++; });
   }));
-  flashSched(`Copied ${clipboard.length} activit${clipboard.length===1?'y':'ies'} — pick a WBS and Paste`, false);
+  _clipMeta = {ids: order, projectId: _activeProjectId, rels: internal};
+  const n = order.length;
+  flashSched(`Copied ${n} activit${n===1?'y':'ies'}`
+    + (internal ? ` + ${internal} relationship${internal===1?'':'s'} between them` : '')
+    + ' — pick a WBS and Paste', false);
   refreshBulkBar();
 }
-function bulkPaste(){
-  if(!clipboard.length){ flashSched('Nothing copied yet', true); return; }
+
+function _pasteTargets(){
   const wbs = document.getElementById('bulk-wbs').value;
-  if(!wbs){ flashSched('Pick a target WBS to paste into', true); return; }
-  const cmds = clipboard.map(c => ({action:'add_activity', wbs_name:wbs, name:c.name, duration_days:c.duration_days, activity_type:c.activity_type}));
+  if(!wbs){ flashSched('Pick a target WBS to paste into', true); return null; }
+  if(!clipboard.length && !_clipMeta){ flashSched('Nothing copied yet', true); return null; }
+  return wbs;
+}
+
+/** Build the paste commands, preserving logic when we're in the source schedule. */
+function _pasteCommands(wbsName){
+  const sameSchedule = _clipMeta && _clipMeta.projectId === _activeProjectId
+                       && (_clipMeta.ids || []).length;
+  if(sameSchedule){
+    // one command — the engine copies the rows AND the links between them
+    return {
+      cmds: [{action:'copy_activities', activity_ids:_clipMeta.ids, wbs_name:wbsName}],
+      label: `Paste ${_clipMeta.ids.length} activit${_clipMeta.ids.length===1?'y':'ies'}`
+             + (_clipMeta.rels ? ` + logic` : '') + ` → ${wbsName}`,
+      withLogic: true,
+    };
+  }
+  // different schedule: the source rows aren't here, so data only
+  return {
+    cmds: clipboard.map(c => ({action:'add_activity', wbs_name:wbsName, name:c.name,
+                               duration_days:c.duration_days, activity_type:c.activity_type})),
+    label: `Paste ${clipboard.length} activit${clipboard.length===1?'y':'ies'} → ${wbsName}`,
+    withLogic: false,
+  };
+}
+
+async function bulkPaste(){
+  const wbs = _pasteTargets(); if(!wbs) return;
+  const p = _pasteCommands(wbs);
+  if(!p.cmds.length) return;
   clearSelection();
-  directEdit(cmds, `Paste ${cmds.length} activit${cmds.length===1?'y':'ies'} → ${wbs}`);
+  await directEdit(p.cmds, p.label);
+  if(!p.withLogic && _clipMeta && _clipMeta.rels){
+    flashSched('Pasted into a different schedule — row data only, the logic could not follow', true);
+  }
+}
+
+/** Create a sub-folder under the chosen WBS, then paste the copied rows into it. */
+async function bulkPasteIntoNewFolder(){
+  const parent = _pasteTargets(); if(!parent) return;
+  const name = (prompt(`Name for the new sub-folder under "${parent}"`) || '').trim();
+  if(!name) return;
+  const p = _pasteCommands(name);
+  if(!p.cmds.length) return;
+  clearSelection();
+  // create the folder first, then paste into it — one undo step covers both
+  await directEdit([{action:'add_wbs', name, parent_name:parent}, ...p.cmds],
+                   `New folder "${name}" under ${parent} + ${p.cmds.length===1 && p.withLogic ? _clipMeta.ids.length : p.cmds.length} activities`);
 }
 function bulkDelete(){
   const ids = [...selectedIds]; if(!ids.length) return;
