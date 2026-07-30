@@ -60,6 +60,10 @@ _COLUMN_SYNONYMS: Dict[str, List[str]] = {
         "pct complete", "complete",
     ],
     "type": ["activity type", "type"],
+    "labor_units": [
+        "budgeted labor units", "labor units", "blu", "planned labor units",
+        "budgeted units", "planned units", "target labor units",
+    ],
 }
 
 # An activity ID looks alphanumeric and contains at least one digit
@@ -422,6 +426,8 @@ def _rows_to_contract(rows: List[List[Any]], meta: Dict[str, Any],
             elif s_actual:
                 status = "In Progress"
                 pct = pct if pct not in (None, 0.0) else 50.0
+            elif pct and pct > 0:
+                status = "In Progress"
             else:
                 status = "Not Started"
                 pct = pct if pct is not None else 0.0
@@ -491,6 +497,7 @@ def _rows_to_contract(rows: List[List[Any]], meta: Dict[str, Any],
                 "duration_days": round(dur_days, 2),
                 "status": status,
                 "percent_complete": round(pct or 0.0, 1),
+                "planned_labor_units": float(cell(row, "labor_units") or 0),
                 "planned_start": None if s_actual else s_iso,
                 "planned_finish": None if f_actual else f_iso,
                 "actual_start": s_iso if s_actual else None,
@@ -915,6 +922,7 @@ def build_project_from_contract(contract: Dict[str, Any],
             planned_finish=a.get("planned_finish"),
             actual_start=a.get("actual_start"),
             actual_finish=a.get("actual_finish"),
+            planned_labor_units=float(a.get("planned_labor_units") or 0),
         )
         project.activities.append(act)
         act_by_id[act_id] = act

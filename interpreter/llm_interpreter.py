@@ -12,7 +12,8 @@ Supported actions (must match edit_engine.py):
   rename_wbs, add_wbs, move_wbs, duplicate_wbs, move_activity_wbs,
   copy_activities, set_data_date,
   bulk_rename, bulk_update_duration,
-  set_constraint, clear_constraint
+  set_constraint, clear_constraint,
+  update_labor_units, bulk_clear_constraints
 
 Supported models: claude, gpt-4.1-mini, gpt-4.1-nano, gpt-5.4-mini
 """
@@ -385,6 +386,16 @@ set_constraint:
 
 clear_constraint:
   {"action": "clear_constraint", "activity_id": "A1000"}
+
+update_labor_units:
+  Set budgeted labor units (BLU) on an activity.
+  {"action": "update_labor_units", "activity_id": "A1000", "labor_units": 80}
+
+bulk_clear_constraints:
+  Remove all constraints from multiple activities at once. Provide activity_ids, or wbs_name/wbs_code to clear recursively under a folder, or all: true for the entire schedule.
+  {"action": "bulk_clear_constraints", "activity_ids": ["A1000", "A1010"]}
+  {"action": "bulk_clear_constraints", "wbs_name": "LLE"}
+  {"action": "bulk_clear_constraints", "all": true}
 
 bulk_add_activity:
   Add the same activity into multiple WBS nodes in one call. Auto-assigns sequential IDs.

@@ -62,6 +62,7 @@ class Activity:
     constraint_type: Optional[str] = None
     constraint_date: Optional[str] = None
     notes: Optional[str] = None
+    planned_labor_units: float = 0.0       # Budgeted Labor Units (BLU)
 
 
 @dataclass

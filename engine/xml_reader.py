@@ -300,7 +300,7 @@ def load_xml(path: str) -> Project:
             planned_duration=_float(act_el, "PlannedDuration"),
             remaining_duration=_float(act_el, "RemainingDuration"),
             actual_duration=_float(act_el, "ActualDuration"),
-            percent_complete=_float(act_el, "PercentComplete"),
+            percent_complete=_float(act_el, "PhysicalPercentComplete") or _float(act_el, "PercentComplete"),
             planned_start=_iso_date(_text(act_el, "PlannedStartDate")),
             planned_finish=_iso_date(_text(act_el, "PlannedFinishDate")),
             actual_start=_iso_date(_text(act_el, "ActualStartDate")),
@@ -315,6 +315,7 @@ def load_xml(path: str) -> Project:
             constraint_type=_text(act_el, "PrimaryConstraintType") or None,
             constraint_date=_iso_date(_text(act_el, "PrimaryConstraintDate")) or None,
             notes=_text(act_el, "NotebookTopic") or _text(act_el, "NotesToResources") or None,
+            planned_labor_units=_float(act_el, "PlannedLaborUnits"),
         ))
 
     # Add placeholder WBS nodes for any activity WBS reference not emitted/read.

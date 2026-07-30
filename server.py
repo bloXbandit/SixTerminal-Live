@@ -1682,6 +1682,8 @@ def _activity_row(a, preds_map, succs_map):
             row[k] = v
     if a.percent_complete:
         row["percent_complete"] = a.percent_complete
+    if a.planned_labor_units:
+        row["planned_labor_units"] = a.planned_labor_units
     if is_milestone:
         row["is_milestone"] = True
     if a.is_critical:

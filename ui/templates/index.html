@@ -831,6 +831,7 @@
        touching every cell. One rule per toggleable column. */
     #sched-table.hide-status     .col-status,
     #sched-table.hide-pct        .col-pct,
+    #sched-table.hide-blu        .col-blu,
     #sched-table.hide-float      .col-float,
     #sched-table.hide-earlystart .col-earlystart,
     #sched-table.hide-earlyfinish .col-earlyfinish,
@@ -1476,6 +1477,7 @@
         <span class="sched-toolbar-label">Columns</span>
         <button class="col-toggle on"  data-col="status"    onclick="toggleCol('status')">Status</button>
         <button class="col-toggle on"  data-col="pct"       onclick="toggleCol('pct')">% Complete</button>
+        <button class="col-toggle on"  data-col="blu"       onclick="toggleCol('blu')">BLU</button>
         <button class="col-toggle on"  data-col="float"     onclick="toggleCol('float')">Total Float</button>
         <button class="col-toggle"     data-col="earlystart" onclick="toggleCol('earlystart')">Early Start</button>
         <button class="col-toggle"     data-col="earlyfinish" onclick="toggleCol('earlyfinish')">Early Finish</button>
@@ -1577,6 +1579,7 @@
               <th>Successors</th>
               <th data-col="status"    class="col-status">Status</th>
               <th data-col="pct"       class="col-pct"    style="text-align:right;">% Done</th>
+              <th data-col="blu"       class="col-blu"    style="text-align:right;">BLU</th>
               <th data-col="float"     class="col-float"  style="text-align:right;">Float (d)</th>
               <th data-col="constraint" class="col-constraint">Constraint</th>
               <th data-col="type"       class="col-type">Type</th>
@@ -1595,6 +1598,8 @@
         <select id="wbs-target" style="width:220px;"></select>
         <button class="mini-btn" onclick="moveSelectedWbs()">Move</button>
         <button class="mini-btn" onclick="moveSelectedWbs(true)">Move to root</button>
+        <span class="sched-sep"></span>
+        <button class="mini-btn" onclick="wbsClearConstraints()" title="Remove all constraints from activities in selected folders (recursive)">📌✕ Clear constraints</button>
         <span class="sched-sep"></span>
         <button class="mini-btn" onclick="duplicateSelectedWbs()"
                 title="Copy the folder, its sub-folders, activities and their internal logic">⧉ Duplicate</button>
@@ -1619,6 +1624,8 @@
         <button class="mini-btn" onclick="bulkMove()">Move</button>
         <button class="mini-btn" onclick="bulkLinkSequence()" title="Chain the selected activities FS in row order">⛓ Link in sequence</button>
         <button class="mini-btn" onclick="bulkFillDown()" title="Copy the first selected row's duration to the rest">⇊ Fill down</button>
+        <span class="sched-sep"></span>
+        <button class="mini-btn" onclick="bulkClearConstraints()" title="Remove all constraints from selected rows">📌✕ Clear constraints</button>
         <span class="sched-sep"></span>
         <button class="mini-btn" onclick="bulkCopy()" title="Copy the selected rows with their data and the logic between them">Copy</button>
         <button class="mini-btn" id="bulk-paste-btn" onclick="bulkPaste()" disabled>Paste →</button>
@@ -3157,6 +3164,7 @@ let scheduleStale = false;
 const SCHED_COLS = {
   status:      true,
   pct:         true,
+  blu:         true,
   float:       true,
   earlystart:  false,
   earlyfinish: false,
@@ -3334,6 +3342,10 @@ function renderActivityRow(a, wbsUid, hidden) {
           data-val="${a.percent_complete || 0}"
           style="text-align:right;font-family:var(--mono);font-size:10px;"
           title="Double-click to set % complete">${a.percent_complete > 0 ? a.percent_complete + '%' : '—'}</td>
+      <td class="col-blu editable" data-actid="${escAttr(aid)}" data-edit="blu"
+          data-val="${a.planned_labor_units || 0}"
+          style="text-align:right;font-family:var(--mono);font-size:10px;"
+          title="Double-click to set budgeted labor units">${a.planned_labor_units > 0 ? a.planned_labor_units : '—'}</td>
       <td class="col-float">${floatHtml}</td>
       <td class="col-constraint editable" data-actid="${escAttr(aid)}" data-edit="constraint"
           data-val="${escAttr(ct)}" data-cdate="${escAttr(a.constraint_date || '')}"
@@ -3982,6 +3994,12 @@ function buildCellCommand(actId, field, val, orig){
     return {cmd:{action:'update_progress', activity_id:actId, percent_complete:n},
             label:`${actId} → ${n}% complete`};
   }
+  if(field === 'blu'){
+    const n = parseFloat(val);
+    if(isNaN(n) || n < 0){ flashSched('Enter a valid number', true); return false; }
+    return {cmd:{action:'update_labor_units', activity_id:actId, labor_units:n},
+            label:`${actId} BLU → ${n}`};
+  }
   if(field === 'name'){
     if(!val) return false;
     return {cmd:{action:'rename_activity', activity_id:actId, new_name:val},
@@ -4004,7 +4022,7 @@ function buildCellCommand(actId, field, val, orig){
 // ═══════════════════════════════════════════════════
 //  Keyboard-first entry — Tab/Enter/arrows move the active cell
 // ═══════════════════════════════════════════════════
-const EDIT_FIELD_ORDER = ['id', 'name', 'duration', 'start', 'finish', 'pct', 'constraint', 'type'];
+const EDIT_FIELD_ORDER = ['id', 'name', 'duration', 'start', 'finish', 'pct', 'blu', 'constraint', 'type'];
 
 /** Editable cells of a row, in visual order, skipping hidden columns. */
 function editableCellsOf(tr){
@@ -4878,6 +4896,25 @@ function bulkDelete(){
   directEdit(cmds, `Delete ${ids.length} activit${ids.length===1?'y':'ies'}`);
 }
 
+function bulkClearConstraints(){
+  const ids = [...selectedIds]; if(!ids.length) return;
+  if(!confirm(`Remove all constraints from ${ids.length} selected activit${ids.length===1?'y':'ies'}?`)) return;
+  directEdit([{action:'bulk_clear_constraints', activity_ids:ids}],
+             `Clear constraints on ${ids.length} activit${ids.length===1?'y':'ies'}`);
+}
+
+async function wbsClearConstraints(){
+  const uids = [...selectedWbs]; if(!uids.length) return;
+  if(!confirm(`Remove all constraints from activities in ${uids.length} selected folder${uids.length===1?'':'s'} (recursive)?`)) return;
+  // Send one command per WBS — the backend expands each recursively
+  const cmds = uids.map(uid => {
+    const hdr = document.getElementById('wbs-hdr-' + uid);
+    const name = hdr?.dataset.wbsname || '';
+    return {action:'bulk_clear_constraints', wbs_name:name};
+  });
+  directEdit(cmds, `Clear constraints in ${uids.length} folder${uids.length===1?'':'s'}`);
+}
+
 // ═══════════════════════════════════════════════════
 //  Right-click context menu
 // ═══════════════════════════════════════════════════
@@ -4909,6 +4946,7 @@ function onSchedContextMenu(e){
     ['＋ Add activity here', () => quickAddActivity(tr.dataset.wbsuid, tr.dataset.wbsname)],
     ['⧉ Duplicate folder',  () => duplicateSelectedWbs()],
     ['⇱ Move to root',      () => moveSelectedWbs(true)],
+    ['📌✕ Clear constraints', () => wbsClearConstraints()],
   ] : [
     ['⛓ Link selected in sequence', () => bulkLinkSequence()],
     ['⇊ Fill duration down',        () => bulkFillDown()],
@@ -4916,6 +4954,7 @@ function onSchedContextMenu(e){
     ['＋ Add successor',            () => addLink(actId, 'succ')],
     ['⤳ Trace what drives this',    () => { startTrace(); applyTrace(actId); }],
     ['📌 Set constraint…',          () => { const c = findCell(actId, 'constraint'); if(c) beginCellEdit(c); }],
+    ['📌✕ Clear constraints',       () => bulkClearConstraints()],
     [`🗑 Delete ${selectedIds.size > 1 ? selectedIds.size + ' selected' : 'this activity'}`,
                                     () => bulkDelete()],
   ];

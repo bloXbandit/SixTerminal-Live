@@ -186,6 +186,8 @@ def apply_command(project: Project, command: Dict[str, Any]) -> Tuple[bool, str]
             return _update_activity_type(project, command)
         elif action == "update_progress":
             return _update_progress(project, command)
+        elif action == "update_labor_units":
+            return _update_labor_units(project, command)
         elif action == "move_activity_wbs":
             return _move_activity_wbs(project, command)
         elif action == "bulk_rename":
@@ -196,6 +198,8 @@ def apply_command(project: Project, command: Dict[str, Any]) -> Tuple[bool, str]
             return _set_constraint(project, command)
         elif action == "clear_constraint":
             return _clear_constraint(project, command)
+        elif action == "bulk_clear_constraints":
+            return _bulk_clear_constraints(project, command)
         elif action == "bulk_add_activity":
             return _bulk_add_activity(project, command)
         elif action == "bulk_create_wbs":
@@ -930,6 +934,21 @@ def _update_progress(project: Project, cmd: Dict) -> Tuple[bool, str]:
     return True, f"Set {pct:g}% complete on {len(matches)} activity/activities"
 
 
+def _update_labor_units(project: Project, cmd: Dict) -> Tuple[bool, str]:
+    """Set budgeted labor units on an activity."""
+    matches = _find_activity(project, cmd.get("activity_id"), cmd.get("target_name"))
+    if not matches:
+        raise EditError(f"No activity found: {cmd.get('activity_id') or cmd.get('target_name')}")
+    try:
+        units = float(cmd.get("labor_units"))
+    except (TypeError, ValueError):
+        raise EditError("labor_units must be a number")
+    units = max(0.0, units)
+    for a in matches:
+        a.planned_labor_units = units
+    return True, f"Set {units:g} labor units on {len(matches)} activity/activities"
+
+
 def _move_activity_wbs(project: Project, cmd: Dict) -> Tuple[bool, str]:
     matches = _find_activity(project, cmd.get("activity_id"), cmd.get("target_name"))
     if not matches:
@@ -998,6 +1017,57 @@ def _clear_constraint(project: Project, cmd: Dict) -> Tuple[bool, str]:
         a.constraint_type = None
         a.constraint_date = None
     return True, f"Cleared constraints on {len(matches)} activity/activities"
+
+
+def _bulk_clear_constraints(project: Project, cmd: Dict) -> Tuple[bool, str]:
+    """
+    Remove all constraints from multiple activities at once.
+    Accepts:
+      - activity_ids: list of IDs
+      - wbs_name / wbs_code: clear recursively under a folder (incl. children)
+      - all: true → clear every activity in the schedule
+    """
+    activity_ids = cmd.get("activity_ids", [])
+    wbs_name = cmd.get("wbs_name")
+    wbs_code = cmd.get("wbs_code")
+    clear_all = cmd.get("all", False)
+
+    if clear_all:
+        targets = list(project.activities)
+    elif activity_ids:
+        targets = []
+        for aid in activity_ids:
+            a = project.get_activity(activity_id=aid)
+            if a:
+                targets.append(a)
+    elif wbs_name or wbs_code:
+        wbs = _find_wbs(project, wbs_code, wbs_name)
+        if not wbs:
+            raise EditError(f"WBS not found: {wbs_code or wbs_name}")
+        # collect all descendant WBS uids
+        wbs_uids = {wbs.uid}
+        changed = True
+        while changed:
+            changed = False
+            for w in project.wbs_nodes:
+                if w.parent_uid in wbs_uids and w.uid not in wbs_uids:
+                    wbs_uids.add(w.uid)
+                    changed = True
+        targets = [a for a in project.activities if a.wbs_uid in wbs_uids]
+    else:
+        raise EditError("Provide activity_ids, wbs_name/wbs_code, or all=true")
+
+    if not targets:
+        return True, "No activities matched — no constraints to clear"
+
+    cleared = 0
+    for a in targets:
+        if a.constraint_type or a.constraint_date:
+            a.constraint_type = None
+            a.constraint_date = None
+            cleared += 1
+
+    return True, f"Cleared constraints on {cleared} of {len(targets)} activities"
 
 
 def _bulk_add_activity(project: Project, cmd: Dict) -> Tuple[bool, str]:

@@ -143,6 +143,20 @@ def load_xer(path: str) -> Project:
             is_longest_path=row.get("longest_path_flag", "N") == "Y",
         ))
 
+    # --- Budgeted Labor Units from TASKRSRC (resource assignments) ---
+    blu_map: Dict[str, float] = {}
+    for row in tables.get("TASKRSRC", []):
+        if row.get("proj_id", "") != proj_uid:
+            continue
+        tid = row.get("task_id", "")
+        # target_qty is the budgeted/planned quantity for this assignment
+        qty = _safe_float(row.get("target_qty", "0"))
+        if tid and qty:
+            blu_map[tid] = blu_map.get(tid, 0.0) + qty
+    for a in project.activities:
+        if a.uid in blu_map:
+            a.planned_labor_units = blu_map[a.uid]
+
     # --- Relations ---
     rel_type_map = {
         "PR_FS": "Finish to Start",

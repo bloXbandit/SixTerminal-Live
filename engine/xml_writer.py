@@ -1040,7 +1040,7 @@ def _write_activity(
         _nil(a, "PlannedFinishDate")
 
     _sub(a, "PlannedLaborCost",    "0")
-    _sub(a, "PlannedLaborUnits",   "0")
+    _sub(a, "PlannedLaborUnits",   str(act.planned_labor_units or 0))
     _sub(a, "PlannedNonLaborCost", "0")
     _sub(a, "PlannedNonLaborUnits","0")
 
