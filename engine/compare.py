@@ -688,6 +688,13 @@ def replace_wbs_branch(
 
 _APPLIABLE_ATTRS = {f for f, _ in _FIELDS_TO_DIFF}
 
+# Public alias — the single source of truth for "which fields make up one
+# activity's copyable data" (name/duration/dates/status/%/type/constraint).
+# Anything that overwrites one activity's data with another's (apply_activity_changes
+# here, and the merge-dedupe "replace" mode in server.py) should read this list
+# rather than keep its own copy, so the two stay in sync automatically.
+ACTIVITY_DATA_FIELDS = _APPLIABLE_ATTRS
+
 
 def apply_activity_changes(
     src_project: Project,

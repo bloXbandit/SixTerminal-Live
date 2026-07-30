@@ -13,7 +13,7 @@ Supported actions (must match edit_engine.py):
   copy_activities, set_data_date,
   bulk_rename, bulk_update_duration,
   set_constraint, clear_constraint,
-  update_labor_units, bulk_clear_constraints
+  update_labor_units, bulk_clear_constraints, bulk_append_name
 
 Supported models: claude, gpt-4.1-mini, gpt-4.1-nano, gpt-5.4-mini
 """
@@ -396,6 +396,16 @@ bulk_clear_constraints:
   {"action": "bulk_clear_constraints", "activity_ids": ["A1000", "A1010"]}
   {"action": "bulk_clear_constraints", "wbs_name": "LLE"}
   {"action": "bulk_clear_constraints", "all": true}
+
+bulk_append_name:
+  Add text to the end (or start) of multiple activity names WITHOUT replacing
+  what's already there — use for "add (ER 209) to every activity name in the
+  ER 209 folder" or "prefix everything in Sitework with 'SW - '". Same scope
+  as bulk_clear_constraints (activity_ids | wbs_name/wbs_code recursive | all).
+  Re-running is safe — an activity that already carries the text is skipped.
+  {"action": "bulk_append_name", "wbs_name": "ER 209", "text": "(ER 209)"}
+  {"action": "bulk_append_name", "wbs_name": "Sitework", "text": "SW -", "position": "prefix"}
+  {"action": "bulk_append_name", "activity_ids": ["A1000", "A1010"], "text": "(pending review)"}
 
 bulk_add_activity:
   Add the same activity into multiple WBS nodes in one call. Auto-assigns sequential IDs.

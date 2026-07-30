@@ -697,8 +697,15 @@ def import_commit_route():
                 base.wbs_nodes.append(node)
                 target_uid = node.uid
 
-            _merge_projects(base, project, target_wbs_uid=target_uid,
-                            flatten=bool(data.get("flatten")))
+            # dedupe: what to do when a pasted/imported activity's name matches
+            # one already in the SAME destination folder. Default "off" keeps
+            # exact prior behaviour for any caller that doesn't pass it.
+            dedupe = data.get("dedupe") or None
+            if dedupe not in (None, "off", "skip", "replace"):
+                return jsonify({"error": f"dedupe must be 'skip', 'replace', or 'off' — got '{dedupe}'"}), 400
+            merge_report = _merge_projects(base, project, target_wbs_uid=target_uid,
+                                           flatten=bool(data.get("flatten")),
+                                           dedupe=None if dedupe == "off" else dedupe)
             base.build_lookups()
             from engine.schedule_model import compute_dates
             try:
@@ -708,6 +715,7 @@ def import_commit_route():
             project = base
             pid = _active_id[0]
         else:
+            merge_report = None
             pid = _unique_pid(project.id or Path(str(name or "import")).stem or "import")
             sess = _make_session(pid, contract["meta"].get("source_name", f"{pid}.xlsx"))
             sess["project"] = project
@@ -721,6 +729,7 @@ def import_commit_route():
             "relation_count": len(project.relations), "data_date": project.data_date,
             "logic_status": contract["meta"].get("logic_status", "absent"),
             "summary": project.summary(),
+            "merge_report": merge_report,
             "projects": [_project_list_item(k) for k in _projects],
         })
     except Exception as e:
@@ -872,7 +881,12 @@ def run_schedule():
                         "trace": traceback.format_exc()}), 500
 
 
-def _merge_projects(base, incoming, target_wbs_uid=None, flatten=False):
+def _norm_activity_name(s):
+    """Collapse whitespace + casefold, so paste noise doesn't hide a real dup."""
+    return re.sub(r"\s+", " ", (s or "").strip()).lower()
+
+
+def _merge_projects(base, incoming, target_wbs_uid=None, flatten=False, dedupe=None):
     """
     Append incoming WBS nodes + activities into base, de-duplicating IDs.
 
@@ -881,53 +895,131 @@ def _merge_projects(base, incoming, target_wbs_uid=None, flatten=False):
     pasted/imported block) is re-parented to the target, and activities that
     never resolved to a folder land directly in it. That is what lets a pasted
     block drop into an existing section instead of piling up at the root.
+
+    dedupe controls what happens when an incoming activity's NAME matches one
+    already sitting in the SAME destination WBS folder. The same name in a
+    DIFFERENT folder is not a conflict — "Terminate wire" can exist in ER 209
+    and ER 210 without issue.
+      None / "off" — always add as a new activity (previous behaviour)
+      "skip"       — keep what's already there; the incoming row is dropped
+      "replace"    — the incoming row's data overwrites the existing activity
+                     (name/duration/dates/status/%/type/constraint — the same
+                     field list apply_activity_changes uses)
+    Either way, any relationship that touched the incoming (now-skipped or
+    -replaced) activity is re-pointed at the kept one, so pasted logic never
+    silently dangles. Returns a report dict for the caller to surface.
     """
-    # flatten: drop the incoming folder structure entirely and drop every
-    # activity straight into the target. This is what "load these under
-    # Electrical" means — without it, folders inferred from an id prefix
-    # (MDC1 > MDC1.FDG) get rebuilt inside the target as noise.
-    if flatten and target_wbs_uid:
-        existing_ids = {a.activity_id for a in base.activities}
-        for a in incoming.activities:
-            aid = a.activity_id
-            while aid in existing_ids:
-                aid += "-i"
-            a.activity_id = aid
-            existing_ids.add(aid)
-            a.wbs_uid = target_wbs_uid
-            base.activities.append(a)
-        base.relations.extend(incoming.relations)
-        return
+    from engine.schedule_model import Relation
+    from engine.compare import ACTIVITY_DATA_FIELDS
 
-    by_uid_incoming = {w.uid for w in incoming.wbs_nodes}
-    existing_wbs_codes = {w.code for w in base.wbs_nodes}
-    code_to_uid = {w.code: w.uid for w in base.wbs_nodes}
-    remap = {}                      # incoming uid -> uid actually used in base
-    for w in incoming.wbs_nodes:
-        if w.code in existing_wbs_codes:
-            remap[w.uid] = code_to_uid[w.code]      # folder already exists — reuse it
-            continue
-        # a root of the incoming block hangs off the target folder
-        if target_wbs_uid and (not w.parent_uid or w.parent_uid not in by_uid_incoming):
-            w.parent_uid = target_wbs_uid
-        base.wbs_nodes.append(w)
-        existing_wbs_codes.add(w.code)
-        code_to_uid[w.code] = w.uid
-        remap[w.uid] = w.uid
+    report = {"added": 0, "skipped_duplicate": 0, "replaced": 0, "relations_added": 0,
+             "skipped_names": [], "replaced_names": []}
+    _REPORT_CAP = 30    # keep the response small on a huge merge
 
+    # (wbs_uid, normalized name) -> Activity already sitting in base, extended
+    # as we place each incoming row so duplicates WITHIN this same paste are
+    # caught too, not just against what was already there before it started.
+    dup_index = {}
+    for a in base.activities:
+        dup_index.setdefault((a.wbs_uid, _norm_activity_name(a.name)), a)
+
+    act_uid_map = {}                # every incoming uid -> uid actually used in base
     existing_ids = {a.activity_id for a in base.activities}
-    base_uids = {w.uid for w in base.wbs_nodes}
-    for a in incoming.activities:
+
+    def place(a, final_wbs_uid):
+        key = (final_wbs_uid, _norm_activity_name(a.name))
+        dup = dup_index.get(key) if dedupe in ("skip", "replace") else None
+        if dup is not None:
+            act_uid_map[a.uid] = dup.uid
+            if dedupe == "replace":
+                for attr in ACTIVITY_DATA_FIELDS:
+                    setattr(dup, attr, getattr(a, attr))
+                report["replaced"] += 1
+                if len(report["replaced_names"]) < _REPORT_CAP:
+                    report["replaced_names"].append(a.name)
+            else:
+                report["skipped_duplicate"] += 1
+                if len(report["skipped_names"]) < _REPORT_CAP:
+                    report["skipped_names"].append(a.name)
+            return
         aid = a.activity_id
         while aid in existing_ids:
             aid += "-i"
         a.activity_id = aid
         existing_ids.add(aid)
-        a.wbs_uid = remap.get(a.wbs_uid, a.wbs_uid)
-        if a.wbs_uid not in base_uids:
-            a.wbs_uid = target_wbs_uid or (base.wbs_nodes[0].uid if base.wbs_nodes else a.wbs_uid)
+        a.wbs_uid = final_wbs_uid
         base.activities.append(a)
-    base.relations.extend(incoming.relations)
+        act_uid_map[a.uid] = a.uid
+        dup_index[key] = a
+        report["added"] += 1
+
+    # A paste/import with no real section headers gets exactly one synthetic
+    # placeholder folder from build_project_from_contract (code "ROOT", named
+    # after the project). There is no real structure there to "keep" — without
+    # this check, a plain few-line paste ("just these 3 more activities") would
+    # land in a pointless new sub-folder nested under the target instead of the
+    # folder the user actually picked, which also means dedupe could never see
+    # what's already there. A GENUINE single named section from an indented
+    # paste ("Electrical" with two activities under it) does not match this and
+    # is still placed as its own folder, same as before.
+    only_synthetic_root = (
+        len(incoming.wbs_nodes) == 1
+        and incoming.wbs_nodes[0].code == "ROOT"
+        and incoming.wbs_nodes[0].name == incoming.name
+        and incoming.wbs_nodes[0].parent_uid is None
+    )
+
+    # flatten: drop the incoming folder structure entirely and drop every
+    # activity straight into the target. This is what "load these under
+    # Electrical" means — without it, folders inferred from an id prefix
+    # (MDC1 > MDC1.FDG) get rebuilt inside the target as noise.
+    if (flatten or only_synthetic_root) and target_wbs_uid:
+        for a in incoming.activities:
+            place(a, target_wbs_uid)
+    else:
+        by_uid_incoming = {w.uid for w in incoming.wbs_nodes}
+        existing_wbs_codes = {w.code for w in base.wbs_nodes}
+        code_to_uid = {w.code: w.uid for w in base.wbs_nodes}
+        remap = {}                  # incoming wbs uid -> wbs uid actually used in base
+        for w in incoming.wbs_nodes:
+            if w.code in existing_wbs_codes:
+                remap[w.uid] = code_to_uid[w.code]  # folder already exists — reuse it
+                continue
+            # a root of the incoming block hangs off the target folder
+            if target_wbs_uid and (not w.parent_uid or w.parent_uid not in by_uid_incoming):
+                w.parent_uid = target_wbs_uid
+            base.wbs_nodes.append(w)
+            existing_wbs_codes.add(w.code)
+            code_to_uid[w.code] = w.uid
+            remap[w.uid] = w.uid
+
+        base_uids = {w.uid for w in base.wbs_nodes}
+        for a in incoming.activities:
+            final_wbs = remap.get(a.wbs_uid, a.wbs_uid)
+            if final_wbs not in base_uids:
+                final_wbs = target_wbs_uid or (base.wbs_nodes[0].uid if base.wbs_nodes else a.wbs_uid)
+            place(a, final_wbs)
+
+    # Remap relations through the uid map — covers every incoming activity,
+    # whether newly added, skipped, or replaced — and skip one that already
+    # exists between the same two final endpoints, so re-pasting the same
+    # block twice doesn't pile up duplicate links.
+    existing_rel_keys = {(r.predecessor_uid, r.successor_uid, r.type) for r in base.relations}
+    for r in incoming.relations:
+        p = act_uid_map.get(r.predecessor_uid)
+        s = act_uid_map.get(r.successor_uid)
+        if not p or not s or p == s:
+            continue
+        key = (p, s, r.type)
+        if key in existing_rel_keys:
+            continue
+        base.relations.append(Relation(uid=str(uuid.uuid4().int)[:10],
+                                       predecessor_uid=p, successor_uid=s,
+                                       type=r.type, lag=r.lag))
+        existing_rel_keys.add(key)
+        report["relations_added"] += 1
+
+    return report
 
 
 @app.route("/api/edit", methods=["POST"])

@@ -200,6 +200,8 @@ def apply_command(project: Project, command: Dict[str, Any]) -> Tuple[bool, str]
             return _clear_constraint(project, command)
         elif action == "bulk_clear_constraints":
             return _bulk_clear_constraints(project, command)
+        elif action == "bulk_append_name":
+            return _bulk_append_name(project, command)
         elif action == "bulk_add_activity":
             return _bulk_add_activity(project, command)
         elif action == "bulk_create_wbs":
@@ -1019,28 +1021,29 @@ def _clear_constraint(project: Project, cmd: Dict) -> Tuple[bool, str]:
     return True, f"Cleared constraints on {len(matches)} activity/activities"
 
 
-def _bulk_clear_constraints(project: Project, cmd: Dict) -> Tuple[bool, str]:
+def _resolve_activity_scope(project: Project, cmd: Dict) -> List[Activity]:
     """
-    Remove all constraints from multiple activities at once.
-    Accepts:
-      - activity_ids: list of IDs
-      - wbs_name / wbs_code: clear recursively under a folder (incl. children)
-      - all: true → clear every activity in the schedule
+    Shared scope resolver for mass-edit actions. Accepts one of:
+      - activity_ids: explicit list of IDs
+      - wbs_name / wbs_code: every activity recursively under a folder
+      - all: true → every activity in the schedule
+    Raises EditError if none of the three are provided or the WBS isn't found.
     """
     activity_ids = cmd.get("activity_ids", [])
     wbs_name = cmd.get("wbs_name")
     wbs_code = cmd.get("wbs_code")
-    clear_all = cmd.get("all", False)
+    want_all = cmd.get("all", False)
 
-    if clear_all:
-        targets = list(project.activities)
-    elif activity_ids:
+    if want_all:
+        return list(project.activities)
+    if activity_ids:
         targets = []
         for aid in activity_ids:
             a = project.get_activity(activity_id=aid)
             if a:
                 targets.append(a)
-    elif wbs_name or wbs_code:
+        return targets
+    if wbs_name or wbs_code:
         wbs = _find_wbs(project, wbs_code, wbs_name)
         if not wbs:
             raise EditError(f"WBS not found: {wbs_code or wbs_name}")
@@ -1053,10 +1056,19 @@ def _bulk_clear_constraints(project: Project, cmd: Dict) -> Tuple[bool, str]:
                 if w.parent_uid in wbs_uids and w.uid not in wbs_uids:
                     wbs_uids.add(w.uid)
                     changed = True
-        targets = [a for a in project.activities if a.wbs_uid in wbs_uids]
-    else:
-        raise EditError("Provide activity_ids, wbs_name/wbs_code, or all=true")
+        return [a for a in project.activities if a.wbs_uid in wbs_uids]
+    raise EditError("Provide activity_ids, wbs_name/wbs_code, or all=true")
 
+
+def _bulk_clear_constraints(project: Project, cmd: Dict) -> Tuple[bool, str]:
+    """
+    Remove all constraints from multiple activities at once.
+    Accepts:
+      - activity_ids: list of IDs
+      - wbs_name / wbs_code: clear recursively under a folder (incl. children)
+      - all: true → clear every activity in the schedule
+    """
+    targets = _resolve_activity_scope(project, cmd)
     if not targets:
         return True, "No activities matched — no constraints to clear"
 
@@ -1068,6 +1080,58 @@ def _bulk_clear_constraints(project: Project, cmd: Dict) -> Tuple[bool, str]:
             cleared += 1
 
     return True, f"Cleared constraints on {cleared} of {len(targets)} activities"
+
+
+def _bulk_append_name(project: Project, cmd: Dict) -> Tuple[bool, str]:
+    """
+    Add text to the end (or start) of multiple activity names WITHOUT
+    replacing the name already there — e.g. append "(ER 209)" to every
+    activity in a folder so "Terminate wire" becomes "Terminate wire (ER 209)".
+
+    Scope: activity_ids | wbs_name/wbs_code (recursive) | all — same contract
+    as bulk_clear_constraints.
+
+    Idempotent: an activity whose name already carries the exact text at that
+    position is left alone and counted as "already had it", so re-running the
+    same request (e.g. after adding more activities to the folder) doesn't
+    pile up "(ER 209) (ER 209)".
+
+      text       — the text to add (required)
+      position   — "suffix" (default) or "prefix"
+      separator  — joining text, default " " (a single space)
+    """
+    text = str(cmd.get("text") or "").strip()
+    if not text:
+        raise EditError("text is required for bulk_append_name")
+    position = str(cmd.get("position") or "suffix").lower()
+    if position not in ("suffix", "prefix"):
+        raise EditError("position must be 'suffix' or 'prefix'")
+    separator = cmd.get("separator")
+    separator = " " if separator is None else str(separator)
+
+    targets = _resolve_activity_scope(project, cmd)
+    if not targets:
+        return True, "No activities matched — nothing to rename"
+
+    applied = 0
+    already = 0
+    for a in targets:
+        if position == "suffix":
+            if a.name.rstrip().endswith(text):
+                already += 1
+                continue
+            a.name = a.name.rstrip() + separator + text
+        else:
+            if a.name.lstrip().startswith(text):
+                already += 1
+                continue
+            a.name = text + separator + a.name.lstrip()
+        applied += 1
+
+    msg = f"Added \"{text}\" to {applied} of {len(targets)} activity name(s)"
+    if already:
+        msg += f" ({already} already had it)"
+    return True, msg
 
 
 def _bulk_add_activity(project: Project, cmd: Dict) -> Tuple[bool, str]:
@@ -1224,16 +1288,18 @@ def _bulk_rename_activities(project: Project, cmd: Dict) -> Tuple[bool, str]:
             errors.append("Missing to_name in a rename entry")
             continue
 
-        # Scope: entire WBS
+        # Scope: entire WBS, recursively (a folder with sub-folders should not
+        # silently skip the activities living one level deeper — the same
+        # descendant-collecting rule bulk_clear_constraints uses).
         if wbs_name and not act_id and not from_name:
-            wbs = _find_wbs(project, wbs_name=wbs_name)
-            if not wbs:
-                errors.append(f"WBS '{wbs_name}' not found")
+            try:
+                targets = _resolve_activity_scope(project, {"wbs_name": wbs_name})
+            except EditError as e:
+                errors.append(str(e))
                 continue
-            for a in project.activities:
-                if a.wbs_uid == wbs.uid:
-                    a.name = to_name.replace("{original}", a.name)
-                    applied += 1
+            for a in targets:
+                a.name = to_name.replace("{original}", a.name)
+                applied += 1
             continue
 
         # Scope: by ID or name

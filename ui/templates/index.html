@@ -1229,10 +1229,24 @@
         </label>
         <button class="mini-btn" style="margin-left:6px;" onclick="retryImportWithLlm()">Retry</button>
       </div>
+      <div id="import-dedupe-row" style="display:none;margin-top:10px;padding-top:10px;border-top:1px solid var(--border);font-size:11px;">
+        <div style="color:var(--text3);margin-bottom:6px;">If an imported activity has the same name as one already in that folder:</div>
+        <div style="display:flex;gap:14px;flex-wrap:wrap;">
+          <label style="display:inline-flex;align-items:center;gap:6px;cursor:pointer;">
+            <input type="radio" name="import-dedupe" value="skip" checked> Skip it — keep what's already there
+          </label>
+          <label style="display:inline-flex;align-items:center;gap:6px;cursor:pointer;">
+            <input type="radio" name="import-dedupe" value="replace"> Replace it — use the imported data
+          </label>
+          <label style="display:inline-flex;align-items:center;gap:6px;cursor:pointer;">
+            <input type="radio" name="import-dedupe" value="off"> Add anyway — allow duplicates
+          </label>
+        </div>
+      </div>
     </div>
     <div class="modal-foot">
       <label style="margin-right:auto;font-size:11px;color:var(--text3);display:inline-flex;align-items:center;gap:6px;">
-        <input type="checkbox" id="import-merge"> Merge into current schedule (instead of replacing)
+        <input type="checkbox" id="import-merge" onchange="document.getElementById('import-dedupe-row').style.display = this.checked ? 'block' : 'none';"> Merge into current schedule (instead of replacing)
       </label>
       <button class="btn btn-ghost" onclick="closeModal('import-modal')">Cancel</button>
       <button class="btn btn-primary" id="import-commit-btn" onclick="commitImport()">Load as active schedule</button>
@@ -1294,6 +1308,28 @@
           <label style="display:inline-flex;align-items:center;gap:6px;margin-top:10px;font-size:11px;color:var(--text3);cursor:pointer;">
             <input type="checkbox" id="paste-keep-structure" checked> Keep the section headings from the paste as sub-folders
           </label>
+          <div style="margin-top:12px;padding-top:10px;border-top:1px solid var(--border);">
+            <div style="font-size:11px;color:var(--text3);margin-bottom:6px;">
+              If a pasted activity has the same name as one already in that folder:
+            </div>
+            <div style="display:flex;gap:14px;flex-wrap:wrap;font-size:11px;">
+              <label style="display:inline-flex;align-items:center;gap:6px;cursor:pointer;">
+                <input type="radio" name="paste-dedupe" value="skip" checked>
+                Skip it — keep what's already there
+              </label>
+              <label style="display:inline-flex;align-items:center;gap:6px;cursor:pointer;">
+                <input type="radio" name="paste-dedupe" value="replace">
+                Replace it — use the pasted data
+              </label>
+              <label style="display:inline-flex;align-items:center;gap:6px;cursor:pointer;">
+                <input type="radio" name="paste-dedupe" value="off">
+                Add anyway — allow duplicates
+              </label>
+            </div>
+            <div style="font-size:10px;color:var(--text3);margin-top:4px;opacity:.8;">
+              Only compares names within the SAME folder — the same activity name in a different WBS is never a conflict.
+            </div>
+          </div>
         </div>
       </div>
     </div>
@@ -1600,6 +1636,7 @@
         <button class="mini-btn" onclick="moveSelectedWbs(true)">Move to root</button>
         <span class="sched-sep"></span>
         <button class="mini-btn" onclick="wbsClearConstraints()" title="Remove all constraints from activities in selected folders (recursive)">📌✕ Clear constraints</button>
+        <button class="mini-btn" onclick="openAppendNamePopup(event,{wbsScope:true})" title="Add text to the end (or start) of every activity name in selected folders — the existing name is kept">✎+ Add text to names</button>
         <span class="sched-sep"></span>
         <button class="mini-btn" onclick="duplicateSelectedWbs()"
                 title="Copy the folder, its sub-folders, activities and their internal logic">⧉ Duplicate</button>
@@ -1626,6 +1663,7 @@
         <button class="mini-btn" onclick="bulkFillDown()" title="Copy the first selected row's duration to the rest">⇊ Fill down</button>
         <span class="sched-sep"></span>
         <button class="mini-btn" onclick="bulkClearConstraints()" title="Remove all constraints from selected rows">📌✕ Clear constraints</button>
+        <button class="mini-btn" onclick="openAppendNamePopup(event,{wbsScope:false})" title="Add text to the end (or start) of the selected activities' names — the existing name is kept">✎+ Add text to names</button>
         <span class="sched-sep"></span>
         <button class="mini-btn" onclick="bulkCopy()" title="Copy the selected rows with their data and the logic between them">Copy</button>
         <button class="mini-btn" id="bulk-paste-btn" onclick="bulkPaste()" disabled>Paste →</button>
@@ -2280,12 +2318,14 @@ async function commitImport() {
   if (!c) return;
   const name = document.getElementById('import-proj-name').value.trim();
   const mode = document.getElementById('import-merge').checked ? 'merge' : 'replace';
+  const dedupe = document.querySelector('input[name="import-dedupe"]:checked')?.value || 'skip';
   const btn = document.getElementById('import-commit-btn');
   btn.disabled = true; btn.textContent = 'Loading…';
   try {
     const d = await fetch('/api/import/commit', {
       method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({ contract: c, mode, project_name: name })
+      body: JSON.stringify({ contract: c, mode, project_name: name,
+                            ...(mode === 'merge' ? {dedupe} : {}) })
     }).then(r => r.json());
     btn.disabled = false; btn.textContent = 'Load as active schedule';
     if (d.error) { addMsg('system', errorCard(d.error)); return; }
@@ -2295,6 +2335,10 @@ async function commitImport() {
     let msg = `<strong>${escHtml(d.project_name)}</strong> imported — ${d.activity_count} activities · ${d.wbs_count} WBS · ${d.relation_count} relations.`;
     if (d.logic_status === 'absent') {
       msg += ` <em>No logic in the source — ask me to "tie up the open ends" and I'll propose predecessor/successor links.</em>`;
+    }
+    const mr = d.merge_report;
+    if (mr && (mr.skipped_duplicate || mr.replaced)) {
+      msg += ` <em>${mr.replaced ? mr.replaced + ' replaced, ' : ''}${mr.skipped_duplicate ? mr.skipped_duplicate + ' skipped as duplicate.' : ''}</em>`;
     }
     addMsg('system', msg);
     switchTab('schedule');
@@ -2423,6 +2467,7 @@ async function commitPastedRows() {
     // "keep structure" off (the default) drops the section folders the parser
     // inferred and drops every row straight into the chosen target
     flatten: !document.getElementById('paste-keep-structure').checked,
+    dedupe: document.querySelector('input[name="paste-dedupe"]:checked')?.value || 'skip',
   };
   if (useNew) {
     const nm = document.getElementById('paste-new-wbs').value.trim();
@@ -2443,8 +2488,18 @@ async function commitPastedRows() {
     btn.disabled = false; btn.textContent = 'Add to schedule';
     if (d.error) { flashSched(d.error, true); return; }
     closeModal('paste-modal');
-    const n = _pasteContract.meta.activity_count;
-    flashSched(`Added ${n} activit${n===1?'y':'ies'} — Undo if that's not what you wanted`);
+    const mr = d.merge_report;
+    let msg;
+    if (mr && (mr.skipped_duplicate || mr.replaced)) {
+      const parts = [`${mr.added} added`];
+      if (mr.replaced) parts.push(`${mr.replaced} replaced`);
+      if (mr.skipped_duplicate) parts.push(`${mr.skipped_duplicate} skipped as duplicate`);
+      msg = parts.join(', ') + ' — Undo if that\'s not what you wanted';
+    } else {
+      const n = _pasteContract.meta.activity_count;
+      msg = `Added ${n} activit${n===1?'y':'ies'} — Undo if that's not what you wanted`;
+    }
+    flashSched(msg);
     _pasteContract = null;
     await loadSchedule();
   } catch(e) {
@@ -4916,6 +4971,81 @@ async function wbsClearConstraints(){
   directEdit(cmds, `Clear constraints in ${uids.length} folder${uids.length===1?'':'s'}`);
 }
 
+/**
+ * Mass "add text to names" popup — appends or prepends text to every name in
+ * the current selection (WBS folders, recursive, or picked rows) WITHOUT
+ * replacing what's already there. Reuses the app's single-popup convention
+ * (constraint-pop id/class, closeConstraintEditor as the shared closer) so it
+ * never stacks with the constraint or link-type popovers.
+ */
+function openAppendNamePopup(ev, opts){
+  const wbsScope = !!(opts && opts.wbsScope);
+  let scopeLabel, cmdBase;
+  if(wbsScope){
+    const uids = [...selectedWbs];
+    if(!uids.length){ flashSched('Select one or more WBS folders first', true); return; }
+    scopeLabel = `${uids.length} folder${uids.length===1?'':'s'} (recursive)`;
+    cmdBase = uids.map(uid => {
+      const hdr = document.getElementById('wbs-hdr-' + uid);
+      return { wbs_name: hdr?.dataset.wbsname || '' };
+    });
+  } else {
+    const ids = [...selectedIds];
+    if(!ids.length){ flashSched('Select one or more activities first', true); return; }
+    scopeLabel = `${ids.length} activit${ids.length===1?'y':'ies'}`;
+    cmdBase = [{ activity_ids: ids }];
+  }
+
+  closeConstraintEditor();
+  const pop = document.createElement('div');
+  pop.id = 'constraint-pop';
+  pop.className = 'constraint-pop';
+  pop.style.borderColor = 'var(--accent)';
+  pop.style.flexWrap = 'wrap';
+  pop.style.maxWidth = '360px';
+  pop.innerHTML =
+    `<span style="font-size:10px;color:var(--text3);width:100%;">Add text to ${escHtml(scopeLabel)} — keeps the existing name</span>
+     <select id="an-pos">
+       <option value="suffix">At the end</option>
+       <option value="prefix">At the start</option>
+     </select>
+     <input id="an-text" type="text" placeholder="e.g. (ER 209)" style="flex:1;min-width:140px;">
+     <button class="mini-btn ok" id="an-ok">Apply</button>
+     <button class="mini-btn no" id="an-cancel">Cancel</button>`;
+  document.body.appendChild(pop);
+
+  // Anchor near the click when we have one (a real button or ctx-menu item);
+  // context-menu callbacks run with no event, so fall back to a fixed spot.
+  const vw = window.innerWidth, vh = window.innerHeight;
+  if(ev && ev.target && typeof ev.target.getBoundingClientRect === 'function'){
+    const r = ev.target.getBoundingClientRect();
+    pop.style.top  = (window.scrollY + Math.min(r.bottom + 4, vh - 90)) + 'px';
+    pop.style.left = (window.scrollX + Math.max(8, Math.min(r.left, vw - 380))) + 'px';
+  } else {
+    pop.style.top  = (window.scrollY + 120) + 'px';
+    pop.style.left = (window.scrollX + Math.max(8, vw/2 - 190)) + 'px';
+  }
+
+  const input = pop.querySelector('#an-text');
+  input.focus();
+
+  const apply = () => {
+    const text = input.value.trim();
+    if(!text){ flashSched('Enter the text to add', true); return; }
+    const position = pop.querySelector('#an-pos').value;
+    closeConstraintEditor();
+    const cmds = cmdBase.map(base => ({action:'bulk_append_name', position, text, ...base}));
+    directEdit(cmds, `Add "${text}" (${position}) to ${scopeLabel}`);
+  };
+  pop.querySelector('#an-ok').addEventListener('click', apply);
+  pop.querySelector('#an-cancel').addEventListener('click', closeConstraintEditor);
+  pop.addEventListener('keydown', kev => {
+    if(kev.key === 'Enter'){ kev.preventDefault(); apply(); }
+    else if(kev.key === 'Escape'){ closeConstraintEditor(); }
+  });
+  setTimeout(() => document.addEventListener('mousedown', outsideConstraintClose), 0);
+}
+
 // ═══════════════════════════════════════════════════
 //  Right-click context menu
 // ═══════════════════════════════════════════════════
@@ -4948,6 +5078,7 @@ function onSchedContextMenu(e){
     ['⧉ Duplicate folder',  () => duplicateSelectedWbs()],
     ['⇱ Move to root',      () => moveSelectedWbs(true)],
     ['📌✕ Clear constraints', () => wbsClearConstraints()],
+    ['✎+ Add text to names',  (ev) => openAppendNamePopup(ev, {wbsScope:true})],
   ] : [
     ['⛓ Link selected in sequence', () => bulkLinkSequence()],
     ['⇊ Fill duration down',        () => bulkFillDown()],
@@ -4956,6 +5087,7 @@ function onSchedContextMenu(e){
     ['⤳ Trace what drives this',    () => { startTrace(); applyTrace(actId); }],
     ['📌 Set constraint…',          () => { const c = findCell(actId, 'constraint'); if(c) beginCellEdit(c); }],
     ['📌✕ Clear constraints',       () => bulkClearConstraints()],
+    ['✎+ Add text to name(s)',      (ev) => openAppendNamePopup(ev, {wbsScope:false})],
     [`🗑 Delete ${selectedIds.size > 1 ? selectedIds.size + ' selected' : 'this activity'}`,
                                     () => bulkDelete()],
   ];
