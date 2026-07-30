@@ -1408,7 +1408,7 @@
       </div>
       <div class="info-date-row">
         <span>Data Date</span>
-        <span id="info-date" onclick="editDataDate()" title="Click to change the data date"
+        <span id="info-date" onclick="editDataDate(event)" title="Click to change the data date"
               style="cursor:pointer;border-bottom:1px dotted var(--text3);">—</span>
       </div>
     </div>
@@ -4489,22 +4489,64 @@ function editLink(ev, predId, succId, dir){
  * from. Dates don't reflow until the scheduler runs, so offer that as a
  * follow-up rather than silently recalculating the whole schedule.
  */
-async function editDataDate(){
+/**
+ * Change the project data date via a visible popup instead of stacked native
+ * prompt()/confirm() dialogs — those are easy to click past without noticing,
+ * especially in an embedded/preview browser context, which made it look like
+ * clicking "Data Date" jumped straight to a schedule result with no chance to
+ * actually enter a new date. Matches the app's existing popup convention
+ * (constraint-pop id/class, closeConstraintEditor as the shared closer).
+ */
+function editDataDate(ev){
   if(!lastSchedData && !_activeProjectId){ flashSched('Load a schedule first', true); return; }
   const cur = (document.getElementById('info-date').textContent || '').trim();
-  const iso = /^\d{4}-\d{2}-\d{2}$/.test(cur) ? cur : '';
-  const val = prompt('Data date (YYYY-MM-DD) — the date the schedule is statused from:',
-                     iso || new Date().toISOString().slice(0,10));
-  if(val === null) return;
-  const v = val.trim();
-  if(!/^\d{4}-\d{2}-\d{2}$/.test(v)){ flashSched('Use YYYY-MM-DD', true); return; }
-  const d = await directEdit([{action:'set_data_date', data_date:v}], `Data date → ${v}`);
-  if(d && d.success){
-    const el = document.getElementById('info-date'); if(el) el.textContent = v;
-    if(confirm(`Data date set to ${v}.\n\nRecalculate the schedule now so dates reflow from it?`)){
-      runSchedule();
-    }
+  const iso = /^\d{4}-\d{2}-\d{2}$/.test(cur) ? cur : new Date().toISOString().slice(0,10);
+
+  closeConstraintEditor();
+  const pop = document.createElement('div');
+  pop.id = 'constraint-pop';
+  pop.className = 'constraint-pop';
+  pop.style.borderColor = 'var(--accent)';
+  pop.style.flexWrap = 'wrap';
+  pop.style.maxWidth = '320px';
+  pop.innerHTML =
+    `<span style="font-size:10px;color:var(--text3);width:100%;">Data date — the date the schedule is statused from</span>
+     <input id="dd-date" type="date" value="${escAttr(iso)}">
+     <button class="mini-btn ok" id="dd-save">Save</button>
+     <button class="mini-btn no" id="dd-cancel">Cancel</button>
+     <label style="display:flex;align-items:center;gap:6px;width:100%;font-size:10px;color:var(--text3);margin-top:4px;cursor:pointer;">
+       <input type="checkbox" id="dd-reschedule" checked> Recalculate the schedule right after (dates reflow from the new data date)
+     </label>`;
+  document.body.appendChild(pop);
+
+  const target = (ev && ev.target) || document.getElementById('info-date');
+  if(target && typeof target.getBoundingClientRect === 'function'){
+    const r = target.getBoundingClientRect();
+    pop.style.top  = (window.scrollY + r.bottom + 4) + 'px';
+    pop.style.left = (window.scrollX + Math.max(8, Math.min(r.left, window.innerWidth - 340))) + 'px';
+  } else {
+    pop.style.top = '120px'; pop.style.left = '20px';
   }
+
+  const apply = async () => {
+    const v = pop.querySelector('#dd-date').value;
+    if(!v){ flashSched('Pick a date', true); return; }
+    const reschedule = pop.querySelector('#dd-reschedule').checked;
+    closeConstraintEditor();
+    const d = await directEdit([{action:'set_data_date', data_date:v}], `Data date → ${v}`);
+    if(d && d.success){
+      const el = document.getElementById('info-date'); if(el) el.textContent = v;
+      if(reschedule) runSchedule();
+    }
+  };
+  pop.querySelector('#dd-save').addEventListener('click', apply);
+  pop.querySelector('#dd-cancel').addEventListener('click', closeConstraintEditor);
+  pop.addEventListener('keydown', kev => {
+    if(kev.key === 'Enter'){ kev.preventDefault(); apply(); }
+    else if(kev.key === 'Escape'){ closeConstraintEditor(); }
+  });
+  setTimeout(() => document.addEventListener('mousedown', outsideConstraintClose), 0);
+  pop.querySelector('#dd-date').focus();
 }
 
 function deleteLink(predId, succId){
