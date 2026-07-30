@@ -773,6 +773,8 @@ def compute_dates(project: "Project") -> None:
             elif ct in ("Start On Or After", "Start On Or Before") and cd:
                 if ct == "Start On Or After" and cd > es_date:
                     es_date = _snap(cd, wd, hol)
+                elif ct == "Start On Or Before" and cd < es_date:
+                    es_date = _snap(cd, wd, hol)
 
         ef_date = _add_wd(es_date, dur_d, wd, hol) if dur_d > 0 else es_date
 
@@ -783,6 +785,8 @@ def compute_dates(project: "Project") -> None:
             ef_date = _snap(cd, wd, hol)
             es_date = _add_wd(ef_date, -dur_d, wd, hol) if dur_d > 0 else ef_date
         elif ct == "Finish On Or Before" and cd and cd < ef_date:
+            ef_date = _snap(cd, wd, hol)
+        elif ct == "Finish On Or After" and cd and cd > ef_date:
             ef_date = _snap(cd, wd, hol)
 
         es[uid] = es_date

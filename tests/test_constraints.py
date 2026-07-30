@@ -76,6 +76,44 @@ def test_clearing_a_constraint_returns_the_activity_to_the_logic():
     assert _act(p, "A1010").planned_start == natural
 
 
+def test_start_on_or_before_pulls_an_earlier_date_but_not_a_later_one():
+    """'Start On Or Before' is a soft cap: it pulls the start back if the
+    natural CPM date is later than the constraint, but a constraint date that
+    is already later than the natural date changes nothing."""
+    p = _chain()
+    natural = _act(p, "A1010").planned_start
+    apply_command(p, {"action": "set_constraint", "activity_id": "A1010",
+                      "constraint_type": "Start On Or Before",
+                      "constraint_date": "2026-06-01"})   # later than natural
+    compute_dates(p)
+    assert _act(p, "A1010").planned_start == natural
+
+    apply_command(p, {"action": "set_constraint", "activity_id": "A1010",
+                      "constraint_type": "Start On Or Before",
+                      "constraint_date": "2026-01-05"})   # earlier than natural
+    compute_dates(p)
+    assert _act(p, "A1010").planned_start == "2026-01-05"
+
+
+def test_finish_on_or_after_pushes_a_later_date_but_not_an_earlier_one():
+    """'Finish On Or After' is a soft floor: it pushes the finish out if the
+    natural CPM date is earlier than the constraint, but a constraint date
+    that is already earlier than the natural date changes nothing."""
+    p = _chain()
+    natural = _act(p, "A1010").planned_finish
+    apply_command(p, {"action": "set_constraint", "activity_id": "A1010",
+                      "constraint_type": "Finish On Or After",
+                      "constraint_date": "2026-01-05"})   # earlier than natural
+    compute_dates(p)
+    assert _act(p, "A1010").planned_finish == natural
+
+    apply_command(p, {"action": "set_constraint", "activity_id": "A1010",
+                      "constraint_type": "Finish On Or After",
+                      "constraint_date": "2026-05-01"})   # later than natural
+    compute_dates(p)
+    assert _act(p, "A1010").planned_finish == "2026-05-01"
+
+
 def test_pinned_date_never_lands_on_a_non_working_day():
     """A constraint on a Saturday is pulled onto the next working day."""
     p = _chain()
