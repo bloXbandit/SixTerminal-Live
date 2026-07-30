@@ -3913,7 +3913,7 @@ function beginCellEdit(td){
   if(field === 'type'){ beginSelectEdit(td, actId); return; }
 
   let orig;
-  if(field === 'duration' || field === 'pct') orig = td.dataset.val;
+  if(field === 'duration' || field === 'pct' || field === 'blu') orig = td.dataset.val;
   else if(field === 'id')  orig = actId;
   else { const s = td.querySelector('.sched-name'); orig = s ? s.textContent : td.textContent.trim(); }
 
@@ -3923,6 +3923,7 @@ function beginCellEdit(td){
   input.value = orig;
   if(field === 'duration'){ input.type = 'number'; input.min = '0'; input.step = '1'; }
   if(field === 'pct'){ input.type = 'number'; input.min = '0'; input.max = '100'; input.step = '5'; }
+  if(field === 'blu'){ input.type = 'number'; input.min = '0'; input.step = '1'; }
   td.innerHTML = ''; td.appendChild(input); input.focus(); input.select();
 
   let done = false;

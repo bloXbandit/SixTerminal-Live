@@ -68,6 +68,12 @@ def _text(el: Optional[ET.Element], tag: str, default: str = "") -> str:
     return child.text.strip()
 
 
+def _has_real_value(el: Optional[ET.Element], tag: str) -> bool:
+    """True when the tag is present, not nil, and not empty text."""
+    child = _child(el, tag)
+    return child is not None and not _is_nil(child) and (child.text or "").strip() != ""
+
+
 def _float(el: Optional[ET.Element], tag: str, default: float = 0.0) -> float:
     try:
         raw = _text(el, tag, str(default))
@@ -300,7 +306,14 @@ def load_xml(path: str) -> Project:
             planned_duration=_float(act_el, "PlannedDuration"),
             remaining_duration=_float(act_el, "RemainingDuration"),
             actual_duration=_float(act_el, "ActualDuration"),
-            percent_complete=_float(act_el, "PhysicalPercentComplete") or _float(act_el, "PercentComplete"),
+            # Prefer Physical % Complete (a PM's actual assessment) over the
+            # duration-based PercentComplete — but `x or y` treats an explicit
+            # 0 the same as "absent", which silently discarded the exact case
+            # this was meant to catch: work stalled at 0% physical despite
+            # duration already ticking forward. Check presence, not truthiness.
+            percent_complete=(_float(act_el, "PhysicalPercentComplete")
+                              if _has_real_value(act_el, "PhysicalPercentComplete")
+                              else _float(act_el, "PercentComplete")),
             planned_start=_iso_date(_text(act_el, "PlannedStartDate")),
             planned_finish=_iso_date(_text(act_el, "PlannedFinishDate")),
             actual_start=_iso_date(_text(act_el, "ActualStartDate")),
