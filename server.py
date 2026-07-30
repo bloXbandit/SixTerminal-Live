@@ -365,7 +365,13 @@ def _project_list_item(pid: str) -> dict:
 
 @app.route("/")
 def index():
-    return send_from_directory(app.template_folder, "index.html")
+    # The whole app is inline in this one file. Without an explicit
+    # Cache-Control, browsers cache it heuristically and keep running stale
+    # JavaScript long after a deploy — no-cache forces a revalidation (a cheap
+    # 304 when nothing changed) so fixes actually reach the user.
+    resp = send_from_directory(app.template_folder, "index.html")
+    resp.headers["Cache-Control"] = "no-cache"
+    return resp
 
 
 @app.route("/healthz")

@@ -112,6 +112,15 @@ def load_xer(path: str) -> Project:
         "TT_FinMile": "Finish Milestone",
     }
 
+    # P6 XER constraint codes → the names the scheduler understands. Without
+    # this mapping every constraint in an uploaded XER was silently dropped.
+    cstr_map = {
+        "CS_MSO":  "Start On",           "CS_MSOA": "Start On Or After",
+        "CS_MSOB": "Start On Or Before", "CS_MEO":  "Finish On",
+        "CS_MEOA": "Finish On Or After", "CS_MEOB": "Finish On Or Before",
+        "CS_MANDSTART": "Must Start On", "CS_MANDFIN": "Must Finish On",
+    }
+
     for row in tables.get("TASK", []):
         if row.get("proj_id", "") != proj_uid:
             continue
@@ -141,6 +150,8 @@ def load_xer(path: str) -> Project:
             free_float=ff_raw,
             is_critical=row.get("driving_path_flag", "N") == "Y",
             is_longest_path=row.get("longest_path_flag", "N") == "Y",
+            constraint_type=cstr_map.get(row.get("cstr_type", "")) or None,
+            constraint_date=_iso_date(row.get("cstr_date", "")) or None,
         ))
 
     # --- Budgeted Labor Units from TASKRSRC (resource assignments) ---

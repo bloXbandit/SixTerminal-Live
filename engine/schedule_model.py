@@ -795,31 +795,33 @@ def compute_dates(project: "Project", hold_unlinked_dates: bool = True) -> None:
                     es_date = cand
             es_date = _snap(es_date, wd, hol)
 
-            # Hard / soft constraints on start
-            ct = act.constraint_type or ""
+            # Hard / soft constraints on start. Matching is case-insensitive:
+            # this app writes "Start On Or After" but P6 XML exports carry
+            # "Start On or After" (lowercase or) and XER-derived data can say
+            # "Mandatory Start" — exact-string matching silently ignored them.
+            ct = (act.constraint_type or "").strip().lower()
             cd = _parse(act.constraint_date)
-            if ct in ("Must Start On", "Start On") and cd:
+            if ct in ("must start on", "start on", "mandatory start") and cd:
                 es_date = _snap(cd, wd, hol)
-            elif ct in ("Start On Or After", "Start On Or Before") and cd:
-                if ct == "Start On Or After" and cd > es_date:
-                    es_date = _snap(cd, wd, hol)
-                elif ct == "Start On Or Before" and cd < es_date:
-                    es_date = _snap(cd, wd, hol)
+            elif ct == "start on or after" and cd and cd > es_date:
+                es_date = _snap(cd, wd, hol)
+            elif ct == "start on or before" and cd and cd < es_date:
+                es_date = _snap(cd, wd, hol)
 
         ef_date = _add_wd(es_date, dur_d, wd, hol) if dur_d > 0 else es_date
 
         # Hard constraints on finish. An in-progress activity's start is a fact
         # (its actual start) — pin the finish but never shift the start.
         anchored = act.status == "In Progress" and act.actual_start
-        ct = act.constraint_type or ""
+        ct = (act.constraint_type or "").strip().lower()
         cd = _parse(act.constraint_date)
-        if ct in ("Must Finish On", "Finish On") and cd:
+        if ct in ("must finish on", "finish on", "mandatory finish") and cd:
             ef_date = _snap(cd, wd, hol)
             if not anchored:
                 es_date = _add_wd(ef_date, -dur_d, wd, hol) if dur_d > 0 else ef_date
-        elif ct == "Finish On Or Before" and cd and cd < ef_date:
+        elif ct == "finish on or before" and cd and cd < ef_date:
             ef_date = _snap(cd, wd, hol)
-        elif ct == "Finish On Or After" and cd and cd > ef_date:
+        elif ct == "finish on or after" and cd and cd > ef_date:
             ef_date = _snap(cd, wd, hol)
 
         es[uid] = es_date

@@ -208,6 +208,68 @@ def test_clearing_an_actual_start_returns_the_row_to_not_started():
     assert a.status == "Not Started" and a.actual_start is None
 
 
+def test_p6_lowercase_constraint_names_are_honoured():
+    """P6 XML exports write 'Start On or After' (lowercase or). Exact-string
+    matching silently ignored every constraint on an uploaded P6 file."""
+    p = _chain()
+    a = _act(p, "A1010")
+    a.constraint_type = "Start On or After"      # as a real P6 file spells it
+    a.constraint_date = "2026-03-02"
+    compute_dates(p)
+    assert a.planned_start == "2026-03-02"
+
+
+def test_planned_start_edit_needs_no_constraint_on_an_unlinked_row():
+    """The grid's date edit on an unlinked not-started row writes the planned
+    date directly — it must persist through recomputes without a pin."""
+    p = _chain()
+    p.relations = []
+    ok, _ = apply_command(p, {"action": "update_planned_date", "activity_id": "A1010",
+                              "field": "start", "date": "2026-04-06"})
+    assert ok
+    compute_dates(p)
+    a = _act(p, "A1010")
+    assert a.planned_start == "2026-04-06"
+    assert a.constraint_type is None             # no pin was created
+    compute_dates(p)                             # stable across repeated runs
+    assert a.planned_start == "2026-04-06"
+
+
+def test_finish_edit_adjusts_duration_and_leaves_the_start_alone():
+    """P6 semantics: finish = start + duration, so typing a finish changes the
+    duration. A Finish On constraint would have back-computed the start."""
+    p = _chain()
+    p.relations = []
+    a = _act(p, "A1000")
+    start_before = a.planned_start               # 2026-01-05
+    ok, _ = apply_command(p, {"action": "update_planned_date", "activity_id": "A1000",
+                              "field": "finish", "date": "2026-01-30"})
+    assert ok
+    compute_dates(p)
+    assert a.planned_start == start_before       # start did not move
+    assert a.planned_finish == "2026-01-30"      # typed finish reproduced
+    assert a.constraint_type is None
+
+
+def test_finish_before_start_is_rejected():
+    p = _chain()
+    ok, msg = apply_command(p, {"action": "update_planned_date", "activity_id": "A1000",
+                                "field": "finish", "date": "2025-12-01"})
+    assert not ok and "before" in msg.lower()
+
+
+def test_planned_start_edit_is_refused_on_a_started_row():
+    """Started rows route through set_actual_date; the planned-date action
+    must refuse rather than silently fight the actual anchor."""
+    p = _chain()
+    a = _act(p, "A1000")
+    a.status = "In Progress"
+    a.actual_start = "2026-01-07"
+    ok, msg = apply_command(p, {"action": "update_planned_date", "activity_id": "A1000",
+                                "field": "start", "date": "2026-02-02"})
+    assert not ok and "actual" in msg.lower()
+
+
 # ── Duplicate / relationship / type / progress actions ───────────────────────
 
 def _branch():

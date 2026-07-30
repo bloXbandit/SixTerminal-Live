@@ -22,6 +22,7 @@ Supported commands:
   set_constraint            — Set a date constraint on an activity
   clear_constraint          — Remove a date constraint from an activity
   set_actual_date           — Move (or clear) an actual start/finish date
+  update_planned_date       — Set a planned start, or a finish (adjusts duration)
   bulk_add_activity         — Add the same activity to multiple WBS nodes in one call
   bulk_create_wbs           — Create multiple WBS folders under the same parent in one call
   bulk_rename_activities    — Rename activities by explicit from→to list (ID, name, or WBS scope)
@@ -197,6 +198,8 @@ def apply_command(project: Project, command: Dict[str, Any]) -> Tuple[bool, str]
             return _bulk_update_duration(project, command)
         elif action == "set_actual_date":
             return _set_actual_date(project, command)
+        elif action == "update_planned_date":
+            return _update_planned_date(project, command)
         elif action == "set_constraint":
             return _set_constraint(project, command)
         elif action == "clear_constraint":
@@ -937,6 +940,93 @@ def _update_progress(project: Project, cmd: Dict) -> Tuple[bool, str]:
                     "Completed" if pct >= 100 else "In Progress")
         a.remaining_duration = a.planned_duration * (1 - pct / 100.0)
     return True, f"Set {pct:g}% complete on {len(matches)} activity/activities"
+
+
+def _act_calendar(project: Project, act: Activity):
+    """The activity's calendar (work days + holidays), with Mon–Fri defaults."""
+    cal = None
+    for c in project.calendars or []:
+        if c.uid == getattr(act, "calendar_uid", None):
+            cal = c
+            break
+    if cal is None and project.calendars:
+        cal = project.calendars[0]
+    wd = (getattr(cal, "work_days", None) if cal else None) or frozenset({0, 1, 2, 3, 4})
+    hol = (getattr(cal, "holidays", None) if cal else None) or frozenset()
+    hpd = (getattr(cal, "hours_per_day", None) if cal else None) or 8.0
+    return wd, hol, hpd
+
+
+def _update_planned_date(project: Project, cmd: Dict) -> Tuple[bool, str]:
+    """
+    Set a planned date directly — the no-constraint path the grid uses for
+    rows that don't need one:
+      field=start  → moves planned_start. On an unlinked activity the CPM
+                     recompute holds it, so no pin is needed; the grid only
+                     falls back to a Start On constraint when the row has
+                     predecessors that would otherwise drive the date.
+      field=finish → P6 semantics: the finish is start + duration, so typing
+                     a finish adjusts the DURATION (on the activity's own
+                     calendar). The start does not move — unlike a Finish On
+                     constraint, which back-computes the start.
+    """
+    import datetime as _d
+
+    matches = _find_activity(project, cmd.get("activity_id"), cmd.get("target_name"))
+    if not matches:
+        raise EditError(f"No activity found: {cmd.get('activity_id') or cmd.get('target_name')}")
+    if len(matches) > 1:
+        raise EditError(f"Found {len(matches)} activities — use activity_id for dates")
+    field = (cmd.get("field") or "").strip().lower()
+    if field not in ("start", "finish"):
+        raise EditError("field must be 'start' or 'finish'")
+    date = (cmd.get("date") or "").strip()
+    if not date:
+        raise EditError("date is required")
+    try:
+        new_d = _d.date.fromisoformat(date[:10])
+    except ValueError:
+        raise EditError(f"Not a valid date: {date}")
+
+    a = matches[0]
+    is_milestone = a.activity_type in ("Start Milestone", "Finish Milestone")
+
+    if field == "start":
+        if a.actual_start:
+            raise EditError(f"'{a.name}' has started — its start is the actual date")
+        a.planned_start = date[:10]
+        return True, f"'{a.name}' planned start → {date[:10]}"
+
+    if a.actual_finish:
+        raise EditError(f"'{a.name}' is complete — its finish is the actual date")
+    if is_milestone:
+        a.planned_start = a.planned_finish = date[:10]
+        return True, f"'{a.name}' milestone date → {date[:10]}"
+
+    ref = a.actual_start or a.planned_start or a.early_start
+    if not ref:
+        a.planned_finish = date[:10]
+        return True, f"'{a.name}' planned finish → {date[:10]}"
+    try:
+        ref_d = _d.date.fromisoformat(str(ref)[:10])
+    except ValueError:
+        a.planned_finish = date[:10]
+        return True, f"'{a.name}' planned finish → {date[:10]}"
+    if new_d < ref_d:
+        raise EditError(f"Finish {date[:10]} is before the start ({str(ref)[:10]})")
+
+    # Working days in (start, finish] on the activity's calendar — matches the
+    # scheduler's finish = start + duration convention exactly.
+    wd, hol, hpd = _act_calendar(project, a)
+    days, d = 0, ref_d
+    while d < new_d:
+        d += _d.timedelta(days=1)
+        if d.weekday() in wd and ((not hol) or d.isoformat() not in hol):
+            days += 1
+    a.planned_duration = float(days) * hpd
+    a.remaining_duration = a.planned_duration * (1 - (a.percent_complete or 0) / 100.0)
+    a.planned_finish = date[:10]
+    return True, f"'{a.name}' finish → {date[:10]} (duration now {days}d)"
 
 
 def _set_actual_date(project: Project, cmd: Dict) -> Tuple[bool, str]:
