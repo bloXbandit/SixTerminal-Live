@@ -941,6 +941,18 @@ def build_project_from_contract(contract: Dict[str, Any],
                 lag=float(r.get("lag_days", 0) or 0) * hpd,
             ))
 
+    # PDF/paste imports never carry a data date, so without a fallback origin
+    # compute_dates() below has nothing to schedule from and bails out entirely
+    # (leaving every date-less activity blank instead of CPM-derived). Mirror
+    # the same "earliest known date, else today" fallback /api/schedule/run
+    # uses, so a freshly imported schedule already has dates on load.
+    if not (project.planned_start or project.data_date):
+        known = [str(a.actual_start or a.planned_start)[:10]
+                 for a in project.activities if (a.actual_start or a.planned_start)]
+        project.data_date = min(known) if known else _dt.date.today().isoformat()
+    if not project.planned_start:
+        project.planned_start = str(project.data_date)[:10]
+
     project.build_lookups()
     try:
         compute_dates(project)

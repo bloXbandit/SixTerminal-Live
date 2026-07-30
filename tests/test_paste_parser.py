@@ -110,6 +110,30 @@ def test_tab_separated_paste_from_excel():
     assert {a["activity_id"] for a in c["activities"]} == {"A1000", "A1010"}
 
 
+def test_committed_project_has_dates_without_a_manual_schedule_run():
+    """A pasted contract carries no data date (paste_info sets it to None), so
+    build_project_from_contract must fall back to an origin itself — otherwise
+    compute_dates() has nothing to schedule from and bails out, leaving every
+    activity's Start/Finish column blank until the user manually hits
+    Schedule. Completed/In-Progress rows (actual dates only) and Not-Started
+    rows with no dates at all are both affected."""
+    from engine.importer import build_project_from_contract
+
+    c = contract_from_paste(PDF_BLOCK)
+    p = build_project_from_contract(c)
+    assert p.data_date or p.planned_start
+    by = {a.activity_id: a for a in p.activities}
+    # Completed, actual dates only -> planned_start must be derived, not blank
+    assert by["MDC1.FDG.1290"].planned_start
+    # In Progress, actual start only -> planned_start must be derived
+    assert by["MDC1.FDG.1670"].planned_start
+
+    text = "A1000\tRough-in\t10\nA1010\tTerminate\t5"
+    c2 = contract_from_paste(text)
+    p2 = build_project_from_contract(c2)
+    assert all(a.planned_start for a in p2.activities)
+
+
 def test_empty_paste_is_reported_not_crashed():
     rows, _, info = parse_pasted_text("   \n  \n")
     assert info["rows_parsed"] == 0
