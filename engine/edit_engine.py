@@ -21,6 +21,7 @@ Supported commands:
   bulk_update_duration      — Change duration for all activities matching a pattern
   set_constraint            — Set a date constraint on an activity
   clear_constraint          — Remove a date constraint from an activity
+  set_actual_date           — Move (or clear) an actual start/finish date
   bulk_add_activity         — Add the same activity to multiple WBS nodes in one call
   bulk_create_wbs           — Create multiple WBS folders under the same parent in one call
   bulk_rename_activities    — Rename activities by explicit from→to list (ID, name, or WBS scope)
@@ -194,6 +195,8 @@ def apply_command(project: Project, command: Dict[str, Any]) -> Tuple[bool, str]
             return _bulk_rename(project, command)
         elif action == "bulk_update_duration":
             return _bulk_update_duration(project, command)
+        elif action == "set_actual_date":
+            return _set_actual_date(project, command)
         elif action == "set_constraint":
             return _set_constraint(project, command)
         elif action == "clear_constraint":
@@ -934,6 +937,54 @@ def _update_progress(project: Project, cmd: Dict) -> Tuple[bool, str]:
                     "Completed" if pct >= 100 else "In Progress")
         a.remaining_duration = a.planned_duration * (1 - pct / 100.0)
     return True, f"Set {pct:g}% complete on {len(matches)} activity/activities"
+
+
+def _set_actual_date(project: Project, cmd: Dict) -> Tuple[bool, str]:
+    """
+    Move an actual start/finish date. Constraints can't do this: the CPM pass
+    anchors In Progress / Completed activities to their actual dates before it
+    ever looks at constraints, so editing a started activity's date has to
+    change the actual itself — this is what the grid's date cells use for any
+    row whose displayed date is an actual.
+    An empty date clears the actual and hands the field back to the scheduler
+    (rolling status back if nothing actual remains).
+    """
+    matches = _find_activity(project, cmd.get("activity_id"), cmd.get("target_name"))
+    if not matches:
+        raise EditError(f"No activity found: {cmd.get('activity_id') or cmd.get('target_name')}")
+    if len(matches) > 1:
+        raise EditError(f"Found {len(matches)} activities — use activity_id for actual dates")
+    field = (cmd.get("field") or "").strip().lower()
+    if field not in ("start", "finish"):
+        raise EditError("field must be 'start' or 'finish'")
+    date = (cmd.get("date") or "").strip() or None
+    a = matches[0]
+    if field == "start":
+        a.actual_start = date
+        if date:
+            if a.status == "Not Started":
+                a.status = "In Progress"
+                if not a.percent_complete:
+                    a.percent_complete = 1.0
+        elif not a.actual_finish:
+            a.status = "Not Started"
+            a.percent_complete = 0.0
+            a.remaining_duration = a.planned_duration
+    else:
+        a.actual_finish = date
+        if date:
+            if not a.actual_start:
+                a.actual_start = str(a.planned_start or date)[:10]
+            a.status = "Completed"
+            a.percent_complete = 100.0
+            a.remaining_duration = 0.0
+        elif a.status == "Completed":
+            a.status = "In Progress" if a.actual_start else "Not Started"
+            if a.percent_complete >= 100.0:
+                a.percent_complete = 50.0 if a.actual_start else 0.0
+            a.remaining_duration = a.planned_duration * (1 - a.percent_complete / 100.0)
+    verb = f"actual {field} → {date}" if date else f"cleared actual {field}"
+    return True, f"'{a.name}': {verb}"
 
 
 def _update_labor_units(project: Project, cmd: Dict) -> Tuple[bool, str]:

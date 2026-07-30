@@ -840,7 +840,10 @@ def run_schedule():
         if not project.planned_start:
             project.planned_start = str(project.data_date)[:10]
 
-        compute_dates(project)
+        # Explicit F9 is the one full reflow: unlinked activities are driven
+        # from the data date (the confirm dialog warned about exactly this).
+        # Every implicit recompute holds their dates instead.
+        compute_dates(project, hold_unlinked_dates=False)
 
         if reorder:
             # Sequence the rows the way the work runs: earliest start first,

@@ -134,6 +134,22 @@ def test_committed_project_has_dates_without_a_manual_schedule_run():
     assert all(a.planned_start for a in p2.activities)
 
 
+def test_pasted_dates_survive_the_import_recompute():
+    """Pasted rows carry dates but no logic links. The CPM pass at commit must
+    hold those dates rather than collapse every unlinked row onto the
+    project origin (which made all pasted activities share one date)."""
+    from engine.importer import build_project_from_contract
+
+    text = ("A1000\tMobilize\t10\t05-Jan-26\t16-Jan-26\n"
+            "A1010\tExcavate\t10\t19-Jan-26\t30-Jan-26\n"
+            "A1020\tForm footings\t5\t02-Feb-26\t06-Feb-26")
+    p = build_project_from_contract(contract_from_paste(text))
+    by = {a.activity_id: a for a in p.activities}
+    assert by["A1000"].planned_start == "2026-01-05"
+    assert by["A1010"].planned_start == "2026-01-19"
+    assert by["A1020"].planned_start == "2026-02-02"
+
+
 def test_empty_paste_is_reported_not_crashed():
     rows, _, info = parse_pasted_text("   \n  \n")
     assert info["rows_parsed"] == 0

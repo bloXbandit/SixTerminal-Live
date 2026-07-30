@@ -585,7 +585,7 @@ class Project:
 # CPM Forward / Backward Pass
 # ─────────────────────────────────────────────────────────────────────────────
 
-def compute_dates(project: "Project") -> None:
+def compute_dates(project: "Project", hold_unlinked_dates: bool = True) -> None:
     """
     Run a CPM forward + backward pass on the project network.
 
@@ -599,6 +599,15 @@ def compute_dates(project: "Project") -> None:
     Working calendar: Mon–Fri, hours_per_day from the first project calendar (default 8h).
     Weekends and holidays come from each activity's calendar.
     Completed activities are anchored to their actual dates (not recomputed).
+
+    hold_unlinked_dates: when True (the default — every implicit recompute:
+    imports, merges, and the pass after each grid edit), a not-started activity
+    with no predecessors keeps its existing planned_start as its ES seed
+    instead of being dragged to the project origin. Without this, every
+    recompute collapsed all unlinked activities (i.e. an entire pasted or
+    imported schedule) onto the data date, wiping the dates they came in with.
+    The explicit Schedule (F9) action passes False for a full reflow — that
+    path warns the user first about unlinked activities.
     """
     from datetime import date as _date, timedelta as _td
     import math as _math
@@ -681,6 +690,19 @@ def compute_dates(project: "Project") -> None:
         return sign * float(count)
 
     # ── Origin date ──────────────────────────────────────────────────────────
+    # PDF/paste imports and sessions saved before an origin existed carry
+    # neither a planned start nor a data date. Returning here (the old
+    # behaviour) silently skipped the whole pass, which left every date-less
+    # activity blank in the grid — so instead fall back to the earliest date
+    # already on the schedule, else today, and persist it on the project
+    # (the same rule /api/schedule/run applies).
+    if not (project.planned_start or project.data_date):
+        known = [str(a.actual_start or a.planned_start)[:10]
+                 for a in project.activities if (a.actual_start or a.planned_start)]
+        project.data_date = min(known) if known else _date.today().isoformat()
+    if not project.planned_start:
+        project.planned_start = str(project.data_date)[:10]
+
     origin_str = (
         str(project.planned_start)[:10] if project.planned_start
         else str(project.data_date)[:10] if project.data_date
@@ -748,8 +770,16 @@ def compute_dates(project: "Project") -> None:
         if act.status == "In Progress" and act.actual_start:
             es_date = _snap(_parse(act.actual_start) or origin, wd, hol)
         else:
-            # Derive ES from predecessors
+            # Derive ES from predecessors. An activity with no predecessors
+            # normally starts at the origin — but on an implicit recompute,
+            # one that already carries a planned start keeps it (imported /
+            # pasted schedules are unlinked, and their dates must survive
+            # every edit's recompute rather than collapse onto the data date).
             es_date = origin
+            if hold_unlinked_dates and not preds[uid]:
+                held = _parse(act.planned_start)
+                if held:
+                    es_date = _snap(held, wd, hol)
             for p_uid, rel_type, lag_d in preds[uid]:
                 pef = ef.get(p_uid, origin)
                 pes = es.get(p_uid, origin)
@@ -778,12 +808,15 @@ def compute_dates(project: "Project") -> None:
 
         ef_date = _add_wd(es_date, dur_d, wd, hol) if dur_d > 0 else es_date
 
-        # Hard constraints on finish
+        # Hard constraints on finish. An in-progress activity's start is a fact
+        # (its actual start) — pin the finish but never shift the start.
+        anchored = act.status == "In Progress" and act.actual_start
         ct = act.constraint_type or ""
         cd = _parse(act.constraint_date)
         if ct in ("Must Finish On", "Finish On") and cd:
             ef_date = _snap(cd, wd, hol)
-            es_date = _add_wd(ef_date, -dur_d, wd, hol) if dur_d > 0 else ef_date
+            if not anchored:
+                es_date = _add_wd(ef_date, -dur_d, wd, hol) if dur_d > 0 else ef_date
         elif ct == "Finish On Or Before" and cd and cd < ef_date:
             ef_date = _snap(cd, wd, hol)
         elif ct == "Finish On Or After" and cd and cd > ef_date:

@@ -12,7 +12,7 @@ Supported actions (must match edit_engine.py):
   rename_wbs, add_wbs, move_wbs, duplicate_wbs, move_activity_wbs,
   copy_activities, set_data_date,
   bulk_rename, bulk_update_duration,
-  set_constraint, clear_constraint,
+  set_constraint, clear_constraint, set_actual_date,
   update_labor_units, bulk_clear_constraints, bulk_append_name
 
 Supported models: claude, gpt-4.1-mini, gpt-4.1-nano, gpt-5.4-mini
@@ -386,6 +386,13 @@ set_constraint:
 
 clear_constraint:
   {"action": "clear_constraint", "activity_id": "A1000"}
+
+set_actual_date:
+  Move an actual start or finish date on a started/completed activity — the
+  scheduler anchors those rows to their actuals, so a constraint can't move
+  them. An empty date clears the actual (status rolls back accordingly).
+  {"action": "set_actual_date", "activity_id": "A1000", "field": "start", "date": "2026-06-01"}
+  {"action": "set_actual_date", "activity_id": "A1000", "field": "finish", "date": ""}
 
 update_labor_units:
   Set budgeted labor units (BLU) on an activity.
