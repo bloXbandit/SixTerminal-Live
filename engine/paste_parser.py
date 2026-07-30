@@ -129,10 +129,18 @@ def _split_line(line: str) -> List[str]:
     return [act_id, name, duration, start, finish]
 
 
-def parse_pasted_text(text: str) -> Tuple[List[List[Any]], Dict[str, Any]]:
+def _indent_level(line: str) -> int:
+    """Return indentation level from leading spaces (2 spaces = 1 level)."""
+    leading = len(line) - len(line.lstrip(" "))
+    return leading // 2
+
+
+def parse_pasted_text(text: str) -> Tuple[List[List[Any]], List[int], Dict[str, Any]]:
     """
-    Return (rows, info). `rows` starts with a synthetic header so the standard
-    contract builder can map columns; `info` reports what we detected.
+    Return (rows, outline_levels, info). `rows` starts with a synthetic header
+    so the standard contract builder can map columns; `outline_levels` carries
+    the indentation depth for each row (header = row index in rows); `info` reports
+    what we detected.
     """
     text = (text or "").replace("\r\n", "\n").replace("\r", "\n")
     lines = [l for l in text.split("\n")]
@@ -141,10 +149,11 @@ def parse_pasted_text(text: str) -> Tuple[List[List[Any]], Dict[str, Any]]:
                             "rows_parsed": 0, "warnings": []}
     if not nonempty:
         info["warnings"].append("Nothing was pasted.")
-        return [_HEADER], info
+        return [_HEADER], [0], info
 
     tabbed = sum(1 for l in nonempty if "\t" in l)
     rows: List[List[Any]] = [_HEADER]
+    outline: List[int] = [0]  # header row is level 0
 
     if tabbed >= max(1, len(nonempty) // 2):
         # ── Excel / Sheets ───────────────────────────────────────────────────
@@ -161,15 +170,19 @@ def parse_pasted_text(text: str) -> Tuple[List[List[Any]], Dict[str, Any]]:
                 # no id column — shift so the text lands in Name
                 cells = [""] + cells[:4]
             rows.append(cells[:5])
+            outline.append(_indent_level(l))
     else:
         # ── PDF / plain text ─────────────────────────────────────────────────
         info["mode"] = "text"
+        # First pass: read every non-empty line including indented WBS labels.
+        # _split_line drops leading spaces, but we capture the indent here.
         for l in nonempty:
             if _is_header_line(l):
                 continue
             cells = _split_line(l)
             if cells:
                 rows.append(cells)
+                outline.append(_indent_level(l))
 
     info["rows_parsed"] = len(rows) - 1
     if info["rows_parsed"] == 0:
@@ -187,13 +200,13 @@ def parse_pasted_text(text: str) -> Tuple[List[List[Any]], Dict[str, Any]]:
             info["warnings"].append(
                 "No dates were detected — activities will be created without "
                 "dates and scheduled from logic.")
-    return rows, info
+    return rows, outline, info
 
 
 def contract_from_paste(text: str, project_name: str = "Pasted activities") -> Dict[str, Any]:
     """Parse pasted text straight into the standard extraction contract."""
     from engine.importer import _rows_to_contract
-    rows, info = parse_pasted_text(text)
+    rows, outline, info = parse_pasted_text(text)
     meta = {
         "source_type": "paste",
         "source_name": "clipboard",
@@ -204,7 +217,7 @@ def contract_from_paste(text: str, project_name: str = "Pasted activities") -> D
         "engine": f"paste:{info.get('mode') or 'none'}",
         "llm_used": False,
     }
-    contract = _rows_to_contract(rows, meta)
+    contract = _rows_to_contract(rows, meta, outline_levels=outline)
     contract["meta"]["warnings"] = info["warnings"] + contract["meta"].get("warnings", [])
     contract["meta"]["paste_info"] = info
     return contract

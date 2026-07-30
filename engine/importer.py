@@ -383,7 +383,12 @@ def _rows_to_contract(rows: List[List[Any]], meta: Dict[str, Any],
 
         # Multi-page hygiene: drop reprinted column headers and page furniture.
         # Activity rows always carry a valid ID, so they can never be dropped here.
-        if not _looks_like_id(raw_id):
+        # Exception: pasted text with explicit indentation levels. Those levels
+        # tell us a line is a WBS section header even if it has dates/durations.
+        has_outline = outline_levels and r_idx < len(outline_levels)
+        is_pasted_wbs_header = (has_outline and not _looks_like_id(raw_id) and
+                                level is not None and level > 0 and display)
+        if not _looks_like_id(raw_id) and not is_pasted_wbs_header:
             if _is_header_row(row) or _is_page_furniture(display):
                 continue
 
@@ -422,11 +427,16 @@ def _rows_to_contract(rows: List[List[Any]], meta: Dict[str, Any],
                 pct = pct if pct is not None else 0.0
 
             # WBS assignment: the section header the row sits under is primary
-            # (real names + hierarchy). Fall back to the activity-ID prefix only
-            # when the export has no header rows at all (flat table).
+            # (real names + hierarchy). When outline_levels are provided (paste),
+            # trust the header_stack directly — it reflects the indentation.
+            # Fall back to the activity-ID prefix only when the export has no
+            # header rows at all (flat table).
             derived_fields = []
             flags = []
-            if current_wbs_code:
+            if header_stack:
+                # Use the most specific (deepest) active WBS
+                wbs_code = header_stack[-1][1]["code"]
+            elif current_wbs_code:
                 wbs_code = current_wbs_code
             else:
                 id_wbs = _wbs_code_from_id(act_id)
@@ -501,17 +511,29 @@ def _rows_to_contract(rows: List[List[Any]], meta: Dict[str, Any],
             name = str(display).strip()
             if _norm(name) in ("total", "grand total"):
                 continue
-            depth = level if level is not None else (name.count(".") if "." in name else 0)
+            # Determine depth: trust explicit outline_levels (paste) first,
+            # then fall back to dotted-name depth for flat exports.
+            if level is not None:
+                depth = level
+            elif "." in name:
+                depth = name.count(".")
+            else:
+                depth = 0
             # pop deeper/equal headers off the stack
             while header_stack and header_stack[-1][0] >= depth:
                 header_stack.pop()
             # A band reprinted on a continuation page is the SAME section —
             # reuse the existing node instead of creating a duplicate.
-            existing = next((n for n in wbs_nodes if _norm(n["name"]) == _norm(name)), None)
+            # When outline_levels are present, match by name *and* parent so
+            # identical names under different parents (e.g. "Support / Administrative")
+            # don't collide.
+            parent_code = header_stack[-1][1]["code"] if header_stack else None
+            existing = next((n for n in wbs_nodes
+                             if _norm(n["name"]) == _norm(name)
+                             and n.get("parent_code") == parent_code), None)
             if existing:
                 node = existing
             else:
-                parent_code = header_stack[-1][1]["code"] if header_stack else None
                 node = ensure_wbs(_synth_wbs_code(name, wbs_by_code), name,
                                   parent_code, 0.85, [], src)
             header_stack.append((depth, node))

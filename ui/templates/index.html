@@ -1256,7 +1256,8 @@
           Expected layout — extra columns are ignored, missing ones are fine:
           <code style="color:var(--accent);">ID &nbsp; Activity Name &nbsp; Duration &nbsp; Start &nbsp; Finish</code><br>
           <span style="opacity:.8;">A trailing <b>A</b> marks an actual date (sets % complete);
-          <b>*</b> marks a constraint. A line with no ID is treated as a section heading.</span>
+          <b>*</b> marks a constraint. A line with no ID is treated as a section heading.
+          Indented lines create WBS sub-folders (e.g. LLE, Transformers, Skids).</span>
         </div>
         <textarea id="paste-text" spellcheck="false" placeholder="MDC1.FDG.1290   Team Approach Trades Award (A Trades)   1   02-Jul-25 A   02-Jul-25 A&#10;MDC1.FDG.1670   LLE Selection / Pricing Generators (4MW)  77   25-Aug-25 A   12-Dec-25"
           style="width:100%;height:200px;background:var(--panel2,#0d1117);color:var(--text);border:1px solid var(--border2);border-radius:8px;font-family:var(--mono);font-size:11px;padding:10px;outline:none;resize:vertical;white-space:pre;overflow-wrap:normal;overflow-x:auto;"></textarea>
@@ -1290,7 +1291,7 @@
               style="background:var(--panel2,#0d1117);color:var(--text);border:1px solid var(--border2);border-radius:6px;font-size:11px;padding:5px 9px;min-width:180px;">
           </div>
           <label style="display:inline-flex;align-items:center;gap:6px;margin-top:10px;font-size:11px;color:var(--text3);cursor:pointer;">
-            <input type="checkbox" id="paste-keep-structure"> Keep the section headings from the paste as sub-folders
+            <input type="checkbox" id="paste-keep-structure" checked> Keep the section headings from the paste as sub-folders
           </label>
         </div>
       </div>

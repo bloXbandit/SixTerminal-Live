@@ -27,14 +27,14 @@ MDC1.FDG.1430     Partial Funding PCCO # 1 Review and Approval      15  12-Aug-2
 
 
 def _rows():
-    rows, _ = parse_pasted_text(PDF_BLOCK)
+    rows, _, _ = parse_pasted_text(PDF_BLOCK)
     return {r[0]: r for r in rows[1:] if r[0]}
 
 
 # ── Column inference ─────────────────────────────────────────────────────────
 
 def test_every_activity_row_is_read():
-    rows, info = parse_pasted_text(PDF_BLOCK)
+    rows, outline, info = parse_pasted_text(PDF_BLOCK)
     assert info["mode"] == "text"
     assert info["rows_parsed"] == 7          # 6 activities + 1 section band
 
@@ -64,7 +64,7 @@ def test_constraint_marker_survives_parsing():
 
 
 def test_a_line_without_an_id_is_a_section_heading():
-    rows, _ = parse_pasted_text(PDF_BLOCK)
+    rows, _, _ = parse_pasted_text(PDF_BLOCK)
     band = [r for r in rows[1:] if not r[0]]
     assert len(band) == 1
     assert band[0][1] == "Funding"
@@ -103,7 +103,7 @@ def test_tab_separated_paste_from_excel():
     text = ("Activity ID\tActivity Name\tDuration\tStart\tFinish\n"
             "A1000\tRough-in\t10\t01-Jun-26\t12-Jun-26\n"
             "A1010\tTerminate\t5\t15-Jun-26\t19-Jun-26")
-    rows, info = parse_pasted_text(text)
+    rows, outline, info = parse_pasted_text(text)
     assert info["mode"] == "tab"
     assert info["rows_parsed"] == 2          # header line dropped
     c = contract_from_paste(text)
@@ -111,13 +111,13 @@ def test_tab_separated_paste_from_excel():
 
 
 def test_empty_paste_is_reported_not_crashed():
-    rows, info = parse_pasted_text("   \n  \n")
+    rows, _, info = parse_pasted_text("   \n  \n")
     assert info["rows_parsed"] == 0
     assert info["warnings"]
 
 
 def test_names_only_paste_warns_about_missing_ids():
-    rows, info = parse_pasted_text("Pour slab\nStrip forms\nCure")
+    rows, _, info = parse_pasted_text("Pour slab\nStrip forms\nCure")
     assert any("ID" in w for w in info["warnings"])
 
 
@@ -127,14 +127,14 @@ def test_duration_survives_when_the_row_has_no_dates():
     """A paste of just id + name + duration is common. Without dates to anchor
     on, the column gap is the only signal — but the duration must still land in
     the duration column rather than being glued onto the name."""
-    rows, _ = parse_pasted_text("MDC1.FDG.1290   Team Approach Award   45")
+    rows, _, _ = parse_pasted_text("MDC1.FDG.1290   Team Approach Award   45")
     _, name, dur, _, _ = rows[1]
     assert name == "Team Approach Award"
     assert dur == "45"
 
 
 def test_a_number_inside_the_name_is_not_a_duration_when_there_are_no_dates():
-    rows, _ = parse_pasted_text("MDC1.FDG.1290   Install Panel 42")
+    rows, _, _ = parse_pasted_text("MDC1.FDG.1290   Install Panel 42")
     _, name, dur, _, _ = rows[1]
     assert name == "Install Panel 42"
     assert dur == ""
