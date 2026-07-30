@@ -1370,7 +1370,8 @@
       </div>
       <div class="info-date-row">
         <span>Data Date</span>
-        <span id="info-date">—</span>
+        <span id="info-date" onclick="editDataDate()" title="Click to change the data date"
+              style="cursor:pointer;border-bottom:1px dotted var(--text3);">—</span>
       </div>
     </div>
 
@@ -4406,6 +4407,29 @@ function editLink(ev, predId, succId, dir){
     deleteLink(predId, succId);
   });
   setTimeout(() => document.addEventListener('mousedown', outsideConstraintClose), 0);
+}
+
+/**
+ * Change the project data date — the "as of" line the schedule is statused
+ * from. Dates don't reflow until the scheduler runs, so offer that as a
+ * follow-up rather than silently recalculating the whole schedule.
+ */
+async function editDataDate(){
+  if(!lastSchedData && !_activeProjectId){ flashSched('Load a schedule first', true); return; }
+  const cur = (document.getElementById('info-date').textContent || '').trim();
+  const iso = /^\d{4}-\d{2}-\d{2}$/.test(cur) ? cur : '';
+  const val = prompt('Data date (YYYY-MM-DD) — the date the schedule is statused from:',
+                     iso || new Date().toISOString().slice(0,10));
+  if(val === null) return;
+  const v = val.trim();
+  if(!/^\d{4}-\d{2}-\d{2}$/.test(v)){ flashSched('Use YYYY-MM-DD', true); return; }
+  const d = await directEdit([{action:'set_data_date', data_date:v}], `Data date → ${v}`);
+  if(d && d.success){
+    const el = document.getElementById('info-date'); if(el) el.textContent = v;
+    if(confirm(`Data date set to ${v}.\n\nRecalculate the schedule now so dates reflow from it?`)){
+      runSchedule();
+    }
+  }
 }
 
 function deleteLink(predId, succId){

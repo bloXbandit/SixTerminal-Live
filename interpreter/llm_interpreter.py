@@ -9,7 +9,8 @@ It only produces a JSON list of edit commands that the edit engine applies.
 Supported actions (must match edit_engine.py):
   rename_activity, update_duration, update_activity_id,
   add_activity, delete_activity, add_relation, delete_relation,
-  rename_wbs, add_wbs, move_activity_wbs,
+  rename_wbs, add_wbs, move_wbs, duplicate_wbs, move_activity_wbs,
+  copy_activities, set_data_date,
   bulk_rename, bulk_update_duration,
   set_constraint, clear_constraint
 
@@ -359,6 +360,19 @@ add_wbs:
 
 move_activity_wbs:
   {"action": "move_activity_wbs", "activity_id": "A1040", "wbs_name": "Finishes"}
+
+set_data_date:
+  Set the project data date (the "as of" date the schedule is statused from).
+  Use for "set the data date to ...", "update the data date", "move the data date".
+  Optionally move the project start with it. Dates do NOT reflow until the
+  schedule is recalculated, so say so if the user will want that.
+  {"action": "set_data_date", "data_date": "2026-03-02"}
+  {"action": "set_data_date", "data_date": "2026-03-02", "also_planned_start": true}
+
+copy_activities:
+  Copy activities into a folder, carrying the relationships between them.
+  Links leaving the selection are not carried.
+  {"action": "copy_activities", "activity_ids": ["A1000", "A1010"], "wbs_name": "ER 210"}
 
 bulk_rename:
   {"action": "bulk_rename", "pattern": "Level (\\d+)", "replacement": "Floor \\1"}

@@ -118,7 +118,8 @@ class Project:
             f"  Calendars: {len(self.calendars)}"
         )
 
-    def llm_context(self, max_activities: int = 3000) -> str:
+    def llm_context(self, max_activities: int = 3000,
+                    compact_above: int = 400) -> str:
         """
         Rich context string for the LLM.
         Includes WBS structure, full activity list with pred/succ links,
@@ -255,16 +256,73 @@ class Project:
         fs_pct = round(rel_type_counts.get("FS", 0) / total_rels * 100) if total_rels else 0
         density = round(total_rels / len(task_acts), 2) if task_acts else 0
 
-        # Per-WBS risk rollup
-        wbs_risk: dict = {}  # wbs_name -> {total, critical, open_s, open_f}
+        # Per-WBS risk rollup, keyed by UID.
+        # Folder NAMES repeat constantly in real schedules — every building has a
+        # "Level 1", every level an "ER 209" — so keying by name merged unrelated
+        # folders and reported counts that belonged to neither.
+        wbs_risk: dict = {}  # wbs_uid -> {total, crit, open_s, open_f}  (direct)
         for a in task_acts:
             wbs = wbs_map.get(a.wbs_uid)
-            wn  = wbs.name if wbs else "Unknown"
-            r   = wbs_risk.setdefault(wn, {"total": 0, "crit": 0, "open_s": 0, "open_f": 0})
+            key = wbs.uid if wbs else "__none__"
+            r   = wbs_risk.setdefault(key, {"total": 0, "crit": 0, "open_s": 0, "open_f": 0})
             r["total"] += 1
             if is_critical(a):   r["crit"]   += 1
             if not preds_of.get(a.uid): r["open_s"] += 1
             if not succs_of.get(a.uid): r["open_f"] += 1
+
+        # Depth + child map, so the tree can be printed at its real shape.
+        _children: dict = {}
+        for w in self.wbs_nodes:
+            _children.setdefault(w.parent_uid, []).append(w)
+
+        def _depth(w):
+            d, cur, guard = 0, w.parent_uid, 0
+            while cur and cur in wbs_map and guard < 200:
+                d += 1
+                cur = wbs_map[cur].parent_uid
+                guard += 1
+            return d
+
+        # A "rollup" must include descendants, otherwise a parent folder whose
+        # work all sits in sub-folders reads as empty.
+        _rollup_cache: dict = {}
+
+        def _rollup(uid):
+            if uid in _rollup_cache:
+                return _rollup_cache[uid]
+            tot = dict(wbs_risk.get(uid, {"total": 0, "crit": 0, "open_s": 0, "open_f": 0}))
+            _rollup_cache[uid] = tot           # guard against a cyclic parent chain
+            for c in _children.get(uid, []):
+                sub = _rollup(c.uid)
+                for k in tot:
+                    tot[k] += sub[k]
+            _rollup_cache[uid] = tot
+            return tot
+
+        def _wbs_path(w):
+            parts, cur, guard = [], w, 0
+            while cur and guard < 200:
+                parts.insert(0, cur.name)
+                cur = wbs_map.get(cur.parent_uid)
+                guard += 1
+            return " / ".join(parts)
+
+        # A folder name that occurs more than once is ambiguous on its own —
+        # "WBS: Level 1" could be any building. Those get their full path so the
+        # agent can tell them apart (and so an edit it proposes targets the right
+        # one); unique names stay short to save context.
+        _name_counts: dict = {}
+        for w in self.wbs_nodes:
+            _name_counts[w.name] = _name_counts.get(w.name, 0) + 1
+        _label_cache: dict = {}
+
+        def _wbs_label(w):
+            if w is None:
+                return "?"
+            if w.uid not in _label_cache:
+                _label_cache[w.uid] = (_wbs_path(w) if _name_counts.get(w.name, 0) > 1
+                                       else w.name)
+            return _label_cache[w.uid]
 
         lines = [
             f"Project: {self.name} ({self.id})",
@@ -277,15 +335,29 @@ class Project:
             "WBS STRUCTURE & RISK ROLLUP:",
         ]
 
-        for w in self.wbs_nodes:
-            parent = wbs_map.get(w.parent_uid) if w.parent_uid else None
-            indent = "    " if parent else "  "
-            risk = wbs_risk.get(w.name, {})
-            risk_note = ""
-            if risk.get("total"):
-                crit_pct = round(risk["crit"] / risk["total"] * 100)
-                risk_note = f"  [{risk['total']} acts | {crit_pct}% crit | open_s:{risk['open_s']} open_f:{risk['open_f']}]"
-            lines.append(f"{indent}{w.code} — {w.name}{risk_note}")
+        # Print the tree at its true depth, parents before children, so the
+        # nesting is actually readable. Two fixed indents made a 5-deep
+        # hierarchy look completely flat.
+        def _emit(w):
+            d = _depth(w)
+            direct = wbs_risk.get(w.uid, {"total": 0, "crit": 0, "open_s": 0, "open_f": 0})
+            roll = _rollup(w.uid)
+            note = ""
+            if roll["total"]:
+                crit_pct = round(roll["crit"] / roll["total"] * 100)
+                note = f"  [{roll['total']} acts"
+                if direct["total"] != roll["total"]:
+                    note += f" ({direct['total']} direct)"
+                note += (f" | {crit_pct}% crit"
+                         f" | open_s:{roll['open_s']} open_f:{roll['open_f']}]")
+            lines.append(f"{'  ' * (d + 1)}{w.code} — {w.name}{note}")
+            for c in sorted(_children.get(w.uid, []), key=lambda x: x.sequence_num):
+                _emit(c)
+
+        for w in sorted([x for x in self.wbs_nodes
+                         if not x.parent_uid or x.parent_uid not in wbs_map],
+                        key=lambda x: x.sequence_num):
+            _emit(w)
 
         # ── WBS Phase Sequence ───────────────────────────────────────────────
         # Build parent → children map, sorted by sequence_num
@@ -327,12 +399,12 @@ class Project:
                 lines.append("  NO PREDECESSOR (open start):")
                 for a in open_start_acts[:30]:
                     wbs = wbs_map.get(a.wbs_uid)
-                    lines.append(f"    {a.activity_id} — {a.name}  [{wbs.name if wbs else '?'}]")
+                    lines.append(f"    {a.activity_id} — {a.name}  [{_wbs_label(wbs)}]")
             if open_finish_acts:
                 lines.append("  NO SUCCESSOR (open finish):")
                 for a in open_finish_acts[:30]:
                     wbs = wbs_map.get(a.wbs_uid)
-                    lines.append(f"    {a.activity_id} — {a.name}  [{wbs.name if wbs else '?'}]")
+                    lines.append(f"    {a.activity_id} — {a.name}  [{_wbs_label(wbs)}]")
 
         # ── Hard constraints ─────────────────────────────────────────────────
         if hard_constrained:
@@ -373,11 +445,15 @@ class Project:
         lines.append("")
         lines.append(f"ACTIVITIES ({total_acts} total):")
 
-        if total_acts <= max_activities:
-            # ── Full format (≤400) ──────────────────────────────────────────
+        # `compact_above` picks the FORMAT; `max_activities` is a separate hard
+        # cap. Using one number for both meant the compact format only engaged
+        # past 3000, so a 2999-activity schedule cost roughly twice the context
+        # of a 3001-activity one.
+        if total_acts <= compact_above:
+            # ── Full format (small schedules) ───────────────────────────────
             for a in self.activities:
                 wbs      = wbs_map.get(a.wbs_uid)
-                wbs_name = wbs.name if wbs else "?"
+                wbs_name = _wbs_label(wbs)
                 dur_days = f"{a.planned_duration / 8:.0f}d" if a.planned_duration else "0d"
 
                 fh = float_hrs(a)
@@ -436,7 +512,7 @@ class Project:
                 acts = _wbs_acts.get(w.uid)
                 if not acts:
                     continue
-                lines.append(f"  [{w.code} — {w.name}] ({len(acts)} acts)")
+                lines.append(f"  [{w.code} — {_wbs_label(w)}] ({len(acts)} acts)")
                 for a in acts:
                     dur = f"{a.planned_duration / 8:.0f}d" if a.planned_duration else "0d"
                     st = _STATUS_ABBR.get(a.status, a.status[:2])

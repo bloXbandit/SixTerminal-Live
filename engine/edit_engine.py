@@ -31,6 +31,7 @@ Each command dict must have an "action" key. Other keys depend on the action.
 
 import re
 import uuid
+import datetime as _dt
 from typing import Dict, Any, List, Optional, Tuple
 from .schedule_model import Project, Activity, Relation, WBSNode
 
@@ -177,6 +178,8 @@ def apply_command(project: Project, command: Dict[str, Any]) -> Tuple[bool, str]
             return _duplicate_wbs(project, command)
         elif action == "copy_activities":
             return _copy_activities(project, command)
+        elif action == "set_data_date":
+            return _set_data_date(project, command)
         elif action == "update_relation":
             return _update_relation(project, command)
         elif action == "update_activity_type":
@@ -744,6 +747,32 @@ def _duplicate_wbs(project: Project, cmd: Dict) -> Tuple[bool, str]:
     project.build_lookups()
     return True, (f"Duplicated '{src.name}' → {', '.join(made_names)} "
                   f"({len(acts_in)} activities each)")
+
+
+def _set_data_date(project: Project, cmd: Dict) -> Tuple[bool, str]:
+    """
+    Set the project data date (the 'as of' line P6 schedules from).
+
+      data_date : YYYY-MM-DD
+      also_planned_start : bool — move the project start to match (default False)
+
+    Dates are not recalculated here; run the scheduler afterwards to reflow.
+    """
+    raw = (cmd.get("data_date") or cmd.get("date") or "").strip()
+    if not raw:
+        raise EditError("data_date is required (YYYY-MM-DD)")
+    iso = str(raw)[:10]
+    try:
+        _dt.date.fromisoformat(iso)
+    except ValueError:
+        raise EditError(f"'{raw}' is not a valid date — use YYYY-MM-DD")
+    old = str(project.data_date)[:10] if project.data_date else "not set"
+    project.data_date = iso
+    msg = f"Data date {old} → {iso}"
+    if cmd.get("also_planned_start"):
+        project.planned_start = iso
+        msg += " (project start moved to match)"
+    return True, msg
 
 
 def _copy_activities(project: Project, cmd: Dict) -> Tuple[bool, str]:
