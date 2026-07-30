@@ -1527,9 +1527,10 @@
         </select>
         <span class="pick-legend">Lag</span>
         <input id="pick-lag" type="number" value="0" style="width:56px;">
-        <span class="pick-legend" style="margin-left:auto;">
+        <span class="pick-legend" style="margin-left:auto;" id="pick-hint">
           Click a highlighted row to link · dimmed rows would create a loop · Esc to cancel
         </span>
+        <button class="mini-btn ok" id="pick-done-btn" onclick="cancelPick()" style="display:none;">Done</button>
         <button class="mini-btn no" onclick="cancelPick()">Cancel</button>
       </div>
 
@@ -3262,21 +3263,21 @@ function renderActivityRow(a, wbsUid, hidden) {
 
   // Predecessors / successors as chips (with in-edit-mode delete + add controls)
   const aid = a.activity_id;
-  const linkChip = (other, predId, succId) => {
+  const linkChip = (other, predId, succId, dir) => {
     const lagH = other.lag || 0;
     const lag = lagH ? (lagH > 0 ? `+${Math.round(lagH/8)}d` : `${Math.round(lagH/8)}d`) : '';
     const abbr = relAbbr(other.type);
     const nm = other.name || '';
     // ⤢ jumps to the linked activity; the name makes the link readable at a glance
-    return `<span class="link-chip" onclick="editLink(event, ${escAttrJs(predId)}, ${escAttrJs(succId)})" title="${escAttr(other.activity_id + (nm ? ' — ' + nm : ''))} · click to change type or lag">`
+    return `<span class="link-chip" onclick="editLink(event, ${escAttrJs(predId)}, ${escAttrJs(succId)}, ${escAttrJs(dir)})" title="${escAttr(other.activity_id + (nm ? ' — ' + nm : ''))} · click to change type, lag, or which activity">`
       + `<span class="chip-goto" title="Go to ${escAttr(other.activity_id)}" onclick="gotoActivity(${escAttrJs(other.activity_id)});event.stopPropagation();">⤢</span>`
       + `<span class="chip-id">${escHtml(other.activity_id)}</span>`
       + (nm ? `<span class="chip-name">${escHtml(nm)}</span>` : '')
       + `<span class="chip-rel">${abbr}${lag}</span>`
       + `<span class="chip-x" onclick="deleteLink(${escAttrJs(predId)}, ${escAttrJs(succId)});event.stopPropagation();">&times;</span></span>`;
   };
-  const predChips = (a.predecessors || []).map(p => linkChip(p, p.activity_id, aid)).join('');
-  const succChips = (a.successors   || []).map(s => linkChip(s, aid, s.activity_id)).join('');
+  const predChips = (a.predecessors || []).map(p => linkChip(p, p.activity_id, aid, 'pred')).join('');
+  const succChips = (a.successors   || []).map(s => linkChip(s, aid, s.activity_id, 'succ')).join('');
   const predAdd = `<span class="row-add-link" title="Add predecessor" onclick="addLink(${escAttrJs(aid)}, 'pred')">+</span>`;
   const succAdd = `<span class="row-add-link" title="Add successor" onclick="addLink(${escAttrJs(aid)}, 'succ')">+</span>`;
 
@@ -4208,19 +4209,51 @@ function reachableFrom(startId, adj){
   return seen;
 }
 
-function startPick(actId, dir){
+/**
+ * Enter link-picking mode.
+ *   repoint — {predId, succId} to MOVE an existing link's far end instead of
+ *             adding a new one (so changing a relationship doesn't mean
+ *             deleting it first).
+ * Picking stays active after each link so several can be added in a row.
+ */
+function startPick(actId, dir, repoint){
   if(!isEditMode) toggleEditMode();
+  _pickState = { actId, dir, repoint: repoint || null, added: 0,
+                 invalid: new Set(), linked: new Set() };
+  document.body.classList.add('pick-on');
+  document.getElementById('pick-bar').classList.add('show');
+  refreshPickState();
+}
+
+/** Recompute what's linkable — the graph changes after every link we add. */
+function refreshPickState(){
+  if(!_pickState) return;
+  const { actId, dir, repoint, added } = _pickState;
   const { succ, pred } = buildRelGraph();
   // Picking a PREDECESSOR for A: anything downstream of A would close a loop.
   // Picking a SUCCESSOR  for A: anything upstream  of A would close a loop.
   const invalid = reachableFrom(actId, dir === 'pred' ? succ : pred);
   invalid.add(actId);                                    // never self-link
   const linked = new Set(dir === 'pred' ? (pred[actId] || []) : (succ[actId] || []));
-  _pickState = { actId, dir, invalid, linked };
-  document.body.classList.add('pick-on');
-  document.getElementById('pick-msg').textContent =
-    `Select the ${dir === 'pred' ? 'predecessor' : 'successor'} for ${actId}`;
-  document.getElementById('pick-bar').classList.add('show');
+  if(repoint){
+    // the link being moved is about to go away, so its current far end is a
+    // legitimate target again (a no-op, but not an error)
+    linked.delete(dir === 'pred' ? repoint.predId : repoint.succId);
+  }
+  _pickState.invalid = invalid;
+  _pickState.linked  = linked;
+
+  const word = dir === 'pred' ? 'predecessor' : 'successor';
+  document.getElementById('pick-msg').textContent = repoint
+    ? `Pick the new ${word} for ${actId}`
+    : (added ? `Linked ${added} ${word}${added===1?'':'s'} to ${actId} — keep clicking`
+             : `Select ${word}s for ${actId}`);
+  const hint = document.getElementById('pick-hint');
+  if(hint) hint.textContent = repoint
+    ? 'Click the activity to point this link at · Esc to cancel'
+    : 'Click each highlighted row to link — you can pick several · dimmed rows would loop · Esc when finished';
+  const doneBtn = document.getElementById('pick-done-btn');
+  if(doneBtn) doneBtn.style.display = (!repoint && added) ? '' : 'none';
   markPickTargets();
 }
 
@@ -4246,9 +4279,14 @@ function markPickTargets(){
 }
 
 function cancelPick(){
+  const n = _pickState?.added || 0;
+  const dir = _pickState?.dir;
   _pickState = null;
   document.body.classList.remove('pick-on');
   document.getElementById('pick-bar')?.classList.remove('show');
+  const doneBtn = document.getElementById('pick-done-btn');
+  if(doneBtn) doneBtn.style.display = 'none';
+  if(n) flashSched(`Added ${n} ${dir === 'pred' ? 'predecessor' : 'successor'}${n===1?'':'s'}`);
   document.querySelectorAll('tr.sched-act-row').forEach(tr => {
     tr.classList.remove('pick-valid','pick-invalid');
     tr.removeAttribute('title');
@@ -4256,7 +4294,7 @@ function cancelPick(){
 }
 
 /** Capture-phase click handler, active only while picking. */
-function onPickClick(e){
+async function onPickClick(e){
   if(!_pickState && !_tracePicking) return;
   if(e.target.closest('#pick-bar') || e.target.closest('#trace-bar')) return;
   const tr = e.target.closest('tr.sched-act-row');
@@ -4276,18 +4314,42 @@ function onPickClick(e){
   if(_pickState.linked.has(other)){ flashSched(`${other} is already linked`, true); return; }
   const type = document.getElementById('pick-type').value;
   const lag  = parseFloat(document.getElementById('pick-lag').value) || 0;
-  const A = _pickState.actId, dir = _pickState.dir;
+  const A = _pickState.actId, dir = _pickState.dir, repoint = _pickState.repoint;
   const p = (dir === 'pred') ? other : A;
   const s = (dir === 'pred') ? A : other;
-  cancelPick();
-  directEdit([{action:'add_relation', predecessor_id:p, successor_id:s, type, lag_days:lag}],
-             `Link ${p} → ${s} ${type.toUpperCase()}`);
+
+  if(repoint){
+    // Move the link: drop the old one and lay the new one in a single edit, so
+    // one Undo puts it back exactly as it was.
+    cancelPick();
+    directEdit([
+      {action:'delete_relation', predecessor_id:repoint.predId, successor_id:repoint.succId},
+      {action:'add_relation', predecessor_id:p, successor_id:s, type, lag_days:lag},
+    ], `Repoint ${repoint.predId} → ${repoint.succId} to ${p} → ${s}`);
+    return;
+  }
+
+  // Stay in pick mode so several links can be added in one go. Mark the target
+  // immediately so a fast second click can't double-add it.
+  _pickState.linked.add(other);
+  markPickTargets();
+  const d = await directEdit([{action:'add_relation', predecessor_id:p, successor_id:s,
+                               type, lag_days:lag}],
+                             `Link ${p} → ${s} ${type.toUpperCase()}`);
+  if(!_pickState) return;                       // user finished mid-request
+  if(d && d.success && !d.commands_failed) _pickState.added++;
+  refreshPickState();     // the graph moved — recompute what would now loop
 }
 
 /** Defensive: clear any stray popover left by older builds. */
 function closeLinkEditor(){ const p = document.getElementById('link-pop'); if(p) p.remove(); }
-/** Click a relationship chip to change its type or lag in place. */
-function editLink(ev, predId, succId){
+/**
+ * Click a relationship chip to change it in place — type, lag, or which
+ * activity it points at ("Change…"), without deleting it first.
+ * `dir` says which end belongs to the row you clicked from: 'pred' means the
+ * chip is in that row's Predecessors column, so the far end is the predecessor.
+ */
+function editLink(ev, predId, succId, dir){
   if(!isEditMode) return;
   if(ev) ev.stopPropagation();
   if(_pickState || _tracePicking) return;
@@ -4304,6 +4366,7 @@ function editLink(ev, predId, succId){
      </select>
      <input id="lk-lag" type="number" step="1" style="width:60px;" placeholder="lag d">
      <button class="mini-btn ok" id="lk-ok">Apply</button>
+     <button class="mini-btn" id="lk-repoint" title="Point this link at a different activity">Change…</button>
      <button class="mini-btn no" id="lk-del">Remove</button>`;
   document.body.appendChild(pop);
   const r = (ev && ev.target.closest('.link-chip') || ev.target).getBoundingClientRect();
@@ -4326,6 +4389,17 @@ function editLink(ev, predId, succId){
     closeConstraintEditor();
     directEdit([{action:'update_relation', predecessor_id:predId, successor_id:succId,
                  type, lag_days:lag}], `${predId} → ${succId} ${type.toUpperCase()}${lag?` ${lag>0?'+':''}${lag}d`:''}`);
+  });
+  pop.querySelector('#lk-repoint').addEventListener('click', () => {
+    // Carry the link's current type/lag into the picker so repointing keeps them
+    const t = pop.querySelector('#lk-type').value;
+    const lg = pop.querySelector('#lk-lag').value;
+    closeConstraintEditor();
+    const pt = document.getElementById('pick-type'); if(pt) pt.value = t;
+    const pl = document.getElementById('pick-lag');  if(pl) pl.value = lg || 0;
+    // the anchor is the row we opened from — the OTHER end is what we move
+    const anchor = (dir === 'pred') ? succId : predId;
+    startPick(anchor, dir || 'pred', {predId, succId});
   });
   pop.querySelector('#lk-del').addEventListener('click', () => {
     closeConstraintEditor();
