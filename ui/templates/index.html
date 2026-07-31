@@ -2388,8 +2388,10 @@ function openPasteModal() {
   // folder list, indented by depth so the hierarchy reads properly
   const sel = document.getElementById('paste-wbs-select');
   const secs = lastSchedData?.wbs_sections || [];
+  // options carry the folder's uid — names AND codes repeat across a real
+  // schedule, so anything less exact can resolve to the wrong folder
   sel.innerHTML = secs.map(w =>
-    `<option value="${escAttr(w.code)}">${'&nbsp;'.repeat((w.depth||0)*3)}${escHtml(w.name)}</option>`
+    `<option value="${escAttr(w.uid)}">${'&nbsp;'.repeat((w.depth||0)*3)}${escHtml(w.name)}</option>`
   ).join('');
   // default to the folder of whatever is selected, else the last one used
   let want = lastActWbs;
@@ -2397,7 +2399,7 @@ function openPasteModal() {
     const first = [...selectedIds][0];
     secs.forEach(w => (w.activities||[]).forEach(a => { if (a.activity_id === first) want = w.name; }));
   }
-  if (want) { const m = secs.find(w => w.name === want); if (m) sel.value = m.code; }
+  if (want) { const m = secs.find(w => w.name === want); if (m) sel.value = m.uid; }
   openModal('paste-modal');
   setTimeout(() => document.getElementById('paste-text').focus(), 60);
 }
@@ -2516,9 +2518,9 @@ async function commitPastedRows() {
     }
     body.new_wbs_name = nm;
     const sel = document.getElementById('paste-wbs-select').value;
-    if (sel) body.target_wbs_code = sel;      // nest the new folder under this one
+    if (sel) body.target_wbs_uid = sel;       // nest the new folder under this one
   } else {
-    body.target_wbs_code = document.getElementById('paste-wbs-select').value;
+    body.target_wbs_uid = document.getElementById('paste-wbs-select').value;
   }
   const btn = document.getElementById('paste-commit-btn');
   btn.disabled = true; btn.textContent = 'Adding…';

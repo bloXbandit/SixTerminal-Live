@@ -668,8 +668,11 @@ def import_commit_route():
     mode = (data.get("mode") or "replace").lower()   # replace | merge
     name = data.get("project_name")
     # Optional placement for a merge: land the block under an existing folder,
-    # or under a brand-new one created on the spot.
-    target_wbs_code = data.get("target_wbs_code")     # existing folder to nest under
+    # or under a brand-new one created on the spot. The grid sends the uid —
+    # codes repeat in real schedules (P6 short names are only unique among
+    # siblings), so code lookup can resolve to the wrong same-code folder.
+    target_wbs_uid  = data.get("target_wbs_uid")      # exact folder (preferred)
+    target_wbs_code = data.get("target_wbs_code")     # legacy fallback
     new_wbs_name    = data.get("new_wbs_name")        # create this folder first
     if name:
         contract.setdefault("meta", {})["project_name"] = name
@@ -682,7 +685,13 @@ def import_commit_route():
             _push_undo(f"Import (merge) {contract['meta'].get('source_name','file')}")
 
             target_uid = None
-            if target_wbs_code:
+            if target_wbs_uid:
+                tw = next((w for w in base.wbs_nodes if w.uid == str(target_wbs_uid)), None)
+                if not tw:
+                    return jsonify({"error": "The folder picked as the destination no longer "
+                                             "exists — reopen the paste dialog and pick again"}), 400
+                target_uid = tw.uid
+            elif target_wbs_code:
                 tw = next((w for w in base.wbs_nodes
                            if w.code.lower() == str(target_wbs_code).lower()), None)
                 if not tw:
@@ -987,19 +996,53 @@ def _merge_projects(base, incoming, target_wbs_uid=None, flatten=False, dedupe=N
             place(a, target_wbs_uid)
     else:
         by_uid_incoming = {w.uid for w in incoming.wbs_nodes}
-        existing_wbs_codes = {w.code for w in base.wbs_nodes}
-        code_to_uid = {w.code: w.uid for w in base.wbs_nodes}
+
+        # Reusing an existing folder (so re-pasting the same block twice doesn't
+        # duplicate its sections) must respect the chosen destination. Matching
+        # by code against the WHOLE schedule hijacked the target: pasting a
+        # section called "Sitework" into Phase 2 landed in some other Sitework
+        # at the root, because their name-derived codes collided. With a target
+        # picked, only folders already under that target are reuse candidates;
+        # codes also repeat freely in real schedules (P6 short names are only
+        # unique among siblings), so all matches are kept, not just the first.
+        code_matches = {}
+        for w in base.wbs_nodes:
+            code_matches.setdefault(w.code, []).append(w.uid)
+
+        under_target = None
+        if target_wbs_uid:
+            kids = {}
+            for w in base.wbs_nodes:
+                kids.setdefault(w.parent_uid, []).append(w.uid)
+            under_target = {target_wbs_uid}
+            stack = [target_wbs_uid]
+            while stack:
+                for cuid in kids.get(stack.pop(), []):
+                    if cuid not in under_target:
+                        under_target.add(cuid)
+                        stack.append(cuid)
+
         remap = {}                  # incoming wbs uid -> wbs uid actually used in base
         for w in incoming.wbs_nodes:
-            if w.code in existing_wbs_codes:
-                remap[w.uid] = code_to_uid[w.code]  # folder already exists — reuse it
+            cands = code_matches.get(w.code, [])
+            reuse = (cands[0] if cands and under_target is None
+                     else next((u for u in cands if u in under_target), None) if cands
+                     else None)
+            if reuse:
+                remap[w.uid] = reuse
                 continue
-            # a root of the incoming block hangs off the target folder
-            if target_wbs_uid and (not w.parent_uid or w.parent_uid not in by_uid_incoming):
+            if w.parent_uid in remap:
+                # keep nesting intact when this folder's parent was reused —
+                # its parent_uid must point at the base folder, not the
+                # incoming uid that never joins the project
+                w.parent_uid = remap[w.parent_uid]
+            elif target_wbs_uid and (not w.parent_uid or w.parent_uid not in by_uid_incoming):
+                # a root of the incoming block hangs off the target folder
                 w.parent_uid = target_wbs_uid
             base.wbs_nodes.append(w)
-            existing_wbs_codes.add(w.code)
-            code_to_uid[w.code] = w.uid
+            code_matches.setdefault(w.code, []).append(w.uid)
+            if under_target is not None:
+                under_target.add(w.uid)
             remap[w.uid] = w.uid
 
         base_uids = {w.uid for w in base.wbs_nodes}
