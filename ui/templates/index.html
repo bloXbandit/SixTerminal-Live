@@ -1296,6 +1296,8 @@
 
       <!-- STEP 2 -->
       <div id="paste-step-2" style="display:none;">
+        <div id="paste-error" style="display:none;margin-bottom:10px;padding:9px 12px;border-radius:6px;
+             background:rgba(58,20,20,.96);border:1px solid rgba(239,68,68,.5);color:#ff8080;font-size:11.5px;"></div>
         <div id="paste-summary" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:10px;font-size:12px;"></div>
         <div id="paste-warnings" style="margin-bottom:10px;"></div>
         <div style="font-size:11px;color:var(--text3);margin-bottom:6px;">Preview — check a few rows before loading:</div>
@@ -2380,6 +2382,7 @@ let _pasteContract = null;
 function openPasteModal() {
   if (!lastSchedData) { flashSched('Load a schedule first', true); return; }
   _pasteContract = null;
+  clearPasteError();
   pasteBackToEdit();
   document.getElementById('paste-text').value = '';
   // folder list, indented by depth so the hierarchy reads properly
@@ -2426,6 +2429,7 @@ async function parsePastedRows() {
     }).then(r => r.json());
     btn.disabled = false; btn.textContent = 'Read rows →';
     if (d.error) { flashSched(d.error, true); return; }
+    clearPasteError();
     _pasteContract = d.contract;
     renderPastePreview(d.contract);
   } catch(e) {
@@ -2474,8 +2478,20 @@ function renderPastePreview(c) {
   onPasteDestChange();
 }
 
+/** Show a failure inside the paste dialog, where the user is actually looking. */
+function pasteError(msg){
+  const box = document.getElementById('paste-error');
+  if(box){ box.textContent = '⚠ ' + msg; box.style.display = 'block'; }
+  flashSched(msg, true);
+}
+function clearPasteError(){
+  const box = document.getElementById('paste-error');
+  if(box){ box.textContent = ''; box.style.display = 'none'; }
+}
+
 async function commitPastedRows() {
   if (!_pasteContract) return;
+  clearPasteError();
   const before = allActivityIds();
   const useNew = document.querySelector('input[name="paste-dest"]:checked')?.value === 'new';
   const body = {
@@ -2487,8 +2503,17 @@ async function commitPastedRows() {
     dedupe: document.querySelector('input[name="paste-dedupe"]:checked')?.value || 'skip',
   };
   if (useNew) {
-    const nm = document.getElementById('paste-new-wbs').value.trim();
-    if (!nm) { flashSched('Name the new folder', true); return; }
+    const nmEl = document.getElementById('paste-new-wbs');
+    const nm = nmEl.value.trim();
+    if (!nm) {
+      // Silent-return territory: "Into a new folder" is selected but unnamed,
+      // so Add did nothing at all. Point at the empty box instead.
+      pasteError('Name the new folder before adding — or pick "Into an existing folder".');
+      nmEl.style.borderColor = 'var(--red, #ef4444)';
+      nmEl.focus();
+      setTimeout(() => { nmEl.style.borderColor = ''; }, 3000);
+      return;
+    }
     body.new_wbs_name = nm;
     const sel = document.getElementById('paste-wbs-select').value;
     if (sel) body.target_wbs_code = sel;      // nest the new folder under this one
@@ -2503,7 +2528,7 @@ async function commitPastedRows() {
       body: JSON.stringify(body)
     }).then(r => r.json());
     btn.disabled = false; btn.textContent = 'Add to schedule';
-    if (d.error) { flashSched(d.error, true); return; }
+    if (d.error) { pasteError(d.error); return; }
     closeModal('paste-modal');
     const mr = d.merge_report;
     let msg;
@@ -2532,7 +2557,14 @@ async function commitPastedRows() {
     }
   } catch(e) {
     btn.disabled = false; btn.textContent = 'Add to schedule';
-    flashSched(e.message, true);
+    // A big paste can be killed upstream (proxy/gateway timeout), which comes
+    // back as an HTML error page — r.json() then throws here rather than
+    // returning d.error. Say that, instead of a bare "Unexpected token <".
+    const looksLikeHtml = /JSON|Unexpected token/i.test(e.message || '');
+    pasteError(looksLikeHtml
+      ? `The server didn't return a result for this paste (${e.message}). `
+        + `If the block is very large, try pasting it in a few smaller batches.`
+      : e.message);
   }
 }
 
@@ -3947,7 +3979,11 @@ function flashSched(msg, isErr){
   let el = document.getElementById('sched-flash');
   if(!el){
     el = document.createElement('div'); el.id = 'sched-flash';
-    el.style.cssText = 'position:fixed;bottom:64px;left:50%;transform:translateX(-50%);z-index:80;'
+    // Above the modal layer (z-index 200). It used to sit at 80, so any toast
+    // raised while a modal was open — which is every failure path in every
+    // modal flow — rendered behind the overlay and was never seen. Successes
+    // close their modal first, so only errors were invisible.
+    el.style.cssText = 'position:fixed;bottom:64px;left:50%;transform:translateX(-50%);z-index:400;'
       + 'padding:8px 16px;border-radius:6px;font-size:12px;box-shadow:0 6px 20px rgba(0,0,0,.45);max-width:70%;';
     document.body.appendChild(el);
   }
