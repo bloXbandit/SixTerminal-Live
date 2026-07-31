@@ -114,3 +114,32 @@ def test_rename_by_uid_beats_a_conflicting_name_argument():
     by_uid = {w.uid: w.name for w in p.wbs_nodes}
     assert by_uid["11"] == "Winner"
     assert by_uid["10"] == "Sub1"
+
+
+# ── Orphaned activities must never vanish from the grid ──────────────────────
+
+def test_activities_with_no_folder_are_still_shown():
+    """An activity whose wbs_uid matches no WBS node used to be dropped from
+    the schedule view while still counting toward activity_count — a row that
+    exists and exports but cannot be seen, which reads as 'my edit did
+    nothing'. It must surface in a synthetic Unassigned folder instead."""
+    import server
+    from engine.schedule_model import Activity
+
+    c = server.app.test_client()
+    r = c.post("/api/import/paste",
+               json={"text": "A1000\tMobilize\t10\t05-Jan-26\t16-Jan-26",
+                     "project_name": "B"})
+    c.post("/api/import/commit", json={"contract": r.get_json()["contract"],
+                                       "mode": "replace", "project_name": "B"})
+    p = server._get_session()["project"]
+    p.activities.append(Activity(uid="999", activity_id="ORPHAN1",
+                                 name="Orphaned row", wbs_uid="does-not-exist",
+                                 calendar_uid="1", planned_duration=40.0))
+    p.build_lookups()
+
+    s = c.get("/api/schedule").get_json()
+    shown = [a["activity_id"] for w in s["wbs_sections"] for a in w["activities"]]
+    assert "ORPHAN1" in shown
+    # the headline count and what the grid can actually draw must agree
+    assert s["activity_count"] == len(shown)

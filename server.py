@@ -1720,6 +1720,9 @@ _MILESTONE_TYPES = {"Start Milestone", "Finish Milestone"}
 
 # Edits that add/remove rows, change an activity's id or WBS, or re-key the grid.
 # These force a full client reload; all other edits patch just the changed rows.
+# Synthetic folder id for activities whose wbs_uid resolves to nothing.
+_ORPHAN_WBS_UID = "__unassigned__"
+
 _STRUCTURAL_ACTIONS = {
     "add_activity", "delete_activity", "bulk_add_activity",
     "add_wbs", "rename_wbs", "bulk_create_wbs", "move_activity_wbs", "move_wbs",
@@ -1903,6 +1906,24 @@ def _schedule_view_inner():
             "parent_uid": wbs.parent_uid,
             "depth":      wbs_depth(wbs.uid),
             "activities": activities_out,
+        })
+
+    # An activity whose wbs_uid matches no folder used to be dropped from the
+    # grid entirely while still counting toward activity_count — rows that
+    # exist, are edited, and are exported, but cannot be seen. Surface them in
+    # a synthetic folder instead: an orphan is a bug worth noticing, and
+    # silently hiding it makes an edit look like it did nothing.
+    known_uids = {w.uid for w in project.wbs_nodes}
+    orphans = [a for a in project.activities if a.wbs_uid not in known_uids]
+    if orphans:
+        wbs_sections.append({
+            "uid":        _ORPHAN_WBS_UID,
+            "name":       "Unassigned (no WBS folder)",
+            "code":       "—",
+            "parent_uid": None,
+            "depth":      0,
+            "activities": [_activity_row(a, preds_map, succs_map) for a in orphans],
+            "is_orphan_bucket": True,
         })
 
     # Roll activity counts up the tree. A parent folder usually holds no
