@@ -17,6 +17,7 @@ Supported commands:
   rename_wbs                — Rename a WBS node
   add_wbs                   — Add a new WBS node
   move_activity_wbs         — Move an activity to a different WBS node
+  reorder_wbs               — Move a WBS folder up/down among its siblings
   bulk_rename               — Rename multiple activities matching a regex pattern
   bulk_update_duration      — Change duration for all activities matching a pattern
   set_constraint            — Set a date constraint on an activity
@@ -68,8 +69,18 @@ def _find_activity(project: Project, activity_id: Optional[str] = None,
 
 
 def _find_wbs(project: Project, wbs_code: Optional[str] = None,
-              wbs_name: Optional[str] = None) -> Optional[WBSNode]:
-    """Find a WBS node by code or name."""
+              wbs_name: Optional[str] = None,
+              wbs_uid: Optional[str] = None) -> Optional[WBSNode]:
+    """
+    Find a WBS node by uid, code, or name — in that order of precision.
+    Name matching is a substring match, so it can hit the wrong folder when
+    one name contains another ('Site' inside 'Sitework'); the grid passes
+    wbs_uid so a click always targets exactly the folder that was clicked.
+    """
+    if wbs_uid:
+        for w in project.wbs_nodes:
+            if w.uid == wbs_uid:
+                return w
     if wbs_code:
         for w in project.wbs_nodes:
             if w.code.lower() == wbs_code.lower():
@@ -176,6 +187,8 @@ def apply_command(project: Project, command: Dict[str, Any]) -> Tuple[bool, str]
             return _add_wbs(project, command)
         elif action == "move_wbs":
             return _move_wbs(project, command)
+        elif action == "reorder_wbs":
+            return _reorder_wbs(project, command)
         elif action == "duplicate_wbs":
             return _duplicate_wbs(project, command)
         elif action == "copy_activities":
@@ -576,7 +589,8 @@ def _delete_relation(project: Project, cmd: Dict) -> Tuple[bool, str]:
 
 
 def _rename_wbs(project: Project, cmd: Dict) -> Tuple[bool, str]:
-    wbs = _find_wbs(project, cmd.get("wbs_code"), cmd.get("wbs_name"))
+    wbs = _find_wbs(project, cmd.get("wbs_code"), cmd.get("wbs_name"),
+                    cmd.get("wbs_uid"))
     if not wbs:
         raise EditError(f"WBS node not found: {cmd.get('wbs_code') or cmd.get('wbs_name')}")
     new_name = cmd.get("new_name", "").strip()
@@ -615,6 +629,42 @@ def _add_wbs(project: Project, cmd: Dict) -> Tuple[bool, str]:
     project.wbs_nodes.append(new_wbs)
     project.build_lookups()
     return True, f"Added WBS node '{code} — {name}'" + (f" under '{parent.name}'" if parent else " at root")
+
+
+def _reorder_wbs(project: Project, cmd: Dict) -> Tuple[bool, str]:
+    """
+    Move a folder up or down among its siblings — reordering only, the parent
+    never changes (use move_wbs to re-parent).
+
+    Sibling order is (sequence_num, name). Imported files routinely give every
+    folder the same sequence_num, so a bare swap of two equal numbers would do
+    nothing visible — the siblings are renumbered 0,10,20… in their current
+    displayed order first, which makes every swap actually move the folder.
+    """
+    wbs = _find_wbs(project, cmd.get("wbs_code"), cmd.get("wbs_name"),
+                    cmd.get("wbs_uid"))
+    if not wbs:
+        raise EditError(f"WBS node not found: "
+                        f"{cmd.get('wbs_uid') or cmd.get('wbs_code') or cmd.get('wbs_name')}")
+    direction = (cmd.get("direction") or "").strip().lower()
+    if direction not in ("up", "down"):
+        raise EditError("direction must be 'up' or 'down'")
+
+    siblings = [w for w in project.wbs_nodes
+                if (w.parent_uid or None) == (wbs.parent_uid or None)]
+    siblings.sort(key=lambda w: (w.sequence_num, w.name))
+    for i, w in enumerate(siblings):
+        w.sequence_num = i * 10
+
+    idx = next(i for i, w in enumerate(siblings) if w.uid == wbs.uid)
+    swap_with = idx - 1 if direction == "up" else idx + 1
+    if swap_with < 0 or swap_with >= len(siblings):
+        edge = "first" if direction == "up" else "last"
+        return True, f"'{wbs.name}' is already {edge} — nothing to move"
+
+    other = siblings[swap_with]
+    wbs.sequence_num, other.sequence_num = other.sequence_num, wbs.sequence_num
+    return True, f"Moved '{wbs.name}' {direction}"
 
 
 def _move_wbs(project: Project, cmd: Dict) -> Tuple[bool, str]:

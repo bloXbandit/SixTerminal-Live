@@ -972,6 +972,22 @@
     }
     body.edit-on .wbs-add-act{display:inline-block;}
     body.edit-on .wbs-add-act:hover{background:var(--accent-glow);}
+    /* ── WBS reorder arrows + rename affordance ──────────────────────── */
+    .wbs-move{
+      display:none;margin-left:4px;cursor:pointer;color:var(--text3);
+      font-size:10px;line-height:1;border:1px solid var(--border2);
+      border-radius:3px;padding:1px 5px;user-select:none;
+    }
+    body.edit-on .wbs-move{display:inline-block;}
+    body.edit-on .wbs-move:hover{color:var(--accent);border-color:var(--accent);
+                                 background:var(--accent-glow);}
+    body.edit-on .wbs-name{cursor:text;}
+    body.edit-on .wbs-name:hover{text-decoration:underline dotted;text-underline-offset:3px;}
+    /* freshly added rows pulse briefly so a paste is never invisible */
+    @keyframes rowAdded{
+      0%{background:var(--accent-glow);} 100%{background:transparent;}
+    }
+    tr.row-added td{animation:rowAdded 2.2s ease-out;}
     /* ── WBS selection + drag/drop re-parenting ──────────────────────── */
     body.edit-on tr.sched-wbs-row{cursor:grab;}
     tr.wbs-selected td{
@@ -2460,6 +2476,7 @@ function renderPastePreview(c) {
 
 async function commitPastedRows() {
   if (!_pasteContract) return;
+  const before = allActivityIds();
   const useNew = document.querySelector('input[name="paste-dest"]:checked')?.value === 'new';
   const body = {
     contract: _pasteContract,
@@ -2502,6 +2519,17 @@ async function commitPastedRows() {
     flashSched(msg);
     _pasteContract = null;
     await loadSchedule();
+    const added = [...allActivityIds()].filter(id => !before.has(id));
+    if (added.length) {
+      revealActivities(added);
+    } else if (mr && mr.skipped_duplicate) {
+      // nothing landed and the server said why — say so plainly, since an
+      // unchanged grid otherwise looks like the paste silently failed
+      addMsg('system', `<strong>Nothing was added.</strong> All ${mr.skipped_duplicate} `
+        + `pasted row${mr.skipped_duplicate === 1 ? '' : 's'} already exist in that folder `
+        + `by name, and duplicate handling was set to <em>skip</em>. Choose `
+        + `<em>replace</em> or <em>add anyway</em> in the paste dialog to change that.`);
+    }
   } catch(e) {
     btn.disabled = false; btn.textContent = 'Add to schedule';
     flashSched(e.message, true);
@@ -3284,13 +3312,17 @@ function renderSchedule(data) {
         <td colspan="20">
           <span class="sched-wbs-toggle" onclick="toggleWbs('${wbs.uid}');event.stopPropagation();">
             ${indent}<span class="sched-wbs-arrow">▾</span>
-            &nbsp;${escHtml(wbs.name)}
+            &nbsp;<span class="wbs-name" title="Double-click to rename this folder">${escHtml(wbs.name)}</span>
             <span class="sched-wbs-code">${escHtml(wbs.code)}</span>
             <span class="sched-wbs-count"
                   title="${wbs.activity_count_direct ?? wbs.activities.length} directly in this folder">
               ${wbs.activity_count_total ?? wbs.activities.length} act.</span>
           </span>
           <span class="wbs-tools">
+            <span class="wbs-move" title="Move this folder up"
+                  onclick="reorderWbs(${escAttrJs(wbs.uid)}, 'up');event.stopPropagation();">▲</span>
+            <span class="wbs-move" title="Move this folder down"
+                  onclick="reorderWbs(${escAttrJs(wbs.uid)}, 'down');event.stopPropagation();">▼</span>
             <input type="checkbox" class="sel-box" title="Select all in this WBS"
                    onclick="toggleSelWbs('${wbs.uid}', this.checked);event.stopPropagation();">
             <span class="wbs-add-act" onclick="addActivityDraft('${wbs.uid}', ${escAttrJs(wbs.name)});event.stopPropagation();">&#65291; activity</span>
@@ -3424,6 +3456,57 @@ function collapseAllWbs(collapse){
     if(collapse) collapsedWbs.add(w.uid); else collapsedWbs.delete(w.uid);
   });
   applyWbsVisibility();
+}
+
+/** Move a folder up or down among its siblings. */
+async function reorderWbs(uid, direction){
+  if(!isEditMode) toggleEditMode();
+  const name = (lastSchedData?.wbs_sections || []).find(w => w.uid === uid)?.name || 'folder';
+  await directEdit([{action:'reorder_wbs', wbs_uid:uid, direction}],
+                   `Move "${name}" ${direction}`);
+}
+
+/**
+ * Rename a folder in place. Targets the node by uid: folder names repeat
+ * across a schedule ("Concrete" under two areas), and name lookup is a
+ * substring match, so anything less exact can rename the wrong folder.
+ */
+function beginWbsRename(tr){
+  const uid = tr.dataset.wbsuid;
+  const span = tr.querySelector('.wbs-name');
+  if(!uid || !span || span.querySelector('input')) return;
+  const orig = tr.dataset.wbsname || span.textContent.trim();
+  const restore = span.innerHTML;
+
+  const input = document.createElement('input');
+  input.className = 'cell-input';
+  input.value = orig;
+  input.style.cssText = 'width:280px;font-weight:600;';
+  span.innerHTML = '';
+  span.appendChild(input);
+  input.focus(); input.select();
+  // the header row toggles collapse on click — don't let the editor trigger it
+  const swallow = ev => ev.stopPropagation();
+  input.addEventListener('click', swallow);
+  input.addEventListener('dblclick', swallow);
+  input.addEventListener('mousedown', swallow);
+
+  let done = false;
+  const commit = () => {
+    if(done) return;
+    done = true;
+    const val = (input.value || '').trim();
+    if(!val || val === orig){ span.innerHTML = restore; return; }
+    directEdit([{action:'rename_wbs', wbs_uid:uid, new_name:val}],
+               `Rename folder "${orig}" → "${val}"`);
+  };
+  const cancel = () => { if(done) return; done = true; span.innerHTML = restore; };
+  input.addEventListener('keydown', ev => {
+    ev.stopPropagation();
+    if(ev.key === 'Enter'){ ev.preventDefault(); commit(); }
+    else if(ev.key === 'Escape'){ ev.preventDefault(); cancel(); }
+  });
+  input.addEventListener('blur', commit);
 }
 
 /** Plain click selects one folder; Ctrl/Cmd+click adds to the selection. */
@@ -3705,6 +3788,57 @@ function rowByActId(id){
   return [...document.querySelectorAll('tr[data-actid]')].find(tr => tr.dataset.actid === id);
 }
 
+/** Every activity id currently in the loaded schedule. */
+function allActivityIds(){
+  const out = new Set();
+  (lastSchedData?.wbs_sections || []).forEach(w =>
+    (w.activities || []).forEach(a => out.add(a.activity_id)));
+  return out;
+}
+
+/**
+ * Make sure freshly added rows are actually on screen.
+ *
+ * A paste puts rows into the schedule, but three bits of view state survive
+ * the reload and will silently swallow them: a collapsed destination folder,
+ * an active find filter, and an open trace. The rows are genuinely there —
+ * they just render hidden, which reads as "the paste did nothing". So after
+ * an add, unfold the destination and drop whichever filter is hiding the
+ * result, telling the user which one was cleared.
+ */
+function revealActivities(ids){
+  if(!ids || !ids.length) return;
+  const rows = ids.map(rowByActId).filter(Boolean);
+  if(!rows.length) return;
+
+  const byUid = {};
+  (lastSchedData?.wbs_sections || []).forEach(w => byUid[w.uid] = w);
+  rows.forEach(tr => {                     // unfold the folder and its ancestors
+    let uid = tr.dataset.wbs, guard = 0;
+    while(uid && guard++ < 200){ collapsedWbs.delete(uid); uid = byUid[uid]?.parent_uid; }
+  });
+
+  const cleared = [];
+  if(_traceState && rows.some(tr => tr.classList.contains('trace-hidden'))){
+    clearTrace();
+    cleared.push('trace');
+  }
+  if(_findTerm && rows.some(findHides)){
+    const box = document.getElementById('sched-find');
+    if(box) box.value = '';
+    applyFind('');
+    cleared.push('find filter');
+  }
+  applyWbsVisibility();
+
+  if(cleared.length) flashSched(`Cleared the ${cleared.join(' and ')} to show the new rows`);
+  rows[0].scrollIntoView({block:'center', behavior:'smooth'});
+  rows.forEach(tr => {
+    tr.classList.add('row-added');
+    setTimeout(() => tr.classList.remove('row-added'), 2200);
+  });
+}
+
 /**
  * Jump to an activity from a predecessor/successor chip.
  * Clears whatever is hiding it (find filter, trace filter, collapsed folders),
@@ -3743,6 +3877,7 @@ function gotoActivity(id){
 
 // ── Core: send structured commands straight to the engine ──
 async function directEdit(commands, label){
+  const before = allActivityIds();
   try{
     const d = await fetch('/api/direct', {
       method:'POST', headers:{'Content-Type':'application/json'},
@@ -3767,6 +3902,8 @@ async function directEdit(commands, label){
       patchRows(d.changed_rows);
     } else {
       await loadSchedule();
+      // rows that weren't there before are new — make sure they're visible
+      revealActivities([...allActivityIds()].filter(id => !before.has(id)));
     }
     return d;
   }catch(e){ flashSched(e.message, true); }
@@ -3841,6 +3978,13 @@ function toggleEditMode(){
 function onSchedDblClick(e){
   if(!isEditMode) return;
   if(_pickState || _tracePicking) return;
+  // Double-clicking a folder's name renames it in place.
+  const wbsRow = e.target.closest('tr.sched-wbs-row');
+  if(wbsRow){
+    if(e.target.closest('input,button,.wbs-move,.wbs-add-act,.sel-box')) return;
+    beginWbsRename(wbsRow);
+    return;
+  }
   // An editable cell still opens the inline editor on double-click.
   const td = e.target.closest('td.editable');
   if(td){

@@ -9,7 +9,7 @@ It only produces a JSON list of edit commands that the edit engine applies.
 Supported actions (must match edit_engine.py):
   rename_activity, update_duration, update_activity_id,
   add_activity, delete_activity, add_relation, delete_relation,
-  rename_wbs, add_wbs, move_wbs, duplicate_wbs, move_activity_wbs,
+  rename_wbs, add_wbs, move_wbs, reorder_wbs, duplicate_wbs, move_activity_wbs,
   copy_activities, set_data_date,
   bulk_rename, bulk_update_duration,
   set_constraint, clear_constraint, set_actual_date, update_planned_date,
@@ -380,6 +380,12 @@ bulk_rename:
 
 bulk_update_duration:
   {"action": "bulk_update_duration", "pattern": "Install Drywall", "new_duration_days": 5}
+
+reorder_wbs:
+  Move a folder up or down among its siblings (display order only — the
+  parent does not change; use move_wbs to re-parent).
+  {"action": "reorder_wbs", "wbs_name": "Sitework", "direction": "up"}
+  {"action": "reorder_wbs", "wbs_code": "ER209", "direction": "down"}
 
 set_constraint:
   {"action": "set_constraint", "activity_id": "A1000", "constraint_type": "Start On Or After", "constraint_date": "2026-06-01"}
