@@ -988,6 +988,9 @@
       0%{background:var(--accent-glow);} 100%{background:transparent;}
     }
     tr.row-added td{animation:rowAdded 2.2s ease-out;}
+    /* brief tint on a folder that was just moved, so the eye can follow it */
+    @keyframes wbsMoved{0%{background:var(--accent-glow);}100%{background:transparent;}}
+    tr.wbs-moved td{animation:wbsMoved .5s ease-out;}
     /* ── WBS selection + drag/drop re-parenting ──────────────────────── */
     body.edit-on tr.sched-wbs-row{cursor:grab;}
     tr.wbs-selected td{
@@ -1036,6 +1039,8 @@
     .mini-btn.ok{color:var(--green);border-color:rgba(34,197,94,.3);}
     .mini-btn.ok:hover{background:var(--green-bg);}
     .mini-btn.no:hover{background:var(--red-bg);color:var(--red);}
+    .mini-btn.danger{color:var(--red);border-color:rgba(239,68,68,.35);}
+    .mini-btn.danger:hover{background:var(--red-bg);border-color:var(--red);}
     /* Add-WBS inline form */
     .wbs-form{
       display:none;gap:6px;align-items:center;padding:8px 12px;
@@ -1659,6 +1664,9 @@
         <button class="mini-btn" onclick="duplicateSelectedWbs()"
                 title="Copy the folder, its sub-folders, activities and their internal logic">⧉ Duplicate</button>
         <input id="wbs-dup-count" type="number" min="1" max="50" value="1" style="width:52px;" title="How many copies">
+        <span class="sched-sep"></span>
+        <button class="mini-btn danger" onclick="deleteSelectedWbs()"
+                title="Delete the selected folders — you choose whether the activities inside are kept or deleted">🗑 Delete folder</button>
         <span class="pick-legend" style="margin-left:auto;">
           Ctrl/Cmd+click folders to multi-select · or drag a folder onto another
         </span>
@@ -3492,12 +3500,108 @@ function collapseAllWbs(collapse){
   applyWbsVisibility();
 }
 
-/** Move a folder up or down among its siblings. */
-async function reorderWbs(uid, direction){
+// Reorder requests are applied on screen immediately and sent in the
+// background. They must still reach the server in the order they were
+// clicked — each swap is relative to the current order, so overlapping
+// requests would race — hence one queue, one in flight at a time.
+let _wbsMoveQueue = Promise.resolve();
+
+/**
+ * Move a folder up or down among its siblings.
+ *
+ * The grid is rearranged in place: the folder's header and every row beneath
+ * it are moved as one block of existing DOM nodes, and lastSchedData is
+ * resequenced to match. Nothing is re-rendered and nothing is re-fetched, so
+ * the page doesn't flash or jump to the top and repeated clicks feel instant.
+ * The server call follows silently; if it fails the grid is reloaded to
+ * resync, which is the only case that costs a redraw.
+ */
+function reorderWbs(uid, direction){
   if(!isEditMode) toggleEditMode();
-  const name = (lastSchedData?.wbs_sections || []).find(w => w.uid === uid)?.name || 'folder';
-  await directEdit([{action:'reorder_wbs', wbs_uid:uid, direction}],
-                   `Move "${name}" ${direction}`);
+  const secs = lastSchedData?.wbs_sections || [];
+  const idx = secs.findIndex(w => w.uid === uid);
+  if(idx === -1) return;
+  const me = secs[idx];
+
+  // siblings, in the order they appear in the grid
+  const sibIdx = secs.reduce((acc, w, i) => {
+    if(w.parent_uid === me.parent_uid) acc.push(i);
+    return acc;
+  }, []);
+  const at = sibIdx.indexOf(idx);
+  const swapAt = direction === 'up' ? at - 1 : at + 1;
+  if(swapAt < 0 || swapAt >= sibIdx.length){
+    flashSched(`"${me.name}" is already ${direction === 'up' ? 'first' : 'last'}`);
+    return;
+  }
+
+  // A folder owns a contiguous block: itself plus everything nested under it.
+  const blockLen = (start) => {
+    const d = secs[start].depth || 0;
+    let n = 1;
+    while(start + n < secs.length && (secs[start + n].depth || 0) > d) n++;
+    return n;
+  };
+  const from = idx, fromLen = blockLen(from);
+  const other = sibIdx[swapAt], otherLen = blockLen(other);
+
+  // ── move the rows on screen ──
+  const rowsOf = (wbsList) => {
+    const out = [];
+    wbsList.forEach(w => {
+      const hdr = document.getElementById('wbs-hdr-' + w.uid);
+      if(hdr) out.push(hdr);
+      document.querySelectorAll(`tr.sched-act-row[data-wbs="${CSS.escape(w.uid)}"]`)
+        .forEach(r => out.push(r));
+    });
+    return out;
+  };
+  const movingRows = rowsOf(secs.slice(from, from + fromLen));
+  const anchorRows = rowsOf(secs.slice(other, other + otherLen));
+  const tbody = document.getElementById('sched-tbody');
+  if(tbody && movingRows.length && anchorRows.length){
+    if(direction === 'up'){
+      const first = anchorRows[0];
+      movingRows.forEach(r => tbody.insertBefore(r, first));
+    } else {
+      const last = anchorRows[anchorRows.length - 1];
+      let after = last.nextSibling;
+      movingRows.forEach(r => tbody.insertBefore(r, after));
+    }
+  }
+
+  // ── keep the data in the same order as the screen ──
+  const block = secs.splice(from, fromLen);
+  const dest = direction === 'up' ? other : other + otherLen - fromLen;
+  secs.splice(dest, 0, ...block);
+
+  const hdr = document.getElementById('wbs-hdr-' + uid);
+  if(hdr){
+    hdr.classList.add('wbs-moved');
+    setTimeout(() => hdr.classList.remove('wbs-moved'), 500);
+  }
+  populateWbsSelects(lastSchedData);
+
+  _wbsMoveQueue = _wbsMoveQueue.then(async () => {
+    try{
+      const d = await fetch('/api/direct', {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({commands:[{action:'reorder_wbs', wbs_uid:uid, direction}],
+                              label:`Move "${me.name}" ${direction}`})
+      }).then(r => r.json());
+      if(d.error || d.commands_failed){
+        flashSched(d.error || 'Could not move that folder', true);
+        await loadSchedule();                 // screen and server disagree — resync
+        return;
+      }
+      undoCount = d.undo_count; redoCount = d.redo_count; editCount = d.edit_count;
+      const ei = document.getElementById('info-edits'); if(ei) ei.textContent = editCount;
+      updateUndoBtn();
+    }catch(e){
+      flashSched(e.message, true);
+      await loadSchedule();
+    }
+  });
 }
 
 /**
@@ -3603,6 +3707,51 @@ function descendantsOf(uids){
 
 function wbsNameOf(uid){
   return (lastSchedData?.wbs_sections || []).find(w => w.uid === uid)?.name || null;
+}
+
+/**
+ * Delete the selected folders. The activities inside are the whole question,
+ * so ask it plainly rather than picking for the user — one choice keeps the
+ * work and moves it up, the other throws it away.
+ */
+async function deleteSelectedWbs(){
+  const uids = [...selectedWbs];
+  if(!uids.length){ flashSched('Select a folder first', true); return; }
+
+  // count what is actually at stake, including everything nested
+  const branch = descendantsOf(selectedWbs);
+  const secs = lastSchedData?.wbs_sections || [];
+  let acts = 0;
+  secs.forEach(w => { if(branch.has(w.uid)) acts += (w.activities || []).length; });
+  const subFolders = branch.size - uids.length;
+
+  const names = uids.map(wbsNameOf).filter(Boolean).join(', ');
+  let what = `Delete ${uids.length === 1 ? `"${names}"` : uids.length + ' folders'}`;
+  if(subFolders > 0) what += ` and ${subFolders} sub-folder${subFolders === 1 ? '' : 's'}`;
+
+  let deleteContents = false;
+  if(acts > 0){
+    const keep = confirm(
+      `${what}.\n\n`
+      + `${acts} activit${acts === 1 ? 'y is' : 'ies are'} inside.\n\n`
+      + `OK — keep the activities, moving them up to the parent folder.\n`
+      + `Cancel — choose to delete them as well.`);
+    if(!keep){
+      const nuke = confirm(
+        `Delete ${acts} activit${acts === 1 ? 'y' : 'ies'} along with `
+        + `${uids.length === 1 ? 'the folder' : 'the folders'}?\n\n`
+        + `Their relationships go too. Undo will bring everything back.`);
+      if(!nuke) return;                     // backed out of both options
+      deleteContents = true;
+    }
+  } else if(!confirm(`${what}?`)){
+    return;
+  }
+
+  const cmds = uids.map(uid => ({action:'delete_wbs', wbs_uid:uid,
+                                 delete_contents:deleteContents}));
+  selectedWbs.clear();
+  await directEdit(cmds, `${what}${deleteContents ? ' and their activities' : ''}`);
 }
 
 /** Move the selected folders under a target (or to the root). */
@@ -5344,6 +5493,7 @@ function onSchedContextMenu(e){
     ['⇱ Move to root',      () => moveSelectedWbs(true)],
     ['📌✕ Clear constraints', () => wbsClearConstraints()],
     ['✎+ Add text to names',  (ev) => openAppendNamePopup(ev, {wbsScope:true})],
+    ['🗑 Delete folder…',     () => deleteSelectedWbs()],
   ] : [
     ['⛓ Link selected in sequence', () => bulkLinkSequence()],
     ['⇊ Fill duration down',        () => bulkFillDown()],

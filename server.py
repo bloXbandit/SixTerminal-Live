@@ -1769,7 +1769,7 @@ _ORPHAN_WBS_UID = "__unassigned__"
 _STRUCTURAL_ACTIONS = {
     "add_activity", "delete_activity", "bulk_add_activity",
     "add_wbs", "rename_wbs", "bulk_create_wbs", "move_activity_wbs", "move_wbs",
-    "reorder_wbs",
+    "reorder_wbs", "delete_wbs",
     "duplicate_wbs", "copy_activities", "update_activity_type",
     "update_activity_id", "bulk_update_activity_id",
 }

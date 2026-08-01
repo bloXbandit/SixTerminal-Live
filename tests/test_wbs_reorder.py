@@ -143,3 +143,65 @@ def test_activities_with_no_folder_are_still_shown():
     assert "ORPHAN1" in shown
     # the headline count and what the grid can actually draw must agree
     assert s["activity_count"] == len(shown)
+
+
+# ── Deleting a folder ────────────────────────────────────────────────────────
+
+def _peopled():
+    """Area A (holding one activity) with a sub-folder, plus Area B."""
+    from engine.schedule_model import Activity, Relation
+    p = _tree()
+    p.wbs_nodes = [w for w in p.wbs_nodes if w.uid in ("1", "2", "10")]
+    p.activities = [
+        Activity(uid="a1", activity_id="A1", name="In Area A", wbs_uid="1",
+                 calendar_uid="1", planned_duration=8.0),
+        Activity(uid="a2", activity_id="A2", name="In Sub1", wbs_uid="10",
+                 calendar_uid="1", planned_duration=8.0),
+        Activity(uid="a3", activity_id="A3", name="In Area B", wbs_uid="2",
+                 calendar_uid="1", planned_duration=8.0),
+    ]
+    p.relations = [Relation(uid="r1", predecessor_uid="a2", successor_uid="a3")]
+    p.build_lookups()
+    return p
+
+
+def test_delete_folder_keeps_the_activities_by_default():
+    """The default must never destroy work — the branch goes, the activities
+    move up to the deleted folder's parent."""
+    p = _peopled()
+    ok, msg = apply_command(p, {"action": "delete_wbs", "wbs_uid": "1"})
+    assert ok
+    assert [w.name for w in p.wbs_nodes] == ["Area B"]
+    assert len(p.activities) == 3                      # nothing lost
+    assert {a.wbs_uid for a in p.activities} == {"2"}   # rehomed to a real folder
+    assert len(p.relations) == 1
+
+
+def test_delete_folder_with_contents_removes_activities_and_relations():
+    p = _peopled()
+    ok, msg = apply_command(p, {"action": "delete_wbs", "wbs_uid": "1",
+                                "delete_contents": True})
+    assert ok
+    assert [a.activity_id for a in p.activities] == ["A3"]
+    assert p.relations == []                            # dangling link cleaned up
+
+
+def test_deleting_a_nested_folder_moves_work_to_its_parent():
+    p = _peopled()
+    apply_command(p, {"action": "delete_wbs", "wbs_uid": "10"})
+    assert sorted(w.name for w in p.wbs_nodes) == ["Area A", "Area B"]
+    assert p.get_activity(activity_id="A2").wbs_uid == "1"
+
+
+def test_deleting_the_last_folder_holding_work_is_refused():
+    """Rather than orphan the activities into a folder that doesn't exist."""
+    p = _peopled()
+    apply_command(p, {"action": "delete_wbs", "wbs_uid": "1", "delete_contents": True})
+    ok, msg = apply_command(p, {"action": "delete_wbs", "wbs_uid": "2"})
+    assert not ok and "no other folder" in msg
+
+
+def test_delete_wbs_reports_an_unknown_folder():
+    p = _peopled()
+    ok, msg = apply_command(p, {"action": "delete_wbs", "wbs_uid": "nope"})
+    assert not ok and "not found" in msg.lower()

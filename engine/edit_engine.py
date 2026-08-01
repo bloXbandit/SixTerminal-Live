@@ -18,6 +18,7 @@ Supported commands:
   add_wbs                   — Add a new WBS node
   move_activity_wbs         — Move an activity to a different WBS node
   reorder_wbs               — Move a WBS folder up/down among its siblings
+  delete_wbs                — Delete a folder (contents move up, or go with it)
   bulk_rename               — Rename multiple activities matching a regex pattern
   bulk_update_duration      — Change duration for all activities matching a pattern
   set_constraint            — Set a date constraint on an activity
@@ -189,6 +190,8 @@ def apply_command(project: Project, command: Dict[str, Any]) -> Tuple[bool, str]
             return _move_wbs(project, command)
         elif action == "reorder_wbs":
             return _reorder_wbs(project, command)
+        elif action == "delete_wbs":
+            return _delete_wbs(project, command)
         elif action == "duplicate_wbs":
             return _duplicate_wbs(project, command)
         elif action == "copy_activities":
@@ -629,6 +632,69 @@ def _add_wbs(project: Project, cmd: Dict) -> Tuple[bool, str]:
     project.wbs_nodes.append(new_wbs)
     project.build_lookups()
     return True, f"Added WBS node '{code} — {name}'" + (f" under '{parent.name}'" if parent else " at root")
+
+
+def _delete_wbs(project: Project, cmd: Dict) -> Tuple[bool, str]:
+    """
+    Delete a WBS folder and everything nested under it.
+
+    What happens to the contents is explicit, because the two intents are very
+    different and one of them destroys work:
+      delete_contents=False (default) — the folder and its sub-folders go, and
+        every activity in the branch moves up to the deleted folder's parent.
+        Nothing is lost. A top-level folder's activities move to the first
+        remaining root folder.
+      delete_contents=True — the branch and every activity in it are removed,
+        along with any relationship touching those activities.
+    """
+    wbs = _find_wbs(project, cmd.get("wbs_code"), cmd.get("wbs_name"),
+                    cmd.get("wbs_uid"))
+    if not wbs:
+        raise EditError(f"WBS node not found: "
+                        f"{cmd.get('wbs_uid') or cmd.get('wbs_code') or cmd.get('wbs_name')}")
+
+    # the whole branch: this folder plus every descendant
+    branch = {wbs.uid}
+    changed = True
+    while changed:
+        changed = False
+        for w in project.wbs_nodes:
+            if w.parent_uid in branch and w.uid not in branch:
+                branch.add(w.uid)
+                changed = True
+
+    doomed = [a for a in project.activities if a.wbs_uid in branch]
+    delete_contents = bool(cmd.get("delete_contents"))
+
+    if not delete_contents and doomed:
+        # Move the work somewhere real. The parent is the natural home; for a
+        # root folder fall back to another root so nothing is orphaned into a
+        # folder that does not exist.
+        new_home = wbs.parent_uid
+        if not new_home or new_home in branch:
+            new_home = next((w.uid for w in project.wbs_nodes if w.uid not in branch), None)
+        if not new_home:
+            raise EditError(
+                f"'{wbs.name}' holds {len(doomed)} activities and there is no other "
+                f"folder to move them to — delete the activities too, or add a folder first")
+        for a in doomed:
+            a.wbs_uid = new_home
+        moved = len(doomed)
+    else:
+        uids = {a.uid for a in doomed}
+        project.activities = [a for a in project.activities if a.uid not in uids]
+        project.relations = [r for r in project.relations
+                             if r.predecessor_uid not in uids and r.successor_uid not in uids]
+        moved = 0
+
+    folders = len(branch)
+    project.wbs_nodes = [w for w in project.wbs_nodes if w.uid not in branch]
+    project.build_lookups()
+
+    what = f"'{wbs.name}'" + (f" and {folders - 1} sub-folder(s)" if folders > 1 else "")
+    if delete_contents:
+        return True, f"Deleted {what} and {len(doomed)} activity/activities"
+    return True, f"Deleted {what}" + (f"; moved {moved} activity/activities up" if moved else "")
 
 
 def _reorder_wbs(project: Project, cmd: Dict) -> Tuple[bool, str]:
