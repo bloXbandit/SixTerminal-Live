@@ -917,6 +917,31 @@ def _section_project_calendars(proj_el: ET.Element, proj_uid: str, project=None)
 
 # ── WBS block ─────────────────────────────────────────────────────────────────
 
+def _display_seq(wbs: WBSNode) -> int:
+    """
+    Position of this folder among its siblings, as the app displays it.
+    Set by _assign_display_sequence before the WBS blocks are written.
+    """
+    return getattr(wbs, "_export_seq", None) or wbs.sequence_num
+
+
+def _assign_display_sequence(nodes: List[WBSNode]) -> None:
+    """
+    Number each folder by its position among its siblings, using the same
+    (sequence_num, name) ordering the grid sorts by, so P6 reproduces the
+    order the user arranged rather than inventing its own.
+    """
+    by_parent: Dict[str, List[WBSNode]] = {}
+    for w in nodes:
+        by_parent.setdefault(_key(getattr(w, "parent_uid", None)), []).append(w)
+    for sibs in by_parent.values():
+        sibs.sort(key=lambda w: (w.sequence_num, w.name or ""))
+        for i, w in enumerate(sibs):
+            # 10-step spacing matches P6's own convention and leaves room to
+            # insert a folder later without renumbering the whole level
+            setattr(w, "_export_seq", i * 10)
+
+
 def _write_wbs(
     proj_el: ET.Element,
     wbs: WBSNode,
@@ -939,14 +964,24 @@ def _write_wbs(
     _sub(w, "ObjectId",                  wbs_oid_map[_key(wbs.uid)])
     _sub(w, "OriginalBudget",            "0")
 
+    # A top-level folder hangs off the project's hidden root WBS — the node
+    # Project/WBSObjectId names but that a native export never emits. Writing
+    # xsi:nil here instead made every root folder an orphan: P6 has nowhere to
+    # attach it, so on import the folders come in missing or in an arbitrary
+    # order, and every activity underneath them is discarded with them. That
+    # is the "imports with no activities" failure.
     parent_key = _key(getattr(wbs, "parent_uid", None))
     if parent_key and parent_key in wbs_oid_map:
         _sub(w, "ParentObjectId", wbs_oid_map[parent_key])
     else:
-        _nil(w, "ParentObjectId")
+        _sub(w, "ParentObjectId", _PROJECT_WBS_OID)
 
     _sub(w, "ProjectObjectId",  proj_uid)
-    _sub(w, "SequenceNumber",   str(wbs.sequence_num))
+    # Emit the position this folder actually holds among its siblings. The
+    # stored sequence_num is 0 for every node on an imported schedule, which
+    # left P6 free to order folders however it liked; the app itself breaks
+    # that tie by name, so the export has to spell the resulting order out.
+    _sub(w, "SequenceNumber",   str(_display_seq(wbs)))
     _sub(w, "Status",           "Active")
     _nil(w, "WBSCategoryObjectId")
 
@@ -962,7 +997,11 @@ def _write_activity(
     calendar_oid_map: Dict[str, str],
 ):
     cal_uid = _map_calendar_oid(getattr(act, "calendar_uid", None), calendar_oid_map)
-    fallback_wbs_uid = next(iter(wbs_oid_map.values()), _PROJECT_WBS_OID)
+    # An activity whose folder isn't in the export (it sat in the project-name
+    # root that gets promoted away, or its wbs_uid dangles) belongs at the
+    # project root, which P6 accepts. Dropping it into whichever folder
+    # happened to be first in the map silently moved work between folders.
+    fallback_wbs_uid = _PROJECT_WBS_OID
 
     status = (act.status or "Not Started").strip()
     is_complete   = status.lower() in ("completed", "complete")
@@ -1316,7 +1355,9 @@ def _write_p6_xml_impl(project: Project, output_path: str) -> str:
             uid = _key(parent.parent_uid) if parent else ""
         return depth
 
-    sorted_wbs = sorted(export_wbs_nodes, key=lambda w: (_wbs_depth(w), w.sequence_num))
+    _assign_display_sequence(export_wbs_nodes)
+    sorted_wbs = sorted(export_wbs_nodes,
+                        key=lambda w: (_wbs_depth(w), _display_seq(w), w.name or ""))
     valid_relations = [
         rel for rel in project.relations
         if _key(rel.predecessor_uid) in act_uids and _key(rel.successor_uid) in act_uids
