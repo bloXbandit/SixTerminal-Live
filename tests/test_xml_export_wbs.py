@@ -178,3 +178,43 @@ def test_siblings_get_distinct_sequence_numbers():
         by_parent.setdefault(parent, []).append(int(seq))
     for parent, seqs in by_parent.items():
         assert len(seqs) == len(set(seqs)), f"duplicate SequenceNumbers under {parent}"
+
+
+# ── Schema version ───────────────────────────────────────────────────────────
+
+def test_default_schema_version_is_old_enough_for_p6_in_the_field():
+    """P6 opens files built for its own release or older and silently refuses
+    anything newer, so the default must not be the newest schema."""
+    from engine.xml_writer import DEFAULT_P6_VERSION, P6_SCHEMA_VERSIONS
+    assert DEFAULT_P6_VERSION == P6_SCHEMA_VERSIONS[0]
+
+
+def test_version_normalizes_from_a_full_p6_build_string():
+    from engine.xml_writer import normalize_p6_version, DEFAULT_P6_VERSION
+    assert normalize_p6_version("21.12.9.45067") == "21.12"
+    assert normalize_p6_version("V21.12") == "21.12"
+    assert normalize_p6_version("nonsense") == DEFAULT_P6_VERSION
+    assert normalize_p6_version(None) == DEFAULT_P6_VERSION
+
+
+def test_download_declares_the_requested_schema_version():
+    c = _client()
+    _load(c, "A1\tSeed\t1\t05-Jan-26\t05-Jan-26")
+    for requested, expected in (("21.12.9.45067", "V21.12"), ("23.12", "V23.12")):
+        xml = c.get("/api/download?p6_version=" + requested).data.decode()
+        ns = re.search(r'xmlns="([^"]+)"', xml).group(1)
+        assert expected in ns
+        # the schemaLocation hint must agree with the namespace
+        assert expected in re.search(r'schemaLocation="([^"]+)"', xml).group(1)
+
+
+def test_export_stays_structurally_valid_at_every_offered_version():
+    from engine.xml_writer import P6_SCHEMA_VERSIONS
+    c = _client()
+    _nested_fixture(c)
+    for v in P6_SCHEMA_VERSIONS:
+        xml = c.get("/api/download?p6_version=" + v).data.decode()
+        blocks = _wbs_blocks(xml)
+        assert _PROJECT_WBS_OID in blocks, f"root WBS missing at {v}"
+        for aid, wbs_oid in _activity_targets(xml):
+            assert wbs_oid in blocks, f"activity {aid} dangles at version {v}"

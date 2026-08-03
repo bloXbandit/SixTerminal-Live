@@ -34,10 +34,33 @@ from typing import Optional, List, Any, Dict
 from .schedule_model import Project, Activity, WBSNode, Relation, Calendar
 
 # ── Namespaces ─────────────────────────────────────────────────────────────────
-_P6_NS   = "http://xmlns.oracle.com/Primavera/P6Professional/V23.12/API/BusinessObjects"
+# P6 imports XML written for its own schema version or an OLDER one, and
+# refuses anything newer — a file declaring V23.12 simply does nothing in
+# P6 21.12, with no error to explain it. So the version is selectable, and the
+# default is old enough to load in the P6 releases still in the field while
+# still carrying everything this writer emits.
+P6_SCHEMA_VERSIONS = ["19.12", "20.12", "21.12", "22.12", "23.12"]
+DEFAULT_P6_VERSION = "19.12"
+
+_NS_TEMPLATE = "http://xmlns.oracle.com/Primavera/P6Professional/V{v}/API/BusinessObjects"
+_P6_NS   = _NS_TEMPLATE.format(v=DEFAULT_P6_VERSION)
 _XSI_NS  = "http://www.w3.org/2001/XMLSchema-instance"
 _XSI_NIL = f"{{{_XSI_NS}}}nil"
 _XSI_SL  = f"{{{_XSI_NS}}}schemaLocation"
+
+
+def normalize_p6_version(version: Optional[str]) -> str:
+    """Accept '21.12', 'V21.12', '21.12.9.45067' → '21.12'; else the default."""
+    v = str(version or "").strip().lstrip("vV")
+    parts = v.split(".")
+    if len(parts) >= 2:
+        v = f"{parts[0]}.{parts[1]}"
+    return v if v in P6_SCHEMA_VERSIONS else DEFAULT_P6_VERSION
+
+
+def p6_namespace(version: Optional[str] = None) -> str:
+    return _NS_TEMPLATE.format(v=normalize_p6_version(version))
+
 
 ET.register_namespace("",    _P6_NS)
 ET.register_namespace("xsi", _XSI_NS)
@@ -1332,7 +1355,8 @@ def _write_schedule_options(proj_el: ET.Element, proj_uid: str):
 
 # ── Main writer ───────────────────────────────────────────────────────────────
 
-def _write_p6_xml_impl(project: Project, output_path: str) -> str:
+def _write_p6_xml_impl(project: Project, output_path: str,
+                       p6_version: Optional[str] = None) -> str:
     """
     Serialize a Project to a P6-importable XML file.
 
@@ -1393,10 +1417,15 @@ def _write_p6_xml_impl(project: Project, output_path: str) -> str:
 
     root_wbs_uid = _PROJECT_WBS_OID
 
-    root = ET.Element(f"{{{_P6_NS}}}APIBusinessObjects")
+    # Declare the schema version the target P6 expects. P6 will not open a
+    # file built for a newer release than itself.
+    ver = normalize_p6_version(p6_version)
+    ns = p6_namespace(ver)
+    ET.register_namespace("", ns)
+    root = ET.Element(f"{{{ns}}}APIBusinessObjects")
     root.set(_XSI_SL,
-             f"{_P6_NS} "
-             f"http://xmlns.oracle.com/Primavera/P6Professional/V23.12/API/p6apibo.xsd")
+             f"{ns} "
+             f"http://xmlns.oracle.com/Primavera/P6Professional/V{ver}/API/p6apibo.xsd")
 
     # Enterprise envelope.
     _section_display_currency(root)
@@ -1565,9 +1594,15 @@ def write_p6_xml(
     seed_xer_path: Optional[str] = None,
     seed_xml_path: Optional[str] = None,
     seed_project_id: Optional[str] = None,
+    p6_version: Optional[str] = None,
 ) -> str:
     """
     Serialize a Project to P6 XML.
+
+    p6_version selects the schema version declared in the file (e.g. "21.12").
+    P6 opens files built for its own release or an older one and silently
+    refuses anything newer, so this must not exceed the target install's
+    version. Accepts a full build string like "21.12.9.45067".
 
     Default behavior preserves the working IDs from your P6 database.
     For another user's P6 instance, pass either:
@@ -1596,7 +1631,7 @@ def write_p6_xml(
         write_p6_xml.last_warnings = []
 
     with _TargetProfileContext(profile):
-        return _write_p6_xml_impl(project, output_path)
+        return _write_p6_xml_impl(project, output_path, p6_version=p6_version)
 
 
 write_p6_xml.last_warnings = []

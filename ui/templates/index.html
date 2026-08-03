@@ -1437,6 +1437,18 @@
     </div>
 
     <div class="sidebar-bottom">
+      <label style="display:flex;align-items:center;gap:6px;margin-bottom:6px;font-size:10.5px;color:var(--text3);"
+             title="P6 will not open a file written for a newer release than its own — the import silently does nothing. Pick the version of P6 you import into.">
+        For P6 version
+        <select id="p6-version" onchange="setP6Version(this.value)"
+                style="flex:1;background:var(--panel2,#0d1117);color:var(--text);border:1px solid var(--border2);border-radius:4px;font-size:10.5px;padding:3px 5px;">
+          <option value="19.12">19.12 or newer</option>
+          <option value="20.12">20.12</option>
+          <option value="21.12">21.12</option>
+          <option value="22.12">22.12</option>
+          <option value="23.12">23.12</option>
+        </select>
+      </label>
       <button class="btn btn-primary btn-full" id="download-btn" disabled onclick="startDownload()">
         ↓ Export XML
       </button>
@@ -3115,18 +3127,38 @@ function updateUndoBtn() {
 // ═══════════════════════════════════════════════════
 //  Pre-export constraint report
 // ═══════════════════════════════════════════════════
+/**
+ * Which P6 release the export targets. P6 opens files written for its own
+ * schema version or an older one and silently refuses anything newer — the
+ * import simply does nothing — so this has to match the P6 doing the import.
+ * Remembered between sessions since a user's P6 rarely changes.
+ */
+function p6Version(){
+  try { return localStorage.getItem('p6Version') || '19.12'; }
+  catch(_) { return '19.12'; }
+}
+function setP6Version(v){
+  try { localStorage.setItem('p6Version', v); } catch(_) {}
+  const s = document.getElementById('p6-version');
+  if (s) s.value = v;
+  flashSched(`Exports will target P6 ${v}`);
+}
+function downloadUrl(){
+  return '/api/download?p6_version=' + encodeURIComponent(p6Version());
+}
+
 async function startDownload() {
   try {
     const report = await fetch('/api/report').then(r => r.json());
-    if (report.error) { window.location.href = '/api/download'; return; }
+    if (report.error) { window.location.href = downloadUrl(); return; }
     const issues = report.hard_constraints.length + report.open_start.length + report.open_finish.length;
     if (issues === 0 && report.soft_constraints.length === 0) {
-      window.location.href = '/api/download';
+      window.location.href = downloadUrl();
       return;
     }
     populateReport(report);
     openModal('report-modal');
-  } catch(e) { window.location.href = '/api/download'; }
+  } catch(e) { window.location.href = downloadUrl(); }
 }
 
 function populateReport(r) {
@@ -3176,7 +3208,7 @@ function renderReportList(prefix, items, rowFn) {
   document.getElementById(prefix + '-section').style.display = items.length > 0 ? 'block' : 'none';
 }
 
-function proceedDownload() { closeModal('report-modal'); window.location.href = '/api/download'; }
+function proceedDownload() { closeModal('report-modal'); window.location.href = downloadUrl(); }
 
 // ═══════════════════════════════════════════════════
 //  Project loaded
@@ -5985,6 +6017,11 @@ async function executeReplaceBranch() {
 }
 
 // Attach the delegated dbl-click handler once
+(function initP6Version(){
+  const s = document.getElementById('p6-version');
+  if(s) s.value = p6Version();          // restore the remembered target release
+})();
+
 (function initDirectEdit(){
   const tb = document.getElementById('sched-tbody');
   if(tb){

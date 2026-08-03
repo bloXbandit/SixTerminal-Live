@@ -1383,10 +1383,13 @@ def download():
     project     = sess["project"]
     stem        = Path(sess.get("source_name", "schedule")).stem
     output_name = f"{stem}_edited.xml"
+    # Which P6 release the file is for. P6 refuses a file built for a newer
+    # schema than its own, with no error, so the caller picks the version.
+    p6_version = request.args.get("p6_version")
     tmp = tempfile.NamedTemporaryFile(suffix=".xml", delete=False)
     tmp.close()
     try:
-        write_p6_xml(project, tmp.name)
+        write_p6_xml(project, tmp.name, p6_version=p6_version)
         return send_file(tmp.name, as_attachment=True, download_name=output_name, mimetype="application/xml")
     except Exception as e:
         return jsonify({"error": f"Export failed: {str(e)}"}), 500
