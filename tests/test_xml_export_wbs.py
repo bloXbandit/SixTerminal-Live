@@ -2,11 +2,12 @@
 test_xml_export_wbs.py — The exported XML must describe a WBS tree P6 can
 actually attach to the project.
 
-P6 puts the project's root WBS behind Project/WBSObjectId and a native export
-never emits it as a <WBS> block. Top-level folders therefore have to name that
-hidden root as their parent. Emitting xsi:nil instead left every root folder
-unattached, so P6 imported folders missing or out of order and discarded every
-activity underneath them — a file that looked complete but loaded empty.
+Project/WBSObjectId names the project's root WBS, and P6 exports that node as
+a <WBS> element like any other. The writer referenced it but never defined it,
+so every folder was a child of an ObjectId appearing nowhere in the file: the
+P6 XML importer hit an unresolvable parent and refused the project outright,
+while a more forgiving reader created the folders and dropped every activity
+beneath them.
 """
 
 import os
@@ -65,15 +66,37 @@ def _nested_fixture(c):
          "name": "Pull wire", "duration_days": 3}], "label": "a"})
 
 
+def test_the_project_root_wbs_is_defined_not_just_referenced():
+    """Project/WBSObjectId must resolve to a real <WBS> element in the file.
+    A dangling root is what made P6 reject the import outright."""
+    c = _client()
+    _nested_fixture(c)
+    xml = _export(c)
+    proj = re.search(r"  <Project>(.*?)\n  </Project>", xml, re.S).group(1)
+    declared = re.search(r"<WBSObjectId>(\d+)</WBSObjectId>", proj).group(1)
+    blocks = _wbs_blocks(xml)
+    assert declared in blocks, (
+        f"Project declares root WBS {declared} but no <WBS> element defines it")
+    assert declared == _PROJECT_WBS_OID
+    # the root itself is the only node without a parent
+    root_block = re.search(r"<WBS>((?:(?!</WBS>).)*?<ObjectId>%s</ObjectId>.*?)</WBS>"
+                           % declared, xml, re.S)
+    assert root_block and "ParentObjectId xsi:nil" in root_block.group(1), \
+        "the project root WBS must have a nil parent"
+
+
 def test_top_level_folders_attach_to_the_project_root():
     c = _client()
     _nested_fixture(c)
     blocks = _wbs_blocks(_export(c))
     assert blocks, "export produced no WBS blocks"
     for oid, (name, parent, _seq) in blocks.items():
+        if oid == _PROJECT_WBS_OID:
+            assert parent is None, "the project root WBS is the only node with no parent"
+            continue
         assert parent, f"{name} has no ParentObjectId"
-        assert parent == _PROJECT_WBS_OID or parent in blocks, \
-            f"{name} points at {parent}, which is neither the project root nor an exported folder"
+        assert parent in blocks, \
+            f"{name} points at {parent}, which is not a WBS element in this file"
 
 
 def test_no_wbs_is_left_unattached():
@@ -84,7 +107,8 @@ def test_no_wbs_is_left_unattached():
     blocks = _wbs_blocks(_export(c))
     for oid in blocks:
         seen, cur, hops = set(), oid, 0
-        while cur in blocks and hops < 50:
+        while cur is not None and cur != _PROJECT_WBS_OID and hops < 50:
+            assert cur in blocks, f"{blocks[oid][0]} hangs off undefined WBS {cur}"
             assert cur not in seen, "cycle in the exported WBS tree"
             seen.add(cur)
             cur = blocks[cur][1]

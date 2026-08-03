@@ -917,6 +917,24 @@ def _section_project_calendars(proj_el: ET.Element, proj_uid: str, project=None)
 
 # ── WBS block ─────────────────────────────────────────────────────────────────
 
+_ROOT_WBS_KEY = "__project_root_wbs__"
+
+
+def _root_wbs_node(project: Project) -> WBSNode:
+    """
+    The project's own root WBS, as P6 models it: one node named after the
+    project that owns every top-level folder. Built here rather than stored on
+    the project so the app's tree stays free of a folder the user never made.
+    """
+    name = (getattr(project, "name", None) or getattr(project, "id", None)
+            or "Project").strip()
+    code = (getattr(project, "id", None) or name).strip()[:60] or "PROJ"
+    node = WBSNode(uid=_ROOT_WBS_KEY, name=name, code=code,
+                   parent_uid=None, sequence_num=0)
+    setattr(node, "_export_seq", 0)
+    return node
+
+
 def _display_seq(wbs: WBSNode) -> int:
     """
     Position of this folder among its siblings, as the app displays it.
@@ -971,7 +989,9 @@ def _write_wbs(
     # order, and every activity underneath them is discarded with them. That
     # is the "imports with no activities" failure.
     parent_key = _key(getattr(wbs, "parent_uid", None))
-    if parent_key and parent_key in wbs_oid_map:
+    if _key(wbs.uid) == _ROOT_WBS_KEY:
+        _nil(w, "ParentObjectId")              # the root itself has no parent
+    elif parent_key and parent_key in wbs_oid_map:
         _sub(w, "ParentObjectId", wbs_oid_map[parent_key])
     else:
         _sub(w, "ParentObjectId", _PROJECT_WBS_OID)
@@ -1489,6 +1509,15 @@ def _write_p6_xml_impl(project: Project, output_path: str) -> str:
 
     # Always write all three project calendars from the clean XML pattern.
     _section_project_calendars(proj_el, proj_uid, project)
+
+    # The project's root WBS. Project/WBSObjectId names it and every top-level
+    # folder is its child, so it has to exist as a <WBS> element — a native
+    # export includes it. Emitting only the folders left the whole tree hanging
+    # off an ObjectId that appeared nowhere in the file: P6's XML import found
+    # an unresolvable parent, refused the project outright, and a more lenient
+    # reader created the folders but dropped every activity under them.
+    _write_wbs(proj_el, _root_wbs_node(project), proj_uid,
+               {_ROOT_WBS_KEY: _PROJECT_WBS_OID})
 
     for wbs in sorted_wbs:
         _write_wbs(proj_el, wbs, proj_uid, wbs_oid_map)
