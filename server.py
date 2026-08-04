@@ -38,6 +38,8 @@ from engine.importer import extract as import_extract, build_project_from_contra
 from engine.compare import (compare_projects, copy_wbs_branch,
                             replace_wbs_branch, apply_activity_changes)
 from engine import cloud_store
+from engine.logic_advisor import (milestone_report, milestone_drivers,
+                                  commissioning_ladder, to_commands, find_wbs)
 
 TEMPLATE_DIR = str(ROOT / "ui" / "templates")
 STATIC_DIR   = str(ROOT / "ui" / "static")
@@ -1285,7 +1287,18 @@ def direct_edit():
     label = (data.get("label") or "Direct edit").strip()
     if not commands or not isinstance(commands, list):
         return jsonify({"error": "commands (a non-empty list) is required"}), 400
+    return _apply_direct(commands, label)
 
+
+def _apply_direct(commands, label):
+    """
+    Run edit commands through the engine, undo stack and CPM recompute.
+
+    Shared by /api/direct and any other route that produces commands (the logic
+    advisor), so accepted recommendations are undoable and recorded in
+    edit_history exactly like a hand edit.
+    """
+    sess = _get_session()
     project = sess["project"]
     # Actions that change which rows exist, their identity, or their order.
     # For these the client does a full grid reload; everything else is a
@@ -1341,6 +1354,47 @@ def direct_edit():
         })
     except Exception as e:
         return jsonify({"error": f"Direct edit failed: {str(e)}", "trace": traceback.format_exc()}), 500
+
+
+@app.route("/api/advise/milestones", methods=["GET"])
+def advise_milestones():
+    """
+    What should drive each milestone, judged against the dates already set.
+
+    Read-only on purpose: it returns recommendations with a verdict for each,
+    and the client turns the ones the user accepts into edit commands. A wrong
+    relationship costs more than a missing one, so nothing is applied here.
+    """
+    sess = _get_session()
+    if sess is None or sess["project"] is None:
+        return jsonify({"error": "No schedule loaded"}), 400
+    try:
+        limit = max(1, min(10, int(request.args.get("limit", 3))))
+    except (TypeError, ValueError):
+        limit = 3
+    try:
+        return jsonify(milestone_report(sess["project"], limit_per_milestone=limit))
+    except Exception as e:
+        return jsonify({"error": f"Logic advice failed: {e}",
+                        "trace": traceback.format_exc()}), 500
+
+
+@app.route("/api/advise/apply", methods=["POST"])
+def advise_apply():
+    """Apply the recommendations the user accepted, as ordinary edit commands."""
+    sess = _get_session()
+    if sess is None or sess["project"] is None:
+        return jsonify({"error": "No schedule loaded"}), 400
+    data = request.get_json() or {}
+    recs = data.get("recommendations")
+    if not recs or not isinstance(recs, list):
+        return jsonify({"error": "recommendations (a non-empty list) is required"}), 400
+    cmds = to_commands(recs,
+                       include_conflicts=bool(data.get("include_conflicts")),
+                       drop_constraints=data.get("drop_constraints", True))
+    if not cmds:
+        return jsonify({"error": "Nothing to apply — every recommendation was a conflict"}), 400
+    return _apply_direct(cmds, data.get("label") or f"Apply {len(recs)} logic recommendation(s)")
 
 
 @app.route("/api/report", methods=["GET"])

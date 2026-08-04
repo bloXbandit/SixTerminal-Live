@@ -786,7 +786,7 @@ def compute_dates(project: "Project", hold_unlinked_dates: bool = True) -> None:
                 if "Start to Start" in rel_type:
                     cand = _add_wd(pes, lag_d, wd, hol)
                 elif "Finish to Finish" in rel_type:
-                    cand = _add_wd(_add_wd(pef, lag_d), -dur_d, wd, hol)
+                    cand = _add_wd(_add_wd(pef, lag_d, wd, hol), -dur_d, wd, hol)
                 elif "Start to Finish" in rel_type:
                     cand = _add_wd(pes, lag_d - dur_d, wd, hol)
                 else:  # Finish to Start (default)
@@ -804,9 +804,12 @@ def compute_dates(project: "Project", hold_unlinked_dates: bool = True) -> None:
             if ct in ("must start on", "start on", "mandatory start") and cd:
                 es_date = _snap(cd, wd, hol)
             elif ct == "start on or after" and cd and cd > es_date:
+                # SNET — an early constraint: work cannot begin before this
                 es_date = _snap(cd, wd, hol)
-            elif ct == "start on or before" and cd and cd < es_date:
-                es_date = _snap(cd, wd, hol)
+            # "Start On Or Before" (SNLT) is a DEADLINE, not a pull. It limits
+            # the late start in the backward pass so missing it surfaces as
+            # negative float; forcing the early date here would silently
+            # reschedule the work instead of reporting that it is late.
 
         ef_date = _add_wd(es_date, dur_d, wd, hol) if dur_d > 0 else es_date
 
@@ -819,10 +822,11 @@ def compute_dates(project: "Project", hold_unlinked_dates: bool = True) -> None:
             ef_date = _snap(cd, wd, hol)
             if not anchored:
                 es_date = _add_wd(ef_date, -dur_d, wd, hol) if dur_d > 0 else ef_date
-        elif ct == "finish on or before" and cd and cd < ef_date:
-            ef_date = _snap(cd, wd, hol)
         elif ct == "finish on or after" and cd and cd > ef_date:
+            # FNET — an early constraint: cannot finish before this date
             ef_date = _snap(cd, wd, hol)
+        # "Finish On Or Before" (FNLT) is a deadline — handled in the backward
+        # pass for the same reason as Start On Or Before.
 
         es[uid] = es_date
         ef[uid] = ef_date
@@ -860,15 +864,29 @@ def compute_dates(project: "Project", hold_unlinked_dates: bool = True) -> None:
             sls = ls.get(s_uid, project_lf)
             slf = lf.get(s_uid, project_lf)
             if "Start to Start" in rel_type:
-                cand = _add_wd(_add_wd(sls, -lag_d), dur_d, wd, hol)
+                cand = _add_wd(_add_wd(sls, -lag_d, wd, hol), dur_d, wd, hol)
             elif "Finish to Finish" in rel_type:
                 cand = _add_wd(slf, -lag_d, wd, hol)
             elif "Start to Finish" in rel_type:
-                cand = _add_wd(_add_wd(slf, -lag_d), dur_d, wd, hol)
+                cand = _add_wd(_add_wd(slf, -lag_d, wd, hol), dur_d, wd, hol)
             else:  # Finish to Start
                 cand = _add_wd(sls, -lag_d, wd, hol)
             if cand < lf_date:
                 lf_date = cand
+
+        # Deadlines cap the late dates. This is what makes a contractual date
+        # meaningful without pinning the work: the activity keeps its computed
+        # early dates, and any slip past the deadline shows as negative float.
+        ct = (act.constraint_type or "").strip().lower()
+        cd = _parse(act.constraint_date)
+        if cd:
+            if ct in ("finish on or before", "must finish on", "finish on"):
+                if cd < lf_date:
+                    lf_date = cd
+            elif ct in ("start on or before", "must start on", "start on"):
+                start_cap = _add_wd(cd, dur_d, wd, hol) if dur_d > 0 else cd
+                if start_cap < lf_date:
+                    lf_date = start_cap
 
         ls_date = _add_wd(lf_date, -dur_d, wd, hol) if dur_d > 0 else lf_date
         ls[uid] = ls_date

@@ -76,23 +76,29 @@ def test_clearing_a_constraint_returns_the_activity_to_the_logic():
     assert _act(p, "A1010").planned_start == natural
 
 
-def test_start_on_or_before_pulls_an_earlier_date_but_not_a_later_one():
-    """'Start On Or Before' is a soft cap: it pulls the start back if the
-    natural CPM date is later than the constraint, but a constraint date that
-    is already later than the natural date changes nothing."""
+def test_start_on_or_before_is_a_deadline_not_a_pull():
+    """'Start On Or Before' (SNLT) is a LATE constraint. It must never drag the
+    early start backwards — that would silently reschedule the work. It caps
+    the late start instead, so missing it surfaces as negative float, which is
+    the whole reason a scheduler sets a deadline."""
     p = _chain()
     natural = _act(p, "A1010").planned_start
     apply_command(p, {"action": "set_constraint", "activity_id": "A1010",
                       "constraint_type": "Start On Or Before",
-                      "constraint_date": "2026-06-01"})   # later than natural
+                      "constraint_date": "2026-06-01"})   # comfortably met
     compute_dates(p)
-    assert _act(p, "A1010").planned_start == natural
+    a = _act(p, "A1010")
+    assert a.planned_start == natural
+    assert a.total_float is None or a.total_float >= 0
 
     apply_command(p, {"action": "set_constraint", "activity_id": "A1010",
                       "constraint_type": "Start On Or Before",
-                      "constraint_date": "2026-01-05"})   # earlier than natural
+                      "constraint_date": "2026-01-05"})   # cannot be met
     compute_dates(p)
-    assert _act(p, "A1010").planned_start == "2026-01-05"
+    a = _act(p, "A1010")
+    assert a.planned_start == natural, "a deadline must not move the work earlier"
+    assert a.total_float is not None and a.total_float < 0, \
+        "missing the deadline must show as negative float"
 
 
 def test_finish_on_or_after_pushes_a_later_date_but_not_an_earlier_one():

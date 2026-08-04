@@ -19,6 +19,7 @@ Supported commands:
   move_activity_wbs         — Move an activity to a different WBS node
   reorder_wbs               — Move a WBS folder up/down among its siblings
   delete_wbs                — Delete a folder (contents move up, or go with it)
+  recommend_logic           — Report what logic is missing (advisory; changes nothing)
   bulk_rename               — Rename multiple activities matching a regex pattern
   bulk_update_duration      — Change duration for all activities matching a pattern
   set_constraint            — Set a date constraint on an activity
@@ -192,6 +193,8 @@ def apply_command(project: Project, command: Dict[str, Any]) -> Tuple[bool, str]
             return _reorder_wbs(project, command)
         elif action == "delete_wbs":
             return _delete_wbs(project, command)
+        elif action == "recommend_logic":
+            return _recommend_logic(project, command)
         elif action == "duplicate_wbs":
             return _duplicate_wbs(project, command)
         elif action == "copy_activities":
@@ -632,6 +635,37 @@ def _add_wbs(project: Project, cmd: Dict) -> Tuple[bool, str]:
     project.wbs_nodes.append(new_wbs)
     project.build_lookups()
     return True, f"Added WBS node '{code} — {name}'" + (f" under '{parent.name}'" if parent else " at root")
+
+
+def _recommend_logic(project: Project, cmd: Dict) -> Tuple[bool, str]:
+    """
+    Report the logic a schedule is missing, checked against the dates it has.
+
+    Advisory only — it changes nothing. Recommending a tie and applying it are
+    deliberately separate steps, because a wrong relationship is more expensive
+    to unpick than a missing one.
+    """
+    from engine.logic_advisor import milestone_report, CONFIRMS, CONFLICT
+
+    rep = milestone_report(project, limit_per_milestone=int(cmd.get("limit") or 3))
+    s = rep["summary"]
+    lines = [
+        f"{rep['unanchored_count']} of {rep['milestone_count']} milestones have nothing driving them.",
+        f"Candidate ties: {s[CONFIRMS]} reproduce the dates already set "
+        f"(their Start On constraints can be dropped), {s['slack']} are valid with float, "
+        f"{s[CONFLICT]} contradict the dates as scheduled.",
+    ]
+    for item in rep["milestones"]:
+        if item["has_predecessor"] or not item["drivers"]:
+            continue
+        d = item["drivers"][0]
+        lines.append(
+            f"  {item['name']} ({item['date']}) <- {d['predecessor_name']} "
+            f"[{d['verdict']}, implied lag {d['implied_lag_days']}d]")
+        if len(lines) > 40:
+            lines.append("  …")
+            break
+    return True, "\n".join(lines)
 
 
 def _delete_wbs(project: Project, cmd: Dict) -> Tuple[bool, str]:
