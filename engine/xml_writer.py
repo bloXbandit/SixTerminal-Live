@@ -627,6 +627,33 @@ def _build_oid_map(items: list, attr: str, start: int) -> Dict[str, str]:
     return mapping
 
 
+def _pct_text(percent_0_100) -> str:
+    """
+    Percent complete as P6 XML carries it: a FRACTION, where 1.0 means 100%.
+
+    P6 shows 0-100 in its own columns, but the XML importer wants 0-1 and
+    rejects anything above it outright:
+        "Unable to invoke setPhysicalPercentComplete ... Percent value 100.0
+         is out of range. The maximum allowed value is 1.0"
+    That is a SEVERE exception, not a warning — it aborts the activity import
+    for the whole file, so the project arrives with its WBS and no activities.
+    """
+    try:
+        v = float(percent_0_100 or 0)
+    except (TypeError, ValueError):
+        v = 0.0
+    v = max(0.0, min(100.0, v)) / 100.0
+    return f"{v:.6f}".rstrip("0").rstrip(".") or "0"
+
+
+def _project_uses_6day(project) -> bool:
+    """Whether the 6-day project calendar will actually be written."""
+    for cal in (getattr(project, "calendars", None) or []):
+        if _cal_is_6day(cal):
+            return True
+    return False
+
+
 def _calendar_target_from_name(name: str) -> str:
     lname = (name or "").lower()
     if "6" in lname or "six" in lname:
@@ -639,10 +666,23 @@ def _calendar_target_from_name(name: str) -> str:
 
 
 def _build_calendar_oid_map(project: Project) -> Dict[str, str]:
-    """Map app/XER calendar ids to the fixed project calendar ids written below."""
+    """
+    Map app/XER calendar ids to the fixed project calendar ids written below.
+
+    Only calendars this export actually emits may be referenced. The 6-day
+    calendar is written on demand, while the name match that selects it fires
+    on any name merely containing a "6" — so an activity could point at a
+    calendar that was never written, and P6 logs
+    "Referenced business object Calendar ... cannot be found, ignoring field
+    CalendarObjectId", leaving the activity with no calendar at all.
+    """
+    six = _project_uses_6day(project)
     mapping: Dict[str, str] = {}
     for cal in getattr(project, "calendars", []) or []:
-        mapping[_key(getattr(cal, "uid", None))] = _calendar_target_from_name(getattr(cal, "name", ""))
+        target = _calendar_target_from_name(getattr(cal, "name", ""))
+        if target == _PCAL_6_HOL and not six:
+            target = _DEFAULT_PROJECT_CALENDAR_OID
+        mapping[_key(getattr(cal, "uid", None))] = target
     # Common parser default seen in failed output.
     mapping.setdefault("178", _PCAL_5_NOHOL)
     mapping.setdefault("1", _DEFAULT_PROJECT_CALENDAR_OID)
@@ -784,11 +824,10 @@ def _section_global_calendars(root: ET.Element, project=None):
     M_S = ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday")
 
     hol = frozenset()
-    six = False
+    six = _project_uses_6day(project)
     if project is not None:
         for cal in (getattr(project, "calendars", None) or []):
             hol |= _cal_holidays(cal)
-            six = six or _cal_is_6day(cal)
 
     _global_calendar(root, _GCAL_5_NOHOL, "G5-DAY NO HOLIDAY", M_F)
     _global_calendar(root, _GCAL_7_NOHOL, "G7-DAY NO HOLIDAY", ALL)
@@ -1051,6 +1090,7 @@ def _write_activity(
     is_inprogress = status.lower() in ("in progress", "inprogress")
 
     pct = 100 if is_complete else int(float(act.percent_complete or 0))
+    pct_frac = _pct_text(pct)
     rem = 0 if is_complete else int(float(act.remaining_duration or act.planned_duration or 0))
 
     a = _sub(proj_el, "Activity")
@@ -1111,9 +1151,9 @@ def _write_activity(
     _sub(a, "NonLaborUnitsPercentComplete", "0")
     _sub(a, "NotesToResources", "")
     _sub(a, "ObjectId",                activity_oid_map[_key(act.uid)])
-    _sub(a, "PercentComplete",         str(pct))
+    _sub(a, "PercentComplete",         pct_frac)
     _sub(a, "PercentCompleteType",     "Physical")
-    _sub(a, "PhysicalPercentComplete", str(pct))
+    _sub(a, "PhysicalPercentComplete", pct_frac)
     _sub(a, "PlannedDuration",         _as_int_text(act.planned_duration, 0))
 
     if act.planned_finish:
