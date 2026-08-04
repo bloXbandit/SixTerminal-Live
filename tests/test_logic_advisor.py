@@ -279,3 +279,139 @@ def test_recommend_logic_action_is_advisory_only():
     after = ([(a.activity_id, a.planned_start) for a in p.activities],
              len(p.relations))
     assert after == before, "recommend_logic must not change the schedule"
+
+
+# ── Area navigation and scoped recommendations ───────────────────────────────
+
+def _multi_phase():
+    """The same room name under two phases, which is how real projects read."""
+    from engine.logic_advisor import find_wbs
+    p = _project()
+    p.wbs_nodes += [
+        WBSNode(uid="p2", name="Phase 2 (Build-Out)", code="P2"),
+        WBSNode(uid="p1r", name="MV Rooms", code="P1MV", parent_uid="p1"),
+        WBSNode(uid="p2r", name="MV Rooms", code="P2MV", parent_uid="p2"),
+    ]
+    p.activities += [
+        Activity(uid="x1", activity_id="X1000", name="P1 gear work", wbs_uid="p1r",
+                 calendar_uid="1", planned_duration=40.0,
+                 planned_start="2026-03-02", planned_finish="2026-03-09"),
+        Activity(uid="x2", activity_id="X2000", name="P2 gear work", wbs_uid="p2r",
+                 calendar_uid="1", planned_duration=40.0,
+                 planned_start="2026-04-06", planned_finish="2026-04-13"),
+    ]
+    p.build_lookups()
+    return p
+
+
+def test_a_phase_qualifier_picks_the_right_repeated_folder():
+    """'MV Rooms' exists under several phases. Without honouring the phase
+    qualifier the lookup returns whichever comes first, which is how an agent
+    ends up reasoning about the wrong area entirely."""
+    from engine.logic_advisor import find_wbs, wbs_node_path
+    p = _multi_phase()
+    assert "Phase 1" in wbs_node_path(p, find_wbs(p, "Phase 1 MV Rooms"))
+    assert "Phase 2" in wbs_node_path(p, find_wbs(p, "Phase 2 MV Rooms"))
+
+
+def test_area_digest_scopes_to_the_named_branch_only():
+    from engine.logic_advisor import area_digest
+    p = _multi_phase()
+    d = area_digest(p, "Phase 1 MV Rooms")
+    assert d["activity_count"] == 1
+    assert [a["activity_id"] for a in d["activities"]] == ["X1000"]
+
+
+def test_an_unknown_area_suggests_alternatives_instead_of_failing_blindly():
+    from engine.logic_advisor import area_digest
+    p = _multi_phase()
+    d = area_digest(p, "Chiller Plant")
+    assert "error" in d and "did_you_mean" in d
+
+
+def test_sequence_recommendations_chain_a_room_in_date_order():
+    from engine.logic_advisor import sequence_recommendations
+    p = _project()
+    recs = sequence_recommendations(p, "Phase 1 (Build-Out)")
+    pairs = [(r["predecessor_id"], r["successor_id"]) for r in recs]
+    assert ("A1000", "A1010") in pairs
+    assert ("A1010", "A1020") in pairs
+    # and never backwards
+    assert ("A1010", "A1000") not in pairs
+
+
+def test_sequencing_stays_inside_one_room():
+    from engine.logic_advisor import sequence_recommendations
+    p = _multi_phase()
+    recs = sequence_recommendations(p, "Phase 1 (Build-Out)")
+    for r in recs:
+        assert r["successor_id"] != "X2000", "sequenced across phases"
+
+
+# ── Procurement coupling ─────────────────────────────────────────────────────
+
+def _with_procurement(install_start, delivery_finish="2026-06-01"):
+    p = _project()
+    p.wbs_nodes.append(WBSNode(uid="lle", name="LLE", code="LLE", parent_uid="p1"))
+    p.activities += [
+        Activity(uid="g1", activity_id="L1000", name="Generators (4MW)",
+                 wbs_uid="lle", calendar_uid="1", planned_duration=800.0,
+                 planned_start="2026-01-05", planned_finish=delivery_finish),
+        Activity(uid="g2", activity_id="S1000", name="Set Generator (Gen 318)",
+                 wbs_uid="p1", calendar_uid="1", planned_duration=8.0,
+                 planned_start=install_start, planned_finish=install_start),
+    ]
+    p.build_lookups()
+    return p
+
+
+def test_equipment_installed_before_delivery_is_flagged():
+    from engine.logic_advisor import procurement_report
+    p = _with_procurement(install_start="2026-02-02")     # months before delivery
+    rep = procurement_report(p)
+    assert rep["installed_before_delivery"] == 1
+    item = rep["items"][0]
+    assert item["installed_before_delivery"] is True
+    assert "before" in item["note"].lower()
+
+
+def test_equipment_installed_after_delivery_is_not_flagged():
+    from engine.logic_advisor import procurement_report
+    p = _with_procurement(install_start="2026-06-15")      # after it arrives
+    rep = procurement_report(p)
+    assert rep["installed_before_delivery"] == 0
+
+
+def test_foundations_before_delivery_are_not_treated_as_an_error():
+    """Setting a base or pad ahead of the equipment is correct practice, not a
+    finding — flagging it would bury the real conflicts in noise."""
+    from engine.logic_advisor import procurement_report
+    p = _with_procurement(install_start="2026-02-02")
+    p.get_activity(activity_id="S1000").name = "Install Generator Pad (Gen 318)"
+    p.build_lookups()
+    rep = procurement_report(p)
+    assert rep["installed_before_delivery"] == 0
+
+
+def test_area_report_is_advisory_and_changes_nothing():
+    from engine.logic_advisor import area_report
+    p = _project()
+    before = ([(a.activity_id, a.planned_start) for a in p.activities], len(p.relations))
+    rep = area_report(p, "Phase 1 (Build-Out)")
+    assert "summary" in rep
+    after = ([(a.activity_id, a.planned_start) for a in p.activities], len(p.relations))
+    assert after == before
+
+
+def test_recommend_logic_accepts_an_area_scope():
+    p = _project()
+    ok, msg = apply_command(p, {"action": "recommend_logic", "scope": "wbs",
+                                "wbs_name": "Phase 1 (Build-Out)"})
+    assert ok and "Logic gaps" in msg
+
+
+def test_recommend_logic_reports_an_unknown_area():
+    p = _project()
+    ok, msg = apply_command(p, {"action": "recommend_logic", "scope": "wbs",
+                                "wbs_name": "Nonexistent Area"})
+    assert not ok and "No folder" in msg

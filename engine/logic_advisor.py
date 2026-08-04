@@ -155,17 +155,52 @@ def _descendants(project: Project, root_uid: str) -> set:
 
 
 def find_wbs(project: Project, needle: str) -> Optional[WBSNode]:
-    """Best-effort folder lookup by name or code, preferring an exact match."""
+    """
+    Folder lookup that understands a qualified name.
+
+    Folder names repeat across phases — "MV Rooms" exists under Phase 1, 2 and
+    3 — so a plain substring match returns whichever comes first, which is
+    rarely the one meant. Matching every word of the request against the full
+    folder PATH lets "Phase 1 MV Rooms" resolve to the right branch, while a
+    bare "MV Rooms" still works when it is unambiguous.
+    """
     if not needle:
         return None
     low = needle.strip().lower()
     for w in project.wbs_nodes:
         if (w.name or "").lower() == low or (w.code or "").lower() == low:
             return w
+
+    # A phase qualifier is a hard filter, not a hint. Bare digits are dropped
+    # from the word match because the project code itself ("25-1539-INT-1")
+    # contains them, which otherwise makes every phase look like a match.
+    want_phase = phase_number(needle)
+    words = [t for t in re.split(r"[^a-z0-9]+", low) if t and not t.isdigit()]
+    words = [t for t in words if t not in ("phase", "ph")]
+    if not words and want_phase is None:
+        return None
+
+    best, best_score = None, 0
     for w in project.wbs_nodes:
-        if low in (w.name or "").lower():
-            return w
-    return None
+        path = wbs_node_path(project, w).lower()
+        if want_phase is not None:
+            pn = phase_number(path)
+            if pn != want_phase:
+                continue
+            if not words:                      # "Phase 2" on its own
+                if phase_number(w.name or "") == want_phase:
+                    return w
+                continue
+        hits = sum(1 for t in words if t in path)
+        if hits == 0:
+            continue
+        # every word matched beats a partial match; among equals prefer the
+        # folder whose own name carries the most of the request
+        own = sum(1 for t in words if t in (w.name or "").lower())
+        score = (hits * 100) + (own * 10) - min(len(path) // 20, 5)
+        if score > best_score:
+            best, best_score = w, score
+    return best
 
 
 def activities_in(project: Project, root_uid: str) -> List[Activity]:
@@ -451,3 +486,238 @@ def to_commands(recs: List[Dict[str, Any]], include_conflicts: bool = False,
                          "constraint_type": d["constraint_type"],
                          "constraint_date": d["constraint_date"]})
     return cmds
+
+
+# ── Area navigation ──────────────────────────────────────────────────────────
+
+def area_digest(project: Project, needle: str, sample: int = 8) -> Dict[str, Any]:
+    """
+    A compact picture of one branch, for answering "what's in Phase 2 MV Rooms?"
+    without loading the whole schedule.
+
+    The full context for a large project runs to tens of thousands of tokens,
+    which forces shallow reasoning over everything instead of real reasoning
+    over the part that was asked about. This returns only the named branch.
+    """
+    node = find_wbs(project, needle)
+    if node is None:
+        near = [w.name for w in project.wbs_nodes
+                if needle.lower().split()[0] in (w.name or "").lower()][:8]
+        return {"error": f"No folder matching '{needle}'", "did_you_mean": near}
+
+    acts = activities_in(project, node.uid)
+    has_pred, has_succ = _open_ended(project)
+    kids = [w for w in project.wbs_nodes if w.parent_uid == node.uid]
+    kids.sort(key=lambda w: (w.sequence_num, w.name))
+
+    starts = sorted(str(a.planned_start)[:10] for a in acts if a.planned_start)
+    fins = sorted(str(a.planned_finish)[:10] for a in acts if a.planned_finish)
+    unlinked = [a for a in acts if a.uid not in has_pred and a.uid not in has_succ]
+
+    return {
+        "name": node.name,
+        "code": node.code,
+        "path": wbs_node_path(project, node),
+        "activity_count": len(acts),
+        "sub_folders": [
+            {"name": k.name, "code": k.code,
+             "activity_count": len(activities_in(project, k.uid))} for k in kids],
+        "date_range": {"earliest_start": starts[0] if starts else None,
+                       "latest_finish": fins[-1] if fins else None},
+        "logic": {
+            "fully_unlinked": len(unlinked),
+            "missing_predecessor": sum(1 for a in acts if a.uid not in has_pred),
+            "missing_successor": sum(1 for a in acts if a.uid not in has_succ),
+        },
+        "constrained": sum(1 for a in acts if a.constraint_type),
+        "activities": [
+            {"activity_id": a.activity_id, "name": a.name,
+             "start": str(a.planned_start or "")[:10],
+             "finish": str(a.planned_finish or "")[:10],
+             "duration_days": round((a.planned_duration or 0) / 8.0, 1),
+             "status": a.status,
+             "linked": a.uid in has_pred or a.uid in has_succ,
+             "constraint": a.constraint_type or None}
+            for a in sorted(acts, key=lambda x: str(x.planned_start or ""))[:sample]
+        ],
+        "activities_shown": min(sample, len(acts)),
+    }
+
+
+# ── Within-area trade sequencing ─────────────────────────────────────────────
+
+def sequence_recommendations(project: Project, needle: str,
+                             max_recs: int = 60) -> List[Dict[str, Any]]:
+    """
+    Chain the unlinked work inside each room/area of a branch, in date order.
+
+    Within one room the dates already encode the trade sequence the planner
+    intended — rough-in before equipment set before terminations. Turning that
+    ordering into relationships is what makes the room behave as a sequence
+    instead of a pile of separately-pinned dates. Each link is still checked
+    against the dates, so an overlap is reported rather than forced into FS.
+    """
+    node = find_wbs(project, needle)
+    if node is None:
+        return []
+    has_pred, has_succ = _open_ended(project)
+
+    # group by the LOWEST folder each activity sits in — that is the room
+    rooms: Dict[str, List[Activity]] = {}
+    for a in activities_in(project, node.uid):
+        rooms.setdefault(a.wbs_uid, []).append(a)
+
+    out: List[Dict[str, Any]] = []
+    for wbs_uid, acts in rooms.items():
+        dated = [a for a in acts if a.planned_start and a.status != "Completed"]
+        if len(dated) < 2:
+            continue
+        dated.sort(key=lambda a: (str(a.planned_start)[:10],
+                                  str(a.planned_finish or "")[:10], a.activity_id))
+        for pred, succ in zip(dated, dated[1:]):
+            if _has_link(project, pred.uid, succ.uid):
+                continue
+            # only propose where logic is actually missing
+            if succ.uid in has_pred and pred.uid in has_succ:
+                continue
+            out.append(_rec(project, pred, succ, "Finish to Start",
+                            f"Next in the dated trade sequence within "
+                            f"{wbs_node_path(project, project.get_wbs(wbs_uid)).split(' / ')[-1]}"))
+            if len(out) >= max_recs:
+                return out
+    return out
+
+
+# ── Procurement / long-lead coupling ─────────────────────────────────────────
+# Equipment cannot be installed before it arrives. Each entry maps the words a
+# procurement line uses to the words the installation activities use.
+
+EQUIPMENT_TERMS: List[Tuple[str, Tuple[str, ...]]] = [
+    ("generator",      ("generator", "gen ")),
+    ("switchgear",     ("switchgear", "swbd", "swgr", "msg", "mvs")),
+    ("transformer",    ("transformer", "xfmr")),
+    ("chiller",        ("chiller",)),
+    ("cooling tower",  ("cooling tower",)),
+    ("dry cooler",     ("dry cooler",)),
+    ("ups",            ("ups",)),
+    ("pdu",            ("pdu",)),
+    ("rmu",            ("rmu",)),
+    ("gis",            ("gis",)),
+    ("crah",           ("crah",)),
+    ("fcw",            ("fcw", "fcu")),
+    ("busway",         ("busway", "bus duct")),
+    ("skid",           ("skid",)),
+    ("panel",          ("panelboard", "panel board")),
+]
+
+_INSTALL_VERBS = ("set ", "install", "rig", "hang", "place", "erect", "mount",
+                  "terminate", "energize", "final connection")
+
+# Foundations, bases and rough-in legitimately precede delivery — flagging them
+# as "installed before it arrived" would be noise, not a finding.
+_PRE_DELIVERY_OK = ("base", "pad", "foundation", "rough-in", "rough in", "layout",
+                    "hanger", "support", "steel", "housekeeping", "curb", "isolator")
+
+
+def _equipment_of(name: str) -> List[str]:
+    low = (name or "").lower()
+    return [key for key, words in EQUIPMENT_TERMS if any(w in low for w in words)]
+
+
+def _is_install(name: str) -> bool:
+    low = (name or "").lower()
+    return any(v in low for v in _INSTALL_VERBS)
+
+
+def procurement_report(project: Project, needle: Optional[str] = None,
+                       max_items: int = 40) -> Dict[str, Any]:
+    """
+    Match long-lead procurement to the work it feeds, and flag anything dated
+    to be installed before it can arrive.
+
+    Delivery-before-install is not a tie to force — it is a finding. When an
+    installation is dated ahead of its equipment, either the procurement dates
+    are wrong or the installation cannot happen as planned, and a scheduler
+    needs to see that rather than have a relationship quietly paper over it.
+    """
+    scope = find_wbs(project, needle) if needle else None
+    pool = activities_in(project, scope.uid) if scope else list(project.activities)
+
+    # procurement lines live under a procurement/LLE folder
+    def _is_procurement(a: Activity) -> bool:
+        p = wbs_path(project, a).lower()
+        return ("lle" in p or "procurement" in p or "long lead" in p
+                or "submittal" in p)
+
+    supplies = [a for a in project.activities
+                if _is_procurement(a) and _equipment_of(a.name)]
+    installs = [a for a in pool
+                if not _is_procurement(a) and _is_install(a.name)
+                and _equipment_of(a.name)]
+
+    items: List[Dict[str, Any]] = []
+    conflicts = 0
+    for s in supplies:
+        kinds = set(_equipment_of(s.name))
+        fed = [i for i in installs if kinds & set(_equipment_of(i.name))]
+        if not fed:
+            continue
+        fed.sort(key=lambda a: str(a.planned_start or ""))
+        first = fed[0]
+        lag = implied_lag(project, s, first)
+        verdict, why = classify(lag)
+        early = bool(lag is not None and lag < 0
+                     and not any(w in (first.name or "").lower()
+                                 for w in _PRE_DELIVERY_OK))
+        if early:
+            conflicts += 1
+        items.append({
+            "supply_id": s.activity_id,
+            "supply_name": s.name,
+            "supply_finish": str(s.planned_finish or "")[:10],
+            "equipment": sorted(kinds),
+            "installs_fed": len(fed),
+            "first_install_id": first.activity_id,
+            "first_install_name": first.name,
+            "first_install_start": str(first.planned_start or "")[:10],
+            "implied_lag_days": lag,
+            "verdict": verdict,
+            "installed_before_delivery": early,
+            "note": (
+                f"{first.name} is dated {-lag} working days before "
+                f"{s.name} is due to arrive — either the procurement dates are "
+                f"wrong or this work cannot proceed as scheduled."
+                if early else why),
+        })
+        if len(items) >= max_items:
+            break
+
+    items.sort(key=lambda i: (not i["installed_before_delivery"],
+                              i["implied_lag_days"] if i["implied_lag_days"] is not None else 0))
+    return {
+        "scope": scope.name if scope else "whole project",
+        "supply_lines": len(supplies),
+        "matched": len(items),
+        "installed_before_delivery": conflicts,
+        "items": items,
+    }
+
+
+def area_report(project: Project, needle: str) -> Dict[str, Any]:
+    """Everything the agent needs to reason about one area, in one call."""
+    digest = area_digest(project, needle)
+    if "error" in digest:
+        return digest
+    seq = sequence_recommendations(project, needle)
+    proc = procurement_report(project, needle)
+    return {
+        "area": digest,
+        "sequence_recommendations": seq,
+        "procurement": proc,
+        "summary": {
+            "sequence_ties_proposed": len(seq),
+            "confirms": sum(1 for r in seq if r["verdict"] == CONFIRMS),
+            "conflicts": sum(1 for r in seq if r["verdict"] == CONFLICT),
+            "installed_before_delivery": proc.get("installed_before_delivery", 0),
+        },
+    }

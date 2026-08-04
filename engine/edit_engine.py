@@ -645,7 +645,45 @@ def _recommend_logic(project: Project, cmd: Dict) -> Tuple[bool, str]:
     deliberately separate steps, because a wrong relationship is more expensive
     to unpick than a missing one.
     """
-    from engine.logic_advisor import milestone_report, CONFIRMS, CONFLICT
+    from engine.logic_advisor import (milestone_report, area_report,
+                                      procurement_report, CONFIRMS, CONFLICT)
+
+    scope = (cmd.get("scope") or "milestones").strip().lower()
+    name = cmd.get("wbs_name") or cmd.get("area")
+
+    if scope in ("wbs", "area") and name:
+        rep = area_report(project, name)
+        if "error" in rep:
+            raise EditError(rep["error"])
+        a, s = rep["area"], rep["summary"]
+        lines = [
+            f"{a['path']} — {a['activity_count']} activities, "
+            f"{len(a['sub_folders'])} sub-folders, "
+            f"{a['date_range']['earliest_start']} to {a['date_range']['latest_finish']}.",
+            f"Logic gaps: {a['logic']['missing_predecessor']} without a predecessor, "
+            f"{a['logic']['missing_successor']} without a successor.",
+            f"Proposed sequence ties: {s['sequence_ties_proposed']} "
+            f"({s['confirms']} reproduce the dates, {s['conflicts']} contradict them).",
+        ]
+        if s["installed_before_delivery"]:
+            lines.append(f"WARNING: {s['installed_before_delivery']} item(s) are dated to be "
+                         f"installed before the equipment is delivered.")
+        for r in rep["sequence_recommendations"][:15]:
+            lines.append(f"  {r['predecessor_name']} -> {r['successor_name']} "
+                         f"[{r['verdict']}, implied lag {r['implied_lag_days']}d]")
+        return True, "\n".join(lines)
+
+    if scope == "procurement":
+        rep = procurement_report(project, name)
+        lines = [f"Long-lead scope: {rep['scope']} — {rep['matched']} supply lines matched "
+                 f"to installation work; {rep['installed_before_delivery']} scheduled to be "
+                 f"installed BEFORE delivery."]
+        for i in rep["items"][:15]:
+            mark = "!! " if i["installed_before_delivery"] else "   "
+            lines.append(f"{mark}{i['supply_name']} (arrives {i['supply_finish']}) -> "
+                         f"{i['first_install_name']} (starts {i['first_install_start']}), "
+                         f"{i['implied_lag_days']}d")
+        return True, "\n".join(lines)
 
     rep = milestone_report(project, limit_per_milestone=int(cmd.get("limit") or 3))
     s = rep["summary"]

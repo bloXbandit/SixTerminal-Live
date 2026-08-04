@@ -430,12 +430,33 @@ bulk_update_duration:
   {"action": "bulk_update_duration", "pattern": "Install Drywall", "new_duration_days": 5}
 
 recommend_logic:
-  Ask for logic recommendations instead of guessing ties. Returns, for each
-  milestone (or a named area), what should drive it, with every candidate
-  checked against the dates already in the schedule. Use this whenever the
-  user asks to "connect", "tie", "add logic to", or "make these dates stick".
+  Ask for logic recommendations instead of guessing ties. Every candidate is
+  checked against the dates already in the schedule (see the IMPLIED LAG
+  section). Use this whenever the user asks to "connect", "tie", "add logic
+  to", "sequence", or "make these dates stick" — and use it BEFORE proposing
+  ties of your own, so your reasoning starts from the measured state.
+
+  Three scopes:
+    milestones  — what should drive each contractual milestone, plus the
+                  per-phase commissioning ladder. Start here on a schedule
+                  that has dates but little logic.
+    wbs / area  — one branch: what is in it, its logic gaps, the dated trade
+                  sequence inside each room, and the long-lead items feeding
+                  it. Name the area the way the user did; a phase qualifier
+                  is honoured, so "Phase 1 MV Rooms" resolves to that phase's
+                  MV Rooms rather than another phase's.
+    procurement — long-lead equipment matched to the work it feeds, flagging
+                  anything dated to be installed BEFORE it is delivered.
+
   {"action": "recommend_logic", "scope": "milestones"}
-  {"action": "recommend_logic", "scope": "wbs", "wbs_name": "Phase 1 (Build-Out)"}
+  {"action": "recommend_logic", "scope": "wbs", "wbs_name": "Phase 1 MV Rooms"}
+  {"action": "recommend_logic", "scope": "procurement"}
+
+  The result is advisory — it changes nothing. Report what it found, say which
+  ties you would accept and why, and let the user confirm before you add them
+  with add_relation. Never present a "conflict" verdict as something to apply:
+  it means the dates and that tie cannot both be true, which is a finding the
+  scheduler needs to decide on.
 
 reorder_wbs:
   Move a folder up or down among its siblings (display order only — the

@@ -39,7 +39,9 @@ from engine.compare import (compare_projects, copy_wbs_branch,
                             replace_wbs_branch, apply_activity_changes)
 from engine import cloud_store
 from engine.logic_advisor import (milestone_report, milestone_drivers,
-                                  commissioning_ladder, to_commands, find_wbs)
+                                  commissioning_ladder, to_commands, find_wbs,
+                                  area_digest, area_report, procurement_report,
+                                  sequence_recommendations)
 
 TEMPLATE_DIR = str(ROOT / "ui" / "templates")
 STATIC_DIR   = str(ROOT / "ui" / "static")
@@ -1376,6 +1378,45 @@ def advise_milestones():
         return jsonify(milestone_report(sess["project"], limit_per_milestone=limit))
     except Exception as e:
         return jsonify({"error": f"Logic advice failed: {e}",
+                        "trace": traceback.format_exc()}), 500
+
+
+@app.route("/api/advise/area", methods=["GET"])
+def advise_area():
+    """
+    One branch of the schedule: what is in it, what logic it is missing, and
+    which long-lead items feed it.
+
+    Scoped on purpose. The full project context runs to tens of thousands of
+    tokens, which forces shallow reasoning across everything instead of real
+    reasoning about the area that was actually asked about.
+    """
+    sess = _get_session()
+    if sess is None or sess["project"] is None:
+        return jsonify({"error": "No schedule loaded"}), 400
+    name = (request.args.get("name") or "").strip()
+    if not name:
+        return jsonify({"error": "name is required (e.g. 'Phase 1 MV Rooms')"}), 400
+    try:
+        rep = area_report(sess["project"], name)
+        return jsonify(rep), (404 if "error" in rep else 200)
+    except Exception as e:
+        return jsonify({"error": f"Area advice failed: {e}",
+                        "trace": traceback.format_exc()}), 500
+
+
+@app.route("/api/advise/procurement", methods=["GET"])
+def advise_procurement():
+    """Long-lead equipment against the work it feeds, incl. anything dated to
+    be installed before it can arrive."""
+    sess = _get_session()
+    if sess is None or sess["project"] is None:
+        return jsonify({"error": "No schedule loaded"}), 400
+    try:
+        return jsonify(procurement_report(sess["project"],
+                                          (request.args.get("name") or "").strip() or None))
+    except Exception as e:
+        return jsonify({"error": f"Procurement advice failed: {e}",
                         "trace": traceback.format_exc()}), 500
 
 
