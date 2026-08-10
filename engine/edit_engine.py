@@ -491,9 +491,11 @@ def _update_activity_id(project: Project, cmd: Dict) -> Tuple[bool, str]:
 
 
 def _add_activity(project: Project, cmd: Dict) -> Tuple[bool, str]:
-    wbs = _find_wbs(project, cmd.get("wbs_code"), cmd.get("wbs_name"))
+    wbs = _find_wbs(project, cmd.get("wbs_code"), cmd.get("wbs_name"),
+                    cmd.get("wbs_uid"))
     if not wbs:
-        raise EditError(f"WBS node not found: {cmd.get('wbs_code') or cmd.get('wbs_name')}")
+        raise EditError(f"WBS node not found: "
+                        f"{cmd.get('wbs_uid') or cmd.get('wbs_code') or cmd.get('wbs_name')}")
     act_id = cmd.get("activity_id", "").strip()
     if not act_id:
         # Auto-assign the next available ID (quick-add / paste from the grid)
@@ -617,16 +619,24 @@ def _add_wbs(project: Project, cmd: Dict) -> Tuple[bool, str]:
     if not name:
         raise EditError("name is required for add_wbs")
     parent = None
-    if cmd.get("parent_code") or cmd.get("parent_name"):
-        parent = _find_wbs(project, cmd.get("parent_code"), cmd.get("parent_name"))
+    if cmd.get("parent_uid") or cmd.get("parent_code") or cmd.get("parent_name"):
+        parent = _find_wbs(project, cmd.get("parent_code"), cmd.get("parent_name"),
+                           cmd.get("parent_uid"))
         if not parent:
-            raise EditError(f"Parent WBS not found: {cmd.get('parent_code') or cmd.get('parent_name')}")
+            raise EditError(f"Parent WBS not found: "
+                            f"{cmd.get('parent_uid') or cmd.get('parent_code') or cmd.get('parent_name')}")
     # Sequence number: sit AFTER the last existing sibling so P6 displays it last
     parent_uid = parent.uid if parent else None
     siblings = [w for w in project.wbs_nodes if w.parent_uid == parent_uid]
     next_seq = (max(s.sequence_num for s in siblings) + 10) if siblings else 0
+    # A caller may supply the uid so it can reference the folder in the SAME
+    # batch — "create this folder and paste into it" has to be one undo step,
+    # and pasting by name would land in a pre-existing folder of that name.
+    new_uid = str(cmd.get("new_wbs_uid") or "").strip()
+    if new_uid and any(w.uid == new_uid for w in project.wbs_nodes):
+        raise EditError(f"A WBS with uid '{new_uid}' already exists")
     new_wbs = WBSNode(
-        uid=_new_uid(),
+        uid=new_uid or _new_uid(),
         name=name,
         code=code,
         parent_uid=parent_uid,
@@ -1006,10 +1016,12 @@ def _copy_activities(project: Project, cmd: Dict) -> Tuple[bool, str]:
             src_acts.append(a)
 
     target_uid = None
-    if cmd.get("wbs_code") or cmd.get("wbs_name"):
-        tgt = _find_wbs(project, cmd.get("wbs_code"), cmd.get("wbs_name"))
+    if cmd.get("wbs_uid") or cmd.get("wbs_code") or cmd.get("wbs_name"):
+        tgt = _find_wbs(project, cmd.get("wbs_code"), cmd.get("wbs_name"),
+                        cmd.get("wbs_uid"))
         if not tgt:
-            raise EditError(f"Target WBS not found: {cmd.get('wbs_code') or cmd.get('wbs_name')}")
+            raise EditError(f"Target WBS not found: "
+                            f"{cmd.get('wbs_uid') or cmd.get('wbs_code') or cmd.get('wbs_name')}")
         target_uid = tgt.uid
 
     try:
@@ -1284,9 +1296,11 @@ def _move_activity_wbs(project: Project, cmd: Dict) -> Tuple[bool, str]:
     matches = _find_activity(project, cmd.get("activity_id"), cmd.get("target_name"))
     if not matches:
         raise EditError(f"No activity found: {cmd.get('activity_id') or cmd.get('target_name')}")
-    wbs = _find_wbs(project, cmd.get("wbs_code"), cmd.get("wbs_name"))
+    wbs = _find_wbs(project, cmd.get("wbs_code"), cmd.get("wbs_name"),
+                    cmd.get("wbs_uid"))
     if not wbs:
-        raise EditError(f"Target WBS not found: {cmd.get('wbs_code') or cmd.get('wbs_name')}")
+        raise EditError(f"Target WBS not found: "
+                        f"{cmd.get('wbs_uid') or cmd.get('wbs_code') or cmd.get('wbs_name')}")
     if len(matches) > 1 and not cmd.get("apply_to_all"):
         raise EditError(f"Found {len(matches)} activities. Use activity_id or set apply_to_all=true.")
     for a in matches:

@@ -5146,41 +5146,71 @@ function submitAddWbs(){
   const name = nameEl.value.trim();
   if(!name){ nameEl.focus(); return; }
   const code = document.getElementById('wbs-form-code').value.trim();
-  const parentName = document.getElementById('wbs-form-parent').value;
+  const parentUid = document.getElementById('wbs-form-parent').value;
   const cmd = {action:'add_wbs', name};
   if(code) cmd.code = code;
-  if(parentName) cmd.parent_name = parentName;
+  if(parentUid) cmd.parent_uid = parentUid;
   nameEl.value = ''; document.getElementById('wbs-form-code').value = '';
   toggleWbsForm();
   directEdit([cmd], `Add WBS "${name}"`);
 }
+/**
+ * Qualified label for a folder — enough of its parent chain to tell it apart.
+ *
+ * Folder names repeat constantly in a real schedule (this project has 38
+ * repeated names, one appearing seven times), so a bare name in a dropdown is
+ * both ambiguous to read and, worse, ambiguous to act on.
+ */
+function wbsLabel(w, byUid){
+  const parts = [w.name];
+  let cur = byUid[w.parent_uid], guard = 0;
+  while(cur && guard++ < 3){
+    parts.unshift(cur.name);
+    cur = byUid[cur.parent_uid];
+  }
+  return parts.join(' / ');
+}
+
 function populateWbsSelects(data){
-  const opts = (data.wbs_sections || []).map(w =>
-    `<option value="${escAttr(w.name)}">${escHtml(w.name)}</option>`).join('');
+  const sections = data.wbs_sections || [];
+  const byUid = {};
+  sections.forEach(w => byUid[w.uid] = w);
+  // Options carry the folder UID, never the name. A name is not an identifier
+  // here: picking "MV Rooms" used to land in whichever same-named folder the
+  // engine happened to find first, regardless of which one was selected.
+  const opts = sections.map(w =>
+    `<option value="${escAttr(w.uid)}">${escHtml(wbsLabel(w, byUid))}</option>`).join('');
   const parent = document.getElementById('wbs-form-parent');
   if(parent) parent.innerHTML = '<option value="">— Root level —</option>' + opts;
   const bulk = document.getElementById('bulk-wbs');
-  if(bulk) bulk.innerHTML = opts;
+  if(bulk){
+    const prevBulk = bulk.value;
+    bulk.innerHTML = opts;
+    if(prevBulk && byUid[prevBulk]) bulk.value = prevBulk;   // keep the pick across reloads
+  }
   const actWbs = document.getElementById('act-form-wbs');
   if(actWbs){
-    const sections = data.wbs_sections || [];
-    const names = sections.map(w => w.name);
     const prev = actWbs.value;
     actWbs.innerHTML = opts;
     // Sticky target: keep current pick, else last-used, else first REAL phase
     // (a WBS that holds activities or has a parent — never default to the root).
     let target = '';
-    if(prev && names.includes(prev))                 target = prev;
-    else if(lastActWbs && names.includes(lastActWbs)) target = lastActWbs;
+    if(prev && byUid[prev])                     target = prev;
+    else if(lastActWbs && byUid[lastActWbs])    target = lastActWbs;
     else {
       const firstWithActs = sections.find(w => (w.activities || []).length > 0);
       const firstChild    = sections.find(w => w.parent_uid);
-      target = (firstWithActs && firstWithActs.name)
-            || (firstChild && firstChild.name)
-            || (names[0] || '');
+      target = (firstWithActs && firstWithActs.uid)
+            || (firstChild && firstChild.uid)
+            || (sections[0] && sections[0].uid) || '';
     }
     if(target) actWbs.value = target;
   }
+}
+
+/** Folder name for a uid, for labels and undo text. */
+function wbsNameOfUid(uid){
+  return (lastSchedData?.wbs_sections || []).find(w => w.uid === uid)?.name || null;
 }
 
 // ── Add a single activity from the toolbar form ──
@@ -5208,13 +5238,14 @@ function submitAddActivity(){
   const nameEl = document.getElementById('act-form-name');
   const name = nameEl.value.trim();
   if(!name){ nameEl.focus(); return; }
-  const wbs = document.getElementById('act-form-wbs').value;
+  const wbsUid = document.getElementById('act-form-wbs').value;
+  const wbs = wbsNameOfUid(wbsUid) || 'folder';
   if(!wbs){ flashSched('Pick a WBS for the activity', true); return; }
   lastActWbs = wbs;                        // remember for the next add
   const dur  = parseFloat(document.getElementById('act-form-dur').value) || 0;
   const type = document.getElementById('act-form-type').value;
   nameEl.value = '';                       // keep form open for rapid entry
-  directEdit([{action:'add_activity', wbs_name:wbs, name, duration_days:dur, activity_type:type}],
+  directEdit([{action:'add_activity', wbs_uid:wbsUid, name, duration_days:dur, activity_type:type}],
              `Add activity "${name}"`);
   nameEl.focus();
 }
@@ -5273,10 +5304,11 @@ function bulkSetDuration(){
   directEdit(cmds, `Set ${ids.length} activit${ids.length===1?'y':'ies'} to ${v}d`);
 }
 function bulkMove(){
-  const wbs = document.getElementById('bulk-wbs').value;
-  if(!wbs){ flashSched('Pick a target WBS', true); return; }
+  const wbsUid = document.getElementById('bulk-wbs').value;
+  if(!wbsUid){ flashSched('Pick a target WBS', true); return; }
+  const wbs = wbsNameOfUid(wbsUid) || 'folder';
   const ids = [...selectedIds]; if(!ids.length) return;
-  const cmds = ids.map(id => ({action:'move_activity_wbs', activity_id:id, wbs_name:wbs}));
+  const cmds = ids.map(id => ({action:'move_activity_wbs', activity_id:id, wbs_uid:wbsUid}));
   clearSelection();
   directEdit(cmds, `Move ${ids.length} activit${ids.length===1?'y':'ies'} → ${wbs}`);
 }
@@ -5339,20 +5371,21 @@ function bulkCopy(){
 }
 
 function _pasteTargets(){
-  const wbs = document.getElementById('bulk-wbs').value;
-  if(!wbs){ flashSched('Pick a target WBS to paste into', true); return null; }
+  const wbsUid = document.getElementById('bulk-wbs').value;
+  if(!wbsUid){ flashSched('Pick a target WBS to paste into', true); return null; }
   if(!clipboard.length && !_clipMeta){ flashSched('Nothing copied yet', true); return null; }
-  return wbs;
+  return wbsUid;
 }
 
 /** Build the paste commands, preserving logic when we're in the source schedule. */
-function _pasteCommands(wbsName){
+function _pasteCommands(wbsUid){
+  const wbsName = wbsNameOfUid(wbsUid) || 'folder';
   const sameSchedule = _clipMeta && _clipMeta.projectId === _activeProjectId
                        && (_clipMeta.ids || []).length;
   if(sameSchedule){
     // one command — the engine copies the rows AND the links between them
     return {
-      cmds: [{action:'copy_activities', activity_ids:_clipMeta.ids, wbs_name:wbsName}],
+      cmds: [{action:'copy_activities', activity_ids:_clipMeta.ids, wbs_uid:wbsUid}],
       label: `Paste ${_clipMeta.ids.length} activit${_clipMeta.ids.length===1?'y':'ies'}`
              + (_clipMeta.rels ? ` + logic` : '') + ` → ${wbsName}`,
       withLogic: true,
@@ -5360,7 +5393,7 @@ function _pasteCommands(wbsName){
   }
   // different schedule: the source rows aren't here, so data only
   return {
-    cmds: clipboard.map(c => ({action:'add_activity', wbs_name:wbsName, name:c.name,
+    cmds: clipboard.map(c => ({action:'add_activity', wbs_uid:wbsUid, name:c.name,
                                duration_days:c.duration_days, activity_type:c.activity_type})),
     label: `Paste ${clipboard.length} activit${clipboard.length===1?'y':'ies'} → ${wbsName}`,
     withLogic: false,
@@ -5380,15 +5413,21 @@ async function bulkPaste(){
 
 /** Create a sub-folder under the chosen WBS, then paste the copied rows into it. */
 async function bulkPasteIntoNewFolder(){
-  const parent = _pasteTargets(); if(!parent) return;
-  const name = (prompt(`Name for the new sub-folder under "${parent}"`) || '').trim();
+  const parentUid = _pasteTargets(); if(!parentUid) return;
+  const parentName = wbsNameOfUid(parentUid) || 'the selected folder';
+  const name = (prompt(`Name for the new sub-folder under "${parentName}"`) || '').trim();
   if(!name) return;
-  const p = _pasteCommands(name);
+  // Mint the uid here so the paste can target the new folder in the SAME
+  // batch. Referring to it by name would land the rows in a pre-existing
+  // folder that happens to share the name — which is common in a real WBS.
+  const newUid = 'new-' + Date.now().toString(36) + '-' + Math.floor(Math.random()*1e6).toString(36);
+  const p = _pasteCommands(newUid);
   if(!p.cmds.length) return;
   clearSelection();
-  // create the folder first, then paste into it — one undo step covers both
-  await directEdit([{action:'add_wbs', name, parent_name:parent}, ...p.cmds],
-                   `New folder "${name}" under ${parent} + ${p.cmds.length===1 && p.withLogic ? _clipMeta.ids.length : p.cmds.length} activities`);
+  await directEdit([{action:'add_wbs', name, parent_uid:parentUid, new_wbs_uid:newUid},
+                    ...p.cmds],
+                   `New folder "${name}" under ${parentName} + `
+                   + `${p.cmds.length===1 && p.withLogic ? _clipMeta.ids.length : p.cmds.length} activities`);
 }
 function bulkDelete(){
   const ids = [...selectedIds]; if(!ids.length) return;

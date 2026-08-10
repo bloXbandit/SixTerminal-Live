@@ -464,6 +464,20 @@ reorder_wbs:
   {"action": "reorder_wbs", "wbs_name": "Sitework", "direction": "up"}
   {"action": "reorder_wbs", "wbs_code": "ER209", "direction": "down"}
 
+TARGETING A FOLDER — ALWAYS PREFER wbs_uid:
+  Folder names repeat throughout a real WBS ("MV Rooms" under three phases,
+  "Gen 326- JER" seven times). wbs_name is a SUBSTRING match that returns the
+  first hit, so naming a folder can silently land the edit in the wrong phase.
+  When the schedule context gives you a folder's uid, pass wbs_uid (or
+  parent_uid) instead of wbs_name on add_activity, copy_activities,
+  move_activity_wbs, add_wbs, rename_wbs, reorder_wbs and delete_wbs.
+  To create a folder and put activities in it in ONE undo step, supply
+  new_wbs_uid on add_wbs and target that same uid in the following commands —
+  referring to the new folder by name would land the rows in a pre-existing
+  folder of that name.
+  {"action": "add_wbs", "name": "ER 210", "parent_uid": "26084", "new_wbs_uid": "tmp-er210"}
+  {"action": "copy_activities", "activity_ids": ["A1000"], "wbs_uid": "tmp-er210"}
+
 delete_wbs:
   Delete a folder and everything nested under it. By default the activities
   inside are KEPT and moved up to the parent folder; pass delete_contents
