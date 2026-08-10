@@ -31,6 +31,43 @@
       --mono: 'JetBrains Mono','Fira Code','Consolas',monospace;
       --r-sm:4px; --r-md:8px; --r-lg:12px; --r-xl:16px;
       --shadow-lg: 0 8px 32px rgba(0,0,0,.6);
+      --panel:  var(--surface);
+      --panel2: var(--bg2);
+      --menu-shadow: 0 12px 32px rgba(0,0,0,.55);
+      --row-hover: rgba(255,255,255,.035);
+      --grid-head: var(--surface2);
+    }
+
+    /* ── Light theme ──────────────────────────────────────────────────────
+       Only the palette changes; every rule below is written against these
+       tokens, so the two themes stay in step automatically. Contrast is set
+       for a dense data grid read for hours at a time, not for maximum
+       punch — hence the soft paper background rather than pure white.      */
+    :root[data-theme="light"]{
+      --bg:        #f4f6fa;
+      --bg2:       #ffffff;
+      --surface:   #ffffff;
+      --surface2:  #eef1f7;
+      --surface3:  #e3e8f0;
+      --border:    #d7dee9;
+      --border2:   #c3ccda;
+      --accent:    #0069a8;
+      --accent2:   #00527f;
+      --accent-glow:  rgba(0,105,168,.10);
+      --accent-glow2: rgba(0,105,168,.04);
+      --green:  #157f3d; --green-bg:  rgba(21,127,61,.10);
+      --red:    #c02626; --red-bg:    rgba(192,38,38,.10);
+      --orange: #a45c00; --orange-bg: rgba(164,92,0,.10);
+      --blue:   #1d4ed8; --blue-bg:   rgba(29,78,216,.10);
+      --text:  #10151f;
+      --text2: #4a5568;
+      --text3: #8592a6;
+      --shadow-lg: 0 8px 32px rgba(15,25,45,.16);
+      --panel:  #ffffff;
+      --panel2: #f7f9fc;
+      --menu-shadow: 0 12px 32px rgba(15,25,45,.18);
+      --row-hover: rgba(15,25,45,.04);
+      --grid-head: #eef1f7;
     }
     *,*::before,*::after{box-sizing:border-box;margin:0;padding:0;}
     html,body{height:100%;}
@@ -723,9 +760,97 @@
     #panel-schedule.active{display:flex;}
 
     .sched-toolbar{
-      padding:8px 16px;display:flex;align-items:center;gap:8px;
+      padding:7px 14px;display:flex;align-items:center;gap:6px;
       background:var(--surface);border-bottom:1px solid var(--border);
-      flex-shrink:0;flex-wrap:wrap;
+      flex-shrink:0;flex-wrap:nowrap;position:relative;z-index:60;
+    }
+    /* ── Toolbar: primary buttons, grouped menus ────────────────────────── */
+    .tb-btn{
+      display:inline-flex;align-items:center;gap:5px;white-space:nowrap;
+      font-family:var(--font);font-size:11.5px;font-weight:500;
+      padding:5px 11px;border-radius:var(--r-sm);cursor:pointer;
+      border:1px solid var(--border2);background:var(--surface2);color:var(--text2);
+      transition:background .12s,color .12s,border-color .12s;
+    }
+    .tb-btn:hover{background:var(--surface3);color:var(--text);border-color:var(--accent);}
+    .tb-btn.accent{color:var(--accent);border-color:color-mix(in srgb,var(--accent) 40%,transparent);}
+    .tb-btn.accent:hover{background:var(--accent-glow);}
+    .tb-btn.primary.on,.tb-btn.on{
+      background:var(--accent);border-color:var(--accent);color:var(--bg);font-weight:600;
+    }
+    .tb-caret{font-size:8px;opacity:.6;}
+    .tb-icon{
+      display:inline-flex;align-items:center;justify-content:center;gap:3px;
+      min-width:28px;height:26px;padding:0 6px;border-radius:var(--r-sm);
+      border:1px solid var(--border2);background:var(--surface2);color:var(--text2);
+      cursor:pointer;font-size:13px;line-height:1;transition:background .12s,color .12s;
+    }
+    .tb-icon:hover:not(:disabled){background:var(--surface3);color:var(--text);}
+    .tb-icon:disabled{opacity:.35;cursor:default;}
+    .tb-group{display:inline-flex;gap:3px;}
+    .tb-sep{width:1px;height:20px;background:var(--border2);margin:0 3px;flex-shrink:0;}
+    .tb-spacer{flex:1 1 auto;min-width:8px;}
+
+    /* Dropdown menus — one open at a time, closed by outside click or Escape */
+    .tb-menu{position:relative;display:inline-block;}
+    .tb-pop{
+      display:none;position:absolute;top:calc(100% + 6px);left:0;z-index:120;
+      min-width:210px;padding:6px;border-radius:var(--r-md);
+      background:var(--panel);border:1px solid var(--border2);
+      box-shadow:var(--menu-shadow);
+    }
+    .tb-pop.wide{min-width:300px;}
+    .tb-menu.open .tb-pop{display:block;}
+    .tb-menu.open > .tb-btn{background:var(--surface3);color:var(--text);border-color:var(--accent);}
+    .tb-item{
+      display:grid;grid-template-columns:20px 1fr;align-items:baseline;gap:2px 8px;
+      width:100%;text-align:left;padding:6px 8px;border:0;border-radius:var(--r-sm);
+      background:transparent;color:var(--text);font-family:var(--font);font-size:12px;
+      cursor:pointer;
+    }
+    .tb-item:hover{background:var(--accent-glow);}
+    .tb-item.on{background:var(--accent-glow);color:var(--accent);font-weight:600;}
+    .tb-item-ico{grid-row:1;color:var(--accent);font-size:12px;text-align:center;}
+    .tb-item-hint{
+      grid-column:2;grid-row:2;font-size:10px;color:var(--text3);line-height:1.3;
+    }
+    .tb-pop-label{
+      font-size:9px;font-weight:600;letter-spacing:.09em;text-transform:uppercase;
+      color:var(--text3);padding:6px 8px 4px;
+    }
+    .tb-pop-sep{height:1px;background:var(--border);margin:5px 4px;}
+    .tb-row{display:flex;align-items:center;gap:5px;padding:3px 8px 5px;flex-wrap:wrap;}
+    .tb-row-label{font-size:10.5px;color:var(--text3);margin-right:2px;}
+    .tb-row select{
+      flex:1;min-width:150px;background:var(--panel2);color:var(--text);
+      border:1px solid var(--border2);border-radius:var(--r-sm);
+      font-family:inherit;font-size:11px;padding:4px 6px;outline:none;
+    }
+    .tb-chip{
+      font-size:10.5px;padding:3px 9px;border-radius:var(--r-sm);cursor:pointer;
+      border:1px solid var(--border2);background:var(--surface2);color:var(--text2);
+      font-family:var(--font);transition:background .12s,color .12s;
+    }
+    .tb-chip:hover{background:var(--accent-glow);color:var(--accent);border-color:var(--accent);}
+    .tb-cols{display:grid;grid-template-columns:1fr 1fr;gap:4px;padding:2px 6px 6px;}
+    .tb-cols .col-toggle{width:100%;text-align:left;}
+
+    /* Find box */
+    .tb-find{
+      display:inline-flex;align-items:center;gap:5px;padding:0 8px;
+      background:var(--panel2);border:1px solid var(--border2);
+      border-radius:var(--r-sm);height:26px;
+    }
+    .tb-find:focus-within{border-color:var(--accent);}
+    .tb-find-ico{color:var(--text3);font-size:12px;}
+    .tb-find input{
+      width:170px;background:transparent;border:0;outline:none;
+      color:var(--text);font-family:var(--font);font-size:11.5px;
+    }
+    /* On a narrow window the toolbar may wrap; keep it usable rather than clipped */
+    @media (max-width:1100px){
+      .sched-toolbar{flex-wrap:wrap;}
+      .tb-find input{width:120px;}
     }
     .sched-toolbar-label{
       font-size:9px;font-weight:600;letter-spacing:.1em;
@@ -839,7 +964,10 @@
     #sched-table.hide-latefinish .col-latefinish,
     #sched-table.hide-constraint .col-constraint,
     #sched-table.hide-type       .col-type{display:none;}
-    .sched-act-row.critical td{border-left:2px solid var(--red) !important;}
+    /* Marker on the row's leading edge — this used to put a red border on
+       EVERY cell, which read as a broken table grid once the light theme
+       stopped hiding it. */
+    .sched-act-row.critical td:first-child{box-shadow:inset 3px 0 0 var(--red);}
     .sched-act-row.critical .sched-id{color:var(--red);}
     .sched-id{font-family:var(--mono);color:var(--accent);font-size:10px;font-weight:500;}
     .sched-name{color:var(--text);max-width:280px;overflow:hidden;text-overflow:ellipsis;}
@@ -1514,54 +1642,106 @@
 
     <!-- Schedule panel -->
     <div id="panel-schedule">
-      <!-- Toolbar: edit mode, quick-add, column toggles -->
+      <!-- Toolbar: primary actions on the left, grouped menus, find + theme right -->
       <div class="sched-toolbar">
-        <button class="col-toggle edit-toggle" id="edit-toggle-btn" onclick="toggleEditMode()">✎ Edit</button>
-        <button class="col-toggle" id="add-act-btn" onclick="toggleActForm()">＋ Activity</button>
-        <button class="col-toggle" id="add-wbs-btn" onclick="toggleWbsForm()">＋ WBS</button>
-        <button class="col-toggle" id="paste-rows-btn" onclick="openPasteModal()"
-                title="Paste a block of activities copied from a PDF or Excel">⎘ Paste rows</button>
-        <span class="sched-sep"></span>
-        <button class="col-toggle" id="sched-undo-btn" onclick="doUndo()" disabled
-                title="Undo last change (Ctrl/Cmd+Z)">↩ Undo <span class="undo-badge" id="sched-undo-badge" style="display:none">0</span></button>
-        <button class="col-toggle" id="sched-redo-btn" onclick="doRedo()" disabled
-                title="Redo (Ctrl/Cmd+Shift+Z)">↪ Redo <span class="undo-badge" id="sched-redo-badge" style="display:none">0</span></button>
-        <span class="sched-sep"></span>
-        <button class="col-toggle" id="sched-run-btn" onclick="runSchedule()"
+        <button class="tb-btn primary" id="edit-toggle-btn" onclick="toggleEditMode()"
+                title="Turn on editing — double-click cells, drag folders, select rows">✎ Edit</button>
+
+        <span class="tb-group">
+          <button class="tb-icon" id="sched-undo-btn" onclick="doUndo()" disabled
+                  title="Undo last change (Ctrl/Cmd+Z)">↩<span class="undo-badge" id="sched-undo-badge" style="display:none">0</span></button>
+          <button class="tb-icon" id="sched-redo-btn" onclick="doRedo()" disabled
+                  title="Redo (Ctrl/Cmd+Shift+Z)">↪<span class="undo-badge" id="sched-redo-badge" style="display:none">0</span></button>
+        </span>
+
+        <button class="tb-btn accent" id="sched-run-btn" onclick="runSchedule()"
                 title="Recalculate all dates from logic + durations, then order the rows in run sequence">⚡ Schedule</button>
-        <button class="col-toggle" id="trace-btn" onclick="startTrace()"
-                title="Trace logic — show only the activities driving a chosen activity">⤳ Trace</button>
-        <span class="sched-sep"></span>
-        <button class="col-toggle" onclick="collapseAllWbs(true)"  title="Collapse every WBS folder">⊟ Collapse all</button>
-        <button class="col-toggle" onclick="collapseAllWbs(false)" title="Expand every WBS folder">⊞ Expand all</button>
-        <span class="pick-legend">Level</span>
-        <button class="col-toggle" onclick="collapseToLevel(1)" title="Show top-level folders only">1</button>
-        <button class="col-toggle" onclick="collapseToLevel(2)" title="Show two levels of folders">2</button>
-        <button class="col-toggle" onclick="collapseToLevel(3)" title="Show three levels of folders">3</button>
-        <span class="sched-sep"></span>
-        <span class="pick-legend">Calendar</span>
-        <select id="cal-select" onchange="setCalendar(this.value)"
-                title="Working pattern used to schedule dates and written into the P6 export"
-                style="background:var(--panel2,#0d1117);color:var(--text);border:1px solid var(--border2);border-radius:4px;font-family:inherit;font-size:11px;padding:3px 6px;outline:none;">
-        </select>
-        <span class="sched-sep"></span>
-        <span class="sched-toolbar-label">Columns</span>
-        <button class="col-toggle on"  data-col="status"    onclick="toggleCol('status')">Status</button>
-        <button class="col-toggle on"  data-col="pct"       onclick="toggleCol('pct')">% Complete</button>
-        <button class="col-toggle on"  data-col="blu"       onclick="toggleCol('blu')">BLU</button>
-        <button class="col-toggle on"  data-col="float"     onclick="toggleCol('float')">Total Float</button>
-        <button class="col-toggle"     data-col="earlystart" onclick="toggleCol('earlystart')">Early Start</button>
-        <button class="col-toggle"     data-col="earlyfinish" onclick="toggleCol('earlyfinish')">Early Finish</button>
-        <button class="col-toggle"     data-col="latestart"  onclick="toggleCol('latestart')">Late Start</button>
-        <button class="col-toggle"     data-col="latefinish"  onclick="toggleCol('latefinish')">Late Finish</button>
-        <button class="col-toggle on"  data-col="constraint" onclick="toggleCol('constraint')">Constraint</button>
-        <button class="col-toggle"     data-col="type"       onclick="toggleCol('type')">Activity Type</button>
-        <input id="sched-find" type="search" placeholder="Find ID or name…  (Ctrl+F)"
-               oninput="applyFind(this.value)"
-               style="width:190px;background:var(--panel2,#0d1117);color:var(--text);border:1px solid var(--border2);border-radius:4px;font-size:11px;padding:3px 8px;outline:none;">
+
+        <span class="tb-sep"></span>
+
+        <!-- Insert -->
+        <div class="tb-menu" data-menu="insert">
+          <button class="tb-btn" onclick="toggleTbMenu('insert')">＋ Insert <span class="tb-caret">▾</span></button>
+          <div class="tb-pop" id="tbm-insert">
+            <button class="tb-item" id="add-act-btn" onclick="tbDo(toggleActForm)">
+              <span class="tb-item-ico">＋</span> Activity
+              <span class="tb-item-hint">add a single activity</span></button>
+            <button class="tb-item" id="add-wbs-btn" onclick="tbDo(toggleWbsForm)">
+              <span class="tb-item-ico">🗀</span> WBS folder
+              <span class="tb-item-hint">new folder in the breakdown</span></button>
+            <button class="tb-item" id="paste-rows-btn" onclick="tbDo(openPasteModal)">
+              <span class="tb-item-ico">⎘</span> Paste rows…
+              <span class="tb-item-hint">from a PDF or Excel</span></button>
+          </div>
+        </div>
+
+        <!-- View -->
+        <div class="tb-menu" data-menu="view">
+          <button class="tb-btn" onclick="toggleTbMenu('view')">◫ View <span class="tb-caret">▾</span></button>
+          <div class="tb-pop wide" id="tbm-view">
+            <div class="tb-pop-label">Folders</div>
+            <div class="tb-row">
+              <button class="tb-chip" onclick="collapseAllWbs(true)" title="Collapse every WBS folder">⊟ Collapse all</button>
+              <button class="tb-chip" onclick="collapseAllWbs(false)" title="Expand every WBS folder">⊞ Expand all</button>
+            </div>
+            <div class="tb-row">
+              <span class="tb-row-label">Show levels</span>
+              <button class="tb-chip" onclick="collapseToLevel(1)" title="Top-level folders only">1</button>
+              <button class="tb-chip" onclick="collapseToLevel(2)" title="Two levels">2</button>
+              <button class="tb-chip" onclick="collapseToLevel(3)" title="Three levels">3</button>
+            </div>
+            <div class="tb-pop-sep"></div>
+            <div class="tb-pop-label">Columns</div>
+            <div class="tb-cols">
+              <button class="col-toggle on"  data-col="status"      onclick="toggleCol('status')">Status</button>
+              <button class="col-toggle on"  data-col="pct"         onclick="toggleCol('pct')">% Complete</button>
+              <button class="col-toggle on"  data-col="blu"         onclick="toggleCol('blu')">BLU</button>
+              <button class="col-toggle on"  data-col="float"       onclick="toggleCol('float')">Total Float</button>
+              <button class="col-toggle"     data-col="earlystart"  onclick="toggleCol('earlystart')">Early Start</button>
+              <button class="col-toggle"     data-col="earlyfinish" onclick="toggleCol('earlyfinish')">Early Finish</button>
+              <button class="col-toggle"     data-col="latestart"   onclick="toggleCol('latestart')">Late Start</button>
+              <button class="col-toggle"     data-col="latefinish"  onclick="toggleCol('latefinish')">Late Finish</button>
+              <button class="col-toggle on"  data-col="constraint"  onclick="toggleCol('constraint')">Constraint</button>
+              <button class="col-toggle"     data-col="type"        onclick="toggleCol('type')">Activity Type</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Tools -->
+        <div class="tb-menu" data-menu="tools">
+          <button class="tb-btn" onclick="toggleTbMenu('tools')">⚙ Tools <span class="tb-caret">▾</span></button>
+          <div class="tb-pop wide" id="tbm-tools">
+            <button class="tb-item" id="trace-btn" onclick="tbDo(startTrace)">
+              <span class="tb-item-ico">⤳</span> Trace logic
+              <span class="tb-item-hint">show only what drives an activity</span></button>
+            <button class="tb-item" onclick="tbDo(() => askAdvisor('milestones'))">
+              <span class="tb-item-ico">◈</span> Milestone logic…
+              <span class="tb-item-hint">what should drive each milestone</span></button>
+            <button class="tb-item" onclick="tbDo(() => askAdvisor('procurement'))">
+              <span class="tb-item-ico">⛁</span> Procurement check…
+              <span class="tb-item-hint">equipment dated before delivery</span></button>
+            <div class="tb-pop-sep"></div>
+            <div class="tb-row">
+              <span class="tb-row-label">Calendar</span>
+              <select id="cal-select" onchange="setCalendar(this.value)"
+                      title="Working pattern used to schedule dates and written into the P6 export"></select>
+            </div>
+            <div class="tb-pop-sep"></div>
+            <button class="tb-item" onclick="tbDo(loadSchedule)">
+              <span class="tb-item-ico">↺</span> Refresh grid</button>
+          </div>
+        </div>
+
+        <span class="tb-spacer"></span>
+
+        <span class="tb-find">
+          <span class="tb-find-ico">⌕</span>
+          <input id="sched-find" type="search" placeholder="Find ID or name…" oninput="applyFind(this.value)">
+        </span>
         <span id="find-count" class="pick-legend"></span>
-        <span class="edit-hint">Double-click a cell to edit · Tab/Enter to move · ✕ on a link to remove</span>
-        <button class="btn btn-ghost btn-sm sched-refresh" onclick="loadSchedule()">↺ Refresh</button>
+
+        <button class="tb-icon" id="theme-btn" onclick="toggleTheme()"
+                title="Switch between light and dark"></button>
       </div>
 
       <!-- Inline add-activity form (toggled by ＋ Activity) -->
@@ -6056,6 +6236,121 @@ async function executeReplaceBranch() {
 }
 
 // Attach the delegated dbl-click handler once
+// ═══════════════════════════════════════════════════
+//  Toolbar menus + theme
+// ═══════════════════════════════════════════════════
+
+/** Open one menu at a time; clicking the open one closes it. */
+function toggleTbMenu(name){
+  const host = document.querySelector(`.tb-menu[data-menu="${name}"]`);
+  if(!host) return;
+  const wasOpen = host.classList.contains('open');
+  closeTbMenus();
+  if(!wasOpen){
+    host.classList.add('open');
+    // one listener while a menu is open, removed again on close
+    setTimeout(() => document.addEventListener('mousedown', outsideTbMenu), 0);
+  }
+}
+function closeTbMenus(){
+  document.querySelectorAll('.tb-menu.open').forEach(m => m.classList.remove('open'));
+  document.removeEventListener('mousedown', outsideTbMenu);
+}
+function outsideTbMenu(e){
+  if(!e.target.closest('.tb-menu')) closeTbMenus();
+}
+/**
+ * Run a menu action and dismiss the menu.
+ * Actions that open their own form or dialog would otherwise sit behind the
+ * still-open popup.
+ */
+function tbDo(fn){
+  closeTbMenus();
+  try { fn(); } catch(e){ flashSched(e.message, true); }
+}
+
+/**
+ * Light / dark. The whole stylesheet is written against CSS variables, so a
+ * theme is only a palette swap on the root element — no per-rule overrides to
+ * drift out of step. The choice is remembered; with none stored we follow the
+ * operating system so the first load already matches the user's environment.
+ */
+function applyTheme(mode){
+  document.documentElement.setAttribute('data-theme', mode);
+  const b = document.getElementById('theme-btn');
+  if(b){
+    const moon = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none"
+      stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>`;
+    const sun = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none"
+      stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4
+      M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>`;
+    b.innerHTML = mode === 'light' ? sun : moon;
+    b.title = mode === 'light' ? 'Switch to dark' : 'Switch to light';
+  }
+}
+function currentTheme(){
+  try{
+    const saved = localStorage.getItem('stTheme');
+    if(saved === 'light' || saved === 'dark') return saved;
+  }catch(_){}
+  return (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches)
+         ? 'light' : 'dark';
+}
+function toggleTheme(){
+  const next = currentTheme() === 'light' ? 'dark' : 'light';
+  try{ localStorage.setItem('stTheme', next); }catch(_){}
+  applyTheme(next);
+}
+
+/** Ask the logic advisor and show the answer in the chat panel. */
+async function askAdvisor(scope){
+  if(!lastSchedData){ flashSched('Load a schedule first', true); return; }
+  const url = scope === 'procurement' ? '/api/advise/procurement'
+                                      : '/api/advise/milestones?limit=1';
+  flashSched('Checking…');
+  try{
+    const d = await fetch(url).then(r => r.json());
+    if(d.error){ flashSched(d.error, true); return; }
+    if(scope === 'procurement'){
+      const bad = (d.items || []).filter(i => i.installed_before_delivery);
+      addMsg('system',
+        `<strong>Procurement check — ${escHtml(d.scope)}</strong><br>`
+        + `${d.matched} long-lead item${d.matched===1?'':'s'} matched to installation work. `
+        + (bad.length
+            ? `<span style="color:var(--red)">${bad.length} scheduled to be installed BEFORE delivery:</span><br>`
+              + bad.slice(0,10).map(i =>
+                  `• <strong>${escHtml(i.supply_name)}</strong> arrives ${i.supply_finish} — `
+                  + `${escHtml(i.first_install_name)} starts ${i.first_install_start} `
+                  + `(${i.implied_lag_days}d)`).join('<br>')
+            : 'Nothing is scheduled ahead of its delivery.'));
+    } else {
+      const un = d.unanchored_count, tot = d.milestone_count;
+      const rows = (d.milestones || []).filter(m => !m.has_predecessor && m.drivers.length)
+        .slice(0,12)
+        .map(m => `• <strong>${escHtml(m.name)}</strong> (${m.date}) ← `
+                + `${escHtml(m.drivers[0].predecessor_name)} `
+                + `<span style="color:var(--text3)">[${m.drivers[0].verdict}, `
+                + `implied lag ${m.drivers[0].implied_lag_days}d]</span>`).join('<br>');
+      addMsg('system',
+        `<strong>Milestone logic</strong><br>${un} of ${tot} milestones have nothing driving them.`
+        + (rows ? '<br>' + rows : '')
+        + `<br><span style="color:var(--text3)">Ask me to connect any of these and I'll `
+        + `add the ties, keeping each contractual date as a deadline.</span>`);
+    }
+    switchTab('editor');   // the chat/editor panel is where system notes land
+  }catch(e){ flashSched(e.message, true); }
+}
+
+(function initTheme(){
+  applyTheme(currentTheme());
+})();
+
+document.addEventListener('keydown', e => {
+  if(e.key === 'Escape') closeTbMenus();
+});
+
 (function initP6Version(){
   const s = document.getElementById('p6-version');
   if(s) s.value = p6Version();          // restore the remembered target release
