@@ -452,6 +452,17 @@ def upload_file():
 
     try:
         project = load_xer(tmp.name) if ext == ".xer" else load_xml(tmp.name)
+        # Work out the float, critical path and early / late dates the loaded
+        # network implies, WITHOUT touching Start / Finish — the file's dates
+        # are shown exactly as P6 exported them. Doing this at load means the
+        # drift badge is honest from the first screen: a schedule whose stored
+        # dates already disagree with its own logic says so straight away,
+        # instead of appearing clean until the first unrelated edit.
+        try:
+            from engine.schedule_model import compute_dates as _cd
+            _cd(project, apply_dates=False)
+        except Exception:
+            pass
         pid = _unique_pid(Path(filename).stem)
         sess = _make_session(pid, filename)
         sess["project"]     = project
@@ -774,7 +785,11 @@ def import_commit_route():
             base.build_lookups()
             from engine.schedule_model import compute_dates
             try:
-                compute_dates(base)
+                # Merging rows in must not reflow the schedule they land in.
+                # The incoming rows carry their own dates and any that arrive
+                # without one are seeded; everything already there is left
+                # exactly as it was.
+                compute_dates(base, apply_dates=False)
             except Exception:
                 pass
             project = base
@@ -854,7 +869,10 @@ def project_calendar():
                 a.calendar_uid = cal.uid
         project.build_lookups()
         try:
-            compute_dates(project)
+            # Refresh the derived columns against the new working pattern, but
+            # leave Start / Finish alone — changing the calendar is an edit,
+            # and edits do not reschedule. The user runs Schedule to reflow.
+            compute_dates(project, apply_dates=False)
         except Exception:
             pass
 
@@ -906,9 +924,10 @@ def run_schedule():
             project.planned_start = str(project.data_date)[:10]
 
         # Explicit F9 is the one full reflow: unlinked activities are driven
-        # from the data date (the confirm dialog warned about exactly this).
-        # Every implicit recompute holds their dates instead.
-        compute_dates(project, hold_unlinked_dates=False)
+        # from the data date (the confirm dialog warned about exactly this),
+        # and this is the only path that rewrites Start / Finish. Every
+        # implicit recompute holds both.
+        compute_dates(project, hold_unlinked_dates=False, apply_dates=True)
 
         if reorder:
             # Sequence the rows the way the work runs: earliest start first,
@@ -1418,6 +1437,9 @@ def _apply_direct(commands, label):
             "activity_count":   len(project.activities),
             "wbs_count":        len(project.wbs_nodes),
             "relation_count":   len(project.relations),
+            # Edits patch the grid in place rather than reloading it, so the
+            # drift badge has to travel with the edit or it goes stale.
+            "out_of_date_count": _out_of_date_count(project),
         })
     except Exception as e:
         return jsonify({"error": f"Direct edit failed: {str(e)}", "trace": traceback.format_exc()}), 500
@@ -1970,6 +1992,27 @@ def _wbs_signature(project):
 
 # Actions that reshape the WBS tree itself. Rows can be patched in place for
 # everything else, including adding and deleting activities.
+def _out_of_date_count(project) -> int:
+    """
+    How many activities' dates no longer agree with their own logic.
+
+    Edits refresh the early dates but deliberately leave Start / Finish alone —
+    P6 does not reschedule until you press F9 either — so the schedule can
+    drift from its network with nothing on screen changing. This is the number
+    behind the badge on the Schedule button, and it is a plain comparison: the
+    early dates were already recomputed by the edit that came before it.
+
+    Started and completed work is excluded: those dates are actuals, and no
+    amount of rescheduling moves them.
+    """
+    return sum(
+        1 for a in project.activities
+        if a.status == "Not Started" and not a.actual_start
+        and a.early_start and a.planned_start
+        and str(a.early_start)[:10] != str(a.planned_start)[:10]
+    )
+
+
 _TREE_ACTIONS = {
     "add_wbs", "rename_wbs", "bulk_create_wbs", "move_wbs", "reorder_wbs",
     "delete_wbs", "duplicate_wbs", "move_activity_wbs", "move_activities",
@@ -2201,6 +2244,7 @@ def _schedule_view_inner():
         "project_name":   project.name,
         "data_date":      project.data_date,
         "activity_count": len(project.activities),
+        "out_of_date_count": _out_of_date_count(project),
         # Which UDF the grid's Electricians column reads and writes — the grid
         # needs the exact title because it varies between P6 projects.
         "electricians_field": electricians_field(project),

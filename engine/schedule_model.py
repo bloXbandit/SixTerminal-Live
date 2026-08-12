@@ -655,7 +655,8 @@ class Project:
 # CPM Forward / Backward Pass
 # ─────────────────────────────────────────────────────────────────────────────
 
-def compute_dates(project: "Project", hold_unlinked_dates: bool = True) -> None:
+def compute_dates(project: "Project", hold_unlinked_dates: bool = True,
+                  apply_dates: bool = True) -> None:
     """
     Run a CPM forward + backward pass on the project network.
 
@@ -678,6 +679,14 @@ def compute_dates(project: "Project", hold_unlinked_dates: bool = True) -> None:
     imported schedule) onto the data date, wiping the dates they came in with.
     The explicit Schedule (F9) action passes False for a full reflow — that
     path warns the user first about unlinked activities.
+
+    apply_dates: when False, planned_start / planned_finish are left exactly as
+    they are and only the derived fields (early / late dates, float, critical
+    path) are refreshed. This is what every implicit recompute uses, so an edit
+    changes what the user edited and nothing else — P6 does not reschedule
+    until you press F9 either. A row carrying no date at all is still seeded,
+    so newly added and freshly imported activities are never blank. The
+    Schedule action passes True to reflow the whole schedule on demand.
     """
     from datetime import date as _date, timedelta as _td
     import math as _math
@@ -1026,6 +1035,24 @@ def compute_dates(project: "Project", hold_unlinked_dates: bool = True) -> None:
         #   Completed   → actual dates
         #   In Progress → actual start / projected finish (EF)
         #   Not Started → early start / early finish
+        #
+        # Only when asked. P6 does not reschedule because you edited a cell —
+        # you press F9. Rewriting Start/Finish on every edit moved a third of
+        # this reference schedule's dates the moment the user renamed
+        # something, which is what "my dates keep flipping" was. With
+        # apply_dates off, the pass above still refreshes early/late dates,
+        # float and the critical path, so the derived columns stay live; only
+        # the two columns the user types into are left alone.
+        if not apply_dates:
+            # A row that has never had a date is the one exception: a newly
+            # added or freshly imported activity would otherwise render blank
+            # until the next reschedule.
+            if not act.planned_start:
+                act.planned_start = es_d.isoformat()
+            if not act.planned_finish:
+                act.planned_finish = (ef_d or es_d).isoformat()
+            continue
+
         if act.status == "Completed":
             if act.actual_start:
                 act.planned_start = str(act.actual_start)[:10]

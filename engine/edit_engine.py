@@ -254,8 +254,13 @@ def apply_command(project: Project, command: Dict[str, Any]) -> Tuple[bool, str]
 
 def apply_commands(project: Project, commands: List[Dict[str, Any]]) -> List[Tuple[bool, str]]:
     """Apply a list of edit commands in order. Returns list of (success, message) tuples.
-    After all commands, re-runs a CPM forward/backward pass to keep projected
-    Start / Finish dates current (including newly added activities)."""
+
+    After all commands, re-runs a CPM forward/backward pass to keep the derived
+    columns — early / late dates, total float, the critical path — current.
+    It does NOT rewrite Start / Finish: editing a cell is not a reschedule, the
+    same way it is not one in P6. Dates reflow when the user asks, via the
+    Schedule (F9) action. Activities that arrive without a date are still
+    seeded, so a newly added row is never blank."""
     from engine.schedule_model import compute_dates
     results = []
     any_ok = False
@@ -268,7 +273,7 @@ def apply_commands(project: Project, commands: List[Dict[str, Any]]) -> List[Tup
             break  # Stop on first failure to avoid cascading bad state
     if any_ok:
         try:
-            compute_dates(project)
+            compute_dates(project, apply_dates=False)
         except Exception:
             pass  # CPM failure must never block an edit from completing
     return results
