@@ -11,6 +11,7 @@ Runs on http://localhost:5100
 import os
 import re
 import sys
+import gzip
 import copy
 import json
 import uuid
@@ -311,6 +312,47 @@ def _persist(pid):
         return False, f"serialize failed: {e}"
 
 
+# ── Response compression ──────────────────────────────────────────────────────
+# The schedule payload for a large project runs to well over a megabyte of
+# JSON, which gzips by roughly 10x. That matters most on a corporate network:
+# a TLS-inspecting proxy buffers and scans the whole body before the browser
+# sees any of it, so payload size turns directly into waiting.
+#
+# Done by hand rather than with a dependency — it is a dozen lines, and the
+# fewer packages the deploy has to install, the fewer ways it can fail.
+_COMPRESSIBLE = ("application/json", "text/html", "text/css",
+                 "application/javascript", "text/javascript", "text/plain",
+                 "application/xml", "text/xml", "image/svg+xml")
+_COMPRESS_MIN_BYTES = 1024      # below this the header overhead is not worth it
+
+
+@app.after_request
+def _compress(resp):
+    try:
+        if resp.direct_passthrough or resp.status_code >= 300:
+            return resp
+        if "gzip" not in (request.headers.get("Accept-Encoding") or "").lower():
+            return resp
+        if resp.headers.get("Content-Encoding"):
+            return resp
+        ctype = (resp.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+        if ctype not in _COMPRESSIBLE:
+            return resp
+        body = resp.get_data()
+        if len(body) < _COMPRESS_MIN_BYTES:
+            return resp
+        packed = gzip.compress(body, compresslevel=6)
+        if len(packed) >= len(body):        # already-compressed content
+            return resp
+        resp.set_data(packed)
+        resp.headers["Content-Encoding"] = "gzip"
+        resp.headers["Content-Length"] = str(len(packed))
+        resp.headers.add("Vary", "Accept-Encoding")
+    except Exception:
+        pass    # a compression failure must never cost the user their response
+    return resp
+
+
 @app.after_request
 def _flush_dirty_to_cloud(resp):
     """Autosave: after any request, persist projects that were edited."""
@@ -375,6 +417,10 @@ def index():
     # 304 when nothing changed) so fixes actually reach the user.
     resp = send_from_directory(app.template_folder, "index.html")
     resp.headers["Cache-Control"] = "no-cache"
+    # File responses stream in passthrough mode, which skips compression. The
+    # whole app is this one 300 KB file, so it is worth reading into memory to
+    # let the gzip hook see it.
+    resp.direct_passthrough = False
     return resp
 
 
@@ -1302,14 +1348,20 @@ def _apply_direct(commands, label):
     """
     sess = _get_session()
     project = sess["project"]
-    # Actions that change which rows exist, their identity, or their order.
-    # For these the client does a full grid reload; everything else is a
-    # value-only edit, where we return just the rows that actually changed and
-    # the client patches them in place (avoids re-rendering the whole grid).
-    structural = any((c.get("action") or "").lower() in _STRUCTURAL_ACTIONS
-                     for c in commands)
+    # Every edit is diffed, structural ones included. Rebuilding the grid means
+    # refetching well over a megabyte and recreating ~55,000 DOM nodes, which is
+    # why adding a row used to feel heavier than editing one — so the response
+    # carries what actually changed and the client patches it.
+    #
+    # A reload is still needed when the SHAPE of the tree changes (folders added,
+    # removed or re-parented), because row placement, indentation and the folder
+    # headers all depend on it. That is reported separately from row edits.
+    tree_changing = any((c.get("action") or "").lower() in _TREE_ACTIONS
+                        for c in commands)
     try:
-        before = None if structural else _flat_rows(project)
+        before = _flat_rows(project)
+        before_order = list(before.keys())
+        before_wbs = None if tree_changing else _wbs_signature(project)
 
         _push_undo(label)
         results = apply_commands(project, commands)
@@ -1329,14 +1381,25 @@ def _apply_direct(commands, label):
                                 for c, (ok, msg) in applied],
             })
 
-        changed_rows = None
-        if before is not None and success_count:
+        changed_rows, added_rows, removed_ids = None, None, None
+        structural = tree_changing
+        if success_count:
             after = _flat_rows(project)
-            if set(after) != set(before):
-                structural = True                      # row set changed unexpectedly
-            else:
-                changed_rows = [row for aid, row in after.items()
-                                if row != before.get(aid)]
+            added_ids = [k for k in after if k not in before]
+            removed_ids = [k for k in before if k not in after]
+            changed_rows = [row for aid, row in after.items()
+                            if aid in before and row != before[aid]]
+            added_rows = [after[k] for k in added_ids]
+            # Row ORDER matters (the Schedule button re-sequences the grid) and
+            # so does the folder tree; either shifting means a patch cannot
+            # reproduce the result, so fall back to a reload.
+            if not structural:
+                kept_before = [k for k in before_order if k in after]
+                kept_after = [k for k in after if k in before]
+                if kept_before != kept_after or _wbs_signature(project) != before_wbs:
+                    structural = True
+        if structural:
+            changed_rows = added_rows = removed_ids = None
 
         return jsonify({
             "type":             "result",
@@ -1347,6 +1410,8 @@ def _apply_direct(commands, label):
                                  for c, (ok, msg) in applied],
             "structural":       structural,
             "changed_rows":     changed_rows,          # None => client full-reloads
+            "added_rows":       added_rows,
+            "removed_ids":      removed_ids,
             "undo_count":       len(sess["undo_stack"]),
             "redo_count":       len(sess["redo_stack"]),
             "edit_count":       len(sess["edit_history"]),
@@ -1897,6 +1962,20 @@ _MILESTONE_TYPES = {"Start Milestone", "Finish Milestone"}
 # Synthetic folder id for activities whose wbs_uid resolves to nothing.
 _ORPHAN_WBS_UID = "__unassigned__"
 
+def _wbs_signature(project):
+    """Cheap fingerprint of the folder tree — order, nesting and names."""
+    return [(w.uid, w.parent_uid, w.name, w.sequence_num)
+            for w in _ordered_wbs(project)]
+
+
+# Actions that reshape the WBS tree itself. Rows can be patched in place for
+# everything else, including adding and deleting activities.
+_TREE_ACTIONS = {
+    "add_wbs", "rename_wbs", "bulk_create_wbs", "move_wbs", "reorder_wbs",
+    "delete_wbs", "duplicate_wbs", "move_activity_wbs", "copy_activities",
+    "bulk_rules",
+}
+
 _STRUCTURAL_ACTIONS = {
     "add_activity", "delete_activity", "bulk_add_activity",
     "add_wbs", "rename_wbs", "bulk_create_wbs", "move_activity_wbs", "move_wbs",
@@ -1937,6 +2016,8 @@ def _activity_row(a, preds_map, succs_map):
     row = {
         "uid":           a.uid,
         "activity_id":   a.activity_id,
+        # the client needs this to place a newly added row without a reload
+        "wbs_uid":       a.wbs_uid,
         "name":          a.name,
         "duration_days": round(a.planned_duration / 8.0, 1) if a.planned_duration else 0.0,
         "status":        a.status,

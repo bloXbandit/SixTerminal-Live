@@ -4368,7 +4368,14 @@ async function directEdit(commands, label){
     // Value-only edit → patch just the changed rows in place. Structural edits
     // (add/delete/move/id-change) still do a full reload.
     if(d.success && !d.structural && Array.isArray(d.changed_rows)){
+      // Patch in place — no refetch, no full rebuild. Adds and deletes come
+      // through here too now, so inserting a row costs the same as editing one.
       patchRows(d.changed_rows);
+      if(d.removed_ids && d.removed_ids.length) removeRows(d.removed_ids);
+      if(d.added_rows && d.added_rows.length){
+        insertRows(d.added_rows);
+        revealActivities(d.added_rows.map(r => r.activity_id));
+      }
     } else {
       await loadSchedule();
       // rows that weren't there before are new — make sure they're visible
@@ -4619,6 +4626,47 @@ function beginCellEdit(td){
   const cancel = () => { if(done) return; done = true; td.innerHTML = restoreHTML; };
   wireCellKeys(input, td, commit, cancel);
   input.addEventListener('blur', () => commit());
+}
+
+/**
+ * Drop rows that no longer exist, from the DOM and from lastSchedData.
+ */
+function removeRows(ids){
+  const gone = new Set(ids);
+  (lastSchedData?.wbs_sections || []).forEach(w => {
+    w.activities = (w.activities || []).filter(a => !gone.has(a.activity_id));
+  });
+  gone.forEach(id => rowByActId(id)?.remove());
+  refreshBulkBar();
+}
+
+/**
+ * Insert newly created rows next to their folder, without rebuilding the grid.
+ * Placed after the last row already in that folder, or straight after the
+ * folder header when it was empty — which is where a full reload would have
+ * put them anyway.
+ */
+function insertRows(rows){
+  const tbody = document.getElementById('sched-tbody');
+  if(!tbody) return;
+  const secs = lastSchedData?.wbs_sections || [];
+  for(const row of rows){
+    if(rowByActId(row.activity_id)) continue;         // already on screen
+    const sec = secs.find(w => w.uid === row.wbs_uid) ||
+                secs.find(w => (w.activities || []).some(a => a.activity_id === row.activity_id));
+    const wbsUid = sec ? sec.uid : row.wbs_uid;
+    if(sec && !(sec.activities || []).some(a => a.activity_id === row.activity_id)){
+      (sec.activities = sec.activities || []).push(row);
+    }
+    const existing = [...tbody.querySelectorAll(`tr.sched-act-row[data-wbs="${CSS.escape(wbsUid)}"]`)];
+    const anchor = existing.length ? existing[existing.length - 1]
+                                   : document.getElementById('wbs-hdr-' + wbsUid);
+    const html = renderActivityRow(row, wbsUid, false);
+    if(anchor) anchor.insertAdjacentHTML('afterend', html);
+    else tbody.insertAdjacentHTML('beforeend', html);
+  }
+  applyWbsVisibility();
+  refreshBulkBar();
 }
 
 /** Locate a cell again after the row has been patched/re-rendered. */

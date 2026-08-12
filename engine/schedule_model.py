@@ -134,7 +134,9 @@ class Project:
         )
 
     def llm_context(self, max_activities: int = 3000,
-                    compact_above: int = 400) -> str:
+                    compact_above: int = 400,
+                    map_above: int = 900,
+                    detail: Optional[str] = None) -> str:
         """
         Rich context string for the LLM.
         Includes WBS structure, full activity list with pred/succ links,
@@ -464,7 +466,61 @@ class Project:
         # cap. Using one number for both meant the compact format only engaged
         # past 3000, so a 2999-activity schedule cost roughly twice the context
         # of a 3001-activity one.
-        if total_acts <= compact_above:
+        # ── How much detail to spend on the activity list ───────────────────
+        # Past a few hundred activities the per-activity list dominates the
+        # context — 2729 activities is ~224 KB, most of it names the agent does
+        # not need to answer the question in front of it, and which crowd out
+        # the reasoning it should be doing.
+        #
+        # So above map_above the list becomes a MAP: every folder, its counts
+        # and risk, plus a sample of activity names so naming conventions and
+        # ID patterns stay visible. Everything structural — the full WBS tree,
+        # milestones, critical path, open ends, hard constraints, missed tasks,
+        # relationships and the session's edit history — is still included in
+        # full, and the agent is told how to pull any branch at full detail on
+        # demand. detail="full" or "map" overrides the automatic choice.
+        as_map = (detail == "map") or (detail is None and total_acts > map_above)
+        if as_map:
+            _STATUS_ABBR = {"Not Started": "NS", "In Progress": "IP", "Completed": "CP"}
+            _wbs_acts: dict = {}
+            for a in self.activities:
+                _wbs_acts.setdefault(a.wbs_uid, []).append(a)
+            lines[-1] = (f"ACTIVITIES ({total_acts} total) — FOLDER MAP with samples. "
+                         f"This is a summary, not the full list.")
+            # Two names is enough to convey a folder's naming convention and ID
+            # pattern; this project has 277 folders, many of them near-identical
+            # rooms, so a larger sample repeats itself at real cost.
+            SAMPLE = 2
+            for w in self.wbs_nodes:
+                acts = _wbs_acts.get(w.uid)
+                if not acts:
+                    continue
+                crit = sum(1 for a in acts if is_critical(a))
+                nolog = sum(1 for a in acts
+                            if a.uid not in preds_of and a.uid not in succs_of)
+                con = sum(1 for a in acts if a.constraint_type)
+                starts = sorted(str(a.planned_start)[:10] for a in acts if a.planned_start)
+                fins = sorted(str(a.planned_finish)[:10] for a in acts if a.planned_finish)
+                span = f" | {starts[0]}..{fins[-1]}" if starts and fins else ""
+                lines.append(
+                    f"  [{w.code} — {_wbs_label(w)}] {len(acts)} acts"
+                    f" | {crit} critical | {nolog} unlinked | {con} constrained{span}")
+                for a in acts[:SAMPLE]:
+                    dur = f"{a.planned_duration / 8:.0f}d" if a.planned_duration else "0d"
+                    lines.append(f"    {a.activity_id} {a.name} | {dur} | "
+                                 f"{_STATUS_ABBR.get(a.status, a.status[:2])}")
+                if len(acts) > SAMPLE:
+                    lines.append(f"    …and {len(acts) - SAMPLE} more in this folder")
+            lines.append("")
+            lines.append("TO SEE A FOLDER IN FULL: run recommend_logic with "
+                         "scope=\"wbs\" and wbs_name set to the folder you need "
+                         "(a phase qualifier is honoured, e.g. \"Phase 1 MV Rooms\"). "
+                         "That returns every activity in that branch with dates, "
+                         "logic gaps and the long-lead items feeding it. Do that "
+                         "before answering a question about a specific area — do "
+                         "not guess from the samples above, and do not tell the "
+                         "user you cannot see the detail.")
+        elif total_acts <= compact_above:
             # ── Full format (small schedules) ───────────────────────────────
             for a in self.activities:
                 wbs      = wbs_map.get(a.wbs_uid)

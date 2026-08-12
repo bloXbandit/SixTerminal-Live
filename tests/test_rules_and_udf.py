@@ -221,3 +221,134 @@ def test_clearing_a_udf_removes_the_value():
     apply_command(p, {"action": "update_udf", "activity_id": "A1000", "value": "6"})
     apply_command(p, {"action": "update_udf", "activity_id": "A1000", "value": ""})
     assert not p.get_activity(activity_id="A1000").udfs
+
+
+# ── Response size and incremental updates ────────────────────────────────────
+
+def test_responses_are_compressed_when_the_client_accepts_gzip():
+    """A megabyte of JSON is the wrong shape for a corporate network, where a
+    TLS-inspecting proxy buffers the whole body before the browser sees any."""
+    import server
+    c = server.app.test_client()
+    r = c.post("/api/import/paste",
+               json={"text": "\n".join(f"A{1000+i}\tTask {i}\t5\t05-Jan-26\t09-Jan-26"
+                                       for i in range(400)), "project_name": "Big"})
+    c.post("/api/import/commit", json={"contract": r.get_json()["contract"],
+                                       "mode": "replace", "project_name": "Big"})
+    plain = c.get("/api/schedule")
+    gz = c.get("/api/schedule", headers={"Accept-Encoding": "gzip"})
+    assert gz.headers.get("Content-Encoding") == "gzip"
+    assert len(gz.data) < len(plain.data) / 3
+    assert "Accept-Encoding" in gz.headers.get("Vary", "")
+
+
+def test_a_tiny_response_is_left_alone():
+    """Below a kilobyte the gzip header costs more than it saves."""
+    import server
+    c = server.app.test_client()
+    r = c.get("/healthz", headers={"Accept-Encoding": "gzip"})
+    assert r.headers.get("Content-Encoding") is None
+
+
+def _big(c, n=30):
+    r = c.post("/api/import/paste",
+               json={"text": "Work\n" + "\n".join(
+                   f"A{1000+i}\tTask {i}\t5\t05-Jan-26\t09-Jan-26" for i in range(n)),
+                     "project_name": "P"})
+    c.post("/api/import/commit", json={"contract": r.get_json()["contract"],
+                                       "mode": "replace", "project_name": "P"})
+
+
+def test_adding_an_activity_patches_instead_of_reloading():
+    """Rebuilding the grid means refetching the whole payload and recreating
+    every row — an insert should cost what an edit costs."""
+    import server
+    c = server.app.test_client()
+    _big(c)
+    d = c.post("/api/direct", json={"commands": [
+        {"action": "add_activity", "wbs_name": "Work", "name": "New", "duration_days": 3}],
+        "label": "add"}).get_json()
+    assert d["structural"] is False
+    assert len(d["added_rows"]) == 1
+    assert d["added_rows"][0]["wbs_uid"], "the client needs wbs_uid to place the row"
+
+
+def test_deleting_an_activity_patches_instead_of_reloading():
+    import server
+    c = server.app.test_client()
+    _big(c)
+    d = c.post("/api/direct", json={"commands": [
+        {"action": "delete_activity", "activity_id": "A1000"}], "label": "del"}).get_json()
+    assert d["structural"] is False
+    assert d["removed_ids"] == ["A1000"]
+
+
+def test_reshaping_the_folder_tree_still_asks_for_a_reload():
+    """Row placement and indentation depend on the tree, so a patch cannot
+    reproduce the result."""
+    import server
+    c = server.app.test_client()
+    _big(c)
+    d = c.post("/api/direct", json={"commands": [
+        {"action": "add_wbs", "name": "Another"}], "label": "wbs"}).get_json()
+    assert d["structural"] is True
+    assert d["changed_rows"] is None
+
+
+def test_resequencing_the_rows_asks_for_a_reload():
+    """The Schedule button re-orders the grid; a row patch cannot express that."""
+    import server
+    c = server.app.test_client()
+    _big(c)
+    d = c.post("/api/schedule/run", json={"reorder": True}).get_json()
+    assert d.get("success")
+
+
+# ── Agent context ────────────────────────────────────────────────────────────
+
+def _wide_project(n=1200):
+    p = Project(uid="1", name="Big", id="B", planned_start="2026-01-05")
+    p.calendars = [Calendar(uid="1", name="S")]
+    p.wbs_nodes = [WBSNode(uid=f"w{i}", name=f"Area {i}", code=f"A{i}") for i in range(30)]
+    p.activities = [
+        Activity(uid=str(i), activity_id=f"A{1000+i}", name=f"Task {i}",
+                 wbs_uid=f"w{i % 30}", calendar_uid="1", planned_duration=40.0,
+                 planned_start="2026-01-05", planned_finish="2026-01-09")
+        for i in range(n)]
+    p.build_lookups()
+    return p
+
+
+def test_a_large_project_gets_a_map_not_every_activity():
+    p = _wide_project()
+    ctx = p.llm_context()
+    assert "FOLDER MAP" in ctx
+    assert len(ctx) < len(p.llm_context(detail="full")) / 2
+
+
+def test_the_map_still_names_every_folder():
+    """Losing folders would leave the agent unable to navigate at all."""
+    p = _wide_project()
+    ctx = p.llm_context()
+    for w in p.wbs_nodes:
+        assert w.name in ctx, f"{w.name} missing from the map"
+
+
+def test_the_map_tells_the_agent_how_to_get_the_detail():
+    p = _wide_project()
+    ctx = p.llm_context()
+    assert "recommend_logic" in ctx and "wbs_name" in ctx
+
+
+def test_a_small_project_still_gets_every_activity():
+    p = _wide_project(n=60)
+    ctx = p.llm_context()
+    assert "FOLDER MAP" not in ctx
+    for a in p.activities:
+        assert a.activity_id in ctx
+
+
+def test_detail_can_be_forced_either_way():
+    p = _wide_project(n=60)
+    assert "FOLDER MAP" in p.llm_context(detail="map")
+    assert "FOLDER MAP" not in p.llm_context(detail="full")
