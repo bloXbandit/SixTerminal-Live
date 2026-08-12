@@ -75,10 +75,15 @@ def _one_task_project(cal, days=10, start="2026-06-29"):
 
 
 def test_default_calendar_is_five_day_and_ignores_holidays():
-    """The default must reproduce the original hard-coded Mon-Fri behaviour."""
+    """Mon-Fri, working through holidays.
+
+    A 10-day task starting Monday 29 Jun runs two full working weeks and
+    finishes Friday 10 Jul — P6 counts a duration inclusively, so the finish
+    is start + duration - 1 working days, not start + duration.
+    """
     a = _one_task_project(Calendar(uid="1", name="Standard"))
     assert a.planned_start == "2026-06-29"
-    assert a.planned_finish == "2026-07-13"
+    assert a.planned_finish == "2026-07-10"
 
 
 def test_holiday_calendar_pushes_the_finish_out():
@@ -86,7 +91,7 @@ def test_holiday_calendar_pushes_the_finish_out():
     a = _one_task_project(Calendar(uid="1", name="5-DAY WITH HOLIDAY",
                                    work_days=WORKWEEK_5_DAY, holidays=hols))
     # one observed holiday inside the window -> one day later
-    assert a.planned_finish == "2026-07-14"
+    assert a.planned_finish == "2026-07-13"
 
 
 def test_six_day_calendar_finishes_earlier_than_five_day():

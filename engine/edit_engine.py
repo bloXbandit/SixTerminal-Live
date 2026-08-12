@@ -1234,6 +1234,34 @@ def _update_progress(project: Project, cmd: Dict) -> Tuple[bool, str]:
     return True, f"Set {pct:g}% complete on {len(matches)} activity/activities"
 
 
+def _span_days(dur_days: float) -> float:
+    """
+    Working days from start to finish for a given duration.
+
+    P6 counts inclusively: a 5-day activity starting Monday finishes Friday.
+    Mirrors _span_of in schedule_model so an edited date and a scheduled one
+    land on the same day.
+    """
+    return max(0.0, dur_days - 1.0) if dur_days >= 1.0 else 0.0
+
+
+def _add_working_days(start, days: float, wd, hol):
+    """Add `days` working days to `start` on the given calendar."""
+    import datetime as _d
+    import math as _math
+    d = start
+    while not (d.weekday() in wd and ((not hol) or d.isoformat() not in hol)):
+        d += _d.timedelta(days=1)
+    remaining = int(_math.ceil(abs(days)))
+    step = 1 if days >= 0 else -1
+    added = 0
+    while added < remaining:
+        d += _d.timedelta(days=step)
+        if d.weekday() in wd and ((not hol) or d.isoformat() not in hol):
+            added += 1
+    return d
+
+
 def _act_calendar(project: Project, act: Activity):
     """The activity's calendar (work days + holidays), with Mon–Fri defaults."""
     cal = None
@@ -1359,8 +1387,17 @@ def _update_planned_date(project: Project, cmd: Dict) -> Tuple[bool, str]:
             raise EditError(f"'{a.name}' has started — its start is the actual date")
         old_start = a.planned_start
         a.planned_start = date[:10]
+        # The finish travels with the start, keeping the duration. Without this
+        # the row shows a start and a finish that no longer agree with its own
+        # duration — the schedule no longer reflows on every edit, so nothing
+        # else was going to fix it up.
+        wd, hol, hpd = _act_calendar(project, a)
+        dur_d = 0.0 if is_milestone else (a.planned_duration or 0.0) / hpd
+        a.planned_finish = (date[:10] if dur_d <= 0 else
+                            _add_working_days(new_d, _span_days(dur_d), wd, hol).isoformat())
         note = _carry_constraint(a, "start", new_d, old_start) if carry else ""
-        return True, f"'{a.name}' planned start → {date[:10]}{note}"
+        return True, (f"'{a.name}' {date[:10]} → {a.planned_finish} "
+                      f"({dur_d:g}d){note}")
 
     if a.actual_finish:
         raise EditError(f"'{a.name}' is complete — its finish is the actual date")
@@ -1387,14 +1424,16 @@ def _update_planned_date(project: Project, cmd: Dict) -> Tuple[bool, str]:
     if new_d < ref_d:
         raise EditError(f"Finish {date[:10]} is before the start ({str(ref)[:10]})")
 
-    # Working days in (start, finish] on the activity's calendar — matches the
-    # scheduler's finish = start + duration convention exactly.
+    # Working days from start to finish INCLUSIVE, matching P6 and the
+    # scheduler's finish = start + duration - 1 convention: a task that runs
+    # Monday to Friday is five days, not four.
     wd, hol, hpd = _act_calendar(project, a)
     days, d = 0, ref_d
     while d < new_d:
         d += _d.timedelta(days=1)
         if d.weekday() in wd and ((not hol) or d.isoformat() not in hol):
             days += 1
+    days += 1
     a.planned_duration = float(days) * hpd
     a.remaining_duration = a.planned_duration * (1 - (a.percent_complete or 0) / 100.0)
     old_finish = a.planned_finish

@@ -88,10 +88,17 @@ def working_days_between(d1, d2, cal=None) -> Optional[int]:
 
 
 def implied_lag(project: Project, pred: Activity, succ: Activity) -> Optional[int]:
-    """Working days between the predecessor's finish and the successor's start."""
+    """
+    Working days of GAP between the predecessor finishing and the successor
+    starting — the lag a Finish-to-Start tie would need to reproduce the dates.
+
+    The predecessor's finish day is worked, so a successor starting the next
+    working day is back-to-back and reads as zero. Anything more is real slack.
+    """
     p_fin = pred.actual_finish or pred.planned_finish or pred.early_finish
     s_start = succ.actual_start or succ.planned_start or succ.early_start
-    return working_days_between(p_fin, s_start, _calendar_of(project, succ))
+    raw = working_days_between(p_fin, s_start, _calendar_of(project, succ))
+    return None if raw is None else raw - 1
 
 
 def classify(lag: Optional[int]) -> Tuple[str, str]:

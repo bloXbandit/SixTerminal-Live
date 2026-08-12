@@ -755,6 +755,24 @@ def compute_dates(project: "Project", hold_unlinked_dates: bool = True,
                 added += 1
         return d
 
+    def _span_of(dur_days: float) -> float:
+        """
+        Working days from an activity's start to its finish.
+
+        P6 counts a duration inclusively: a 5-day activity starting Monday
+        finishes Friday, not the following Monday. The span is therefore one
+        day shorter than the duration. Checked against the reference export —
+        793 of its 826 whole-day activities follow this, the other 30 being
+        zero-duration milestones.
+
+        This app used to treat the duration itself as the offset, which put
+        every finish a day late; FS successors then started on the
+        predecessor's finish day, and the two errors cancelled out along a
+        chain. Both are corrected together below — separately they would not
+        be.
+        """
+        return max(0.0, dur_days - 1.0) if dur_days >= 1.0 else 0.0
+
     def _wd_between(d1: _date, d2: _date, wd, hol) -> float:
         """Working-day count from d1 to d2 (positive when d2 > d1)."""
         if d2 == d1:
@@ -854,6 +872,7 @@ def compute_dates(project: "Project", hold_unlinked_dates: bool = True,
         wd, hol, a_hpd = _wd_of(_cal), _hol_of(_cal), _hpd_of(_cal)
         is_ms = act.activity_type in MILESTONE_TYPES
         dur_d = 0.0 if is_ms else (act.planned_duration or 0.0) / a_hpd
+        span_d = _span_of(dur_d)
 
         # Completed → anchor to actual dates
         if act.status == "Completed" and act.actual_start and act.actual_finish:
@@ -881,11 +900,14 @@ def compute_dates(project: "Project", hold_unlinked_dates: bool = True,
                 if "Start to Start" in rel_type:
                     cand = _add_wd(pes, lag_d, wd, hol)
                 elif "Finish to Finish" in rel_type:
-                    cand = _add_wd(_add_wd(pef, lag_d, wd, hol), -dur_d, wd, hol)
+                    # both finish together → back off this activity's own span
+                    cand = _add_wd(_add_wd(pef, lag_d, wd, hol), -span_d, wd, hol)
                 elif "Start to Finish" in rel_type:
-                    cand = _add_wd(pes, lag_d - dur_d, wd, hol)
+                    cand = _add_wd(_add_wd(pes, lag_d, wd, hol), -span_d, wd, hol)
                 else:  # Finish to Start (default)
-                    cand = _add_wd(pef, lag_d, wd, hol)
+                    # the successor starts the working day AFTER the
+                    # predecessor finishes — the finish day is worked
+                    cand = _add_wd(pef, lag_d + 1, wd, hol)
                 if cand > es_date:
                     es_date = cand
             es_date = _snap(es_date, wd, hol)
@@ -921,7 +943,7 @@ def compute_dates(project: "Project", hold_unlinked_dates: bool = True,
             if data_floor and act.status == "Not Started" and es_date < data_floor:
                 es_date = data_floor
 
-        ef_date = _add_wd(es_date, dur_d, wd, hol) if dur_d > 0 else es_date
+        ef_date = _add_wd(es_date, span_d, wd, hol) if dur_d > 0 else es_date
 
         # Hard constraints on finish. An in-progress activity's start is a fact
         # (its actual start) — pin the finish but never shift the start.
@@ -932,7 +954,7 @@ def compute_dates(project: "Project", hold_unlinked_dates: bool = True,
             # MFO — genuinely overrides logic, and back-computes the start.
             ef_date = _snap(cd, wd, hol)
             if not anchored:
-                es_date = _add_wd(ef_date, -dur_d, wd, hol) if dur_d > 0 else ef_date
+                es_date = _add_wd(ef_date, -span_d, wd, hol) if dur_d > 0 else ef_date
         elif ct in ("finish on", "finish on or after") and cd and cd > ef_date:
             # Same rule as the start pins: a finish pin can push the finish
             # out, never drag it in front of the work driving it. "Finish On"
@@ -967,6 +989,7 @@ def compute_dates(project: "Project", hold_unlinked_dates: bool = True,
         wd, hol, a_hpd = _wd_of(_cal), _hol_of(_cal), _hpd_of(_cal)
         is_ms = act.activity_type in MILESTONE_TYPES
         dur_d = 0.0 if is_ms else (act.planned_duration or 0.0) / a_hpd
+        span_d = _span_of(dur_d)
 
         if act.status == "Completed":
             ls[uid] = es.get(uid, origin)
@@ -978,13 +1001,13 @@ def compute_dates(project: "Project", hold_unlinked_dates: bool = True,
             sls = ls.get(s_uid, project_lf)
             slf = lf.get(s_uid, project_lf)
             if "Start to Start" in rel_type:
-                cand = _add_wd(_add_wd(sls, -lag_d, wd, hol), dur_d, wd, hol)
+                cand = _add_wd(_add_wd(sls, -lag_d, wd, hol), span_d, wd, hol)
             elif "Finish to Finish" in rel_type:
                 cand = _add_wd(slf, -lag_d, wd, hol)
             elif "Start to Finish" in rel_type:
-                cand = _add_wd(_add_wd(slf, -lag_d, wd, hol), dur_d, wd, hol)
-            else:  # Finish to Start
-                cand = _add_wd(sls, -lag_d, wd, hol)
+                cand = _add_wd(_add_wd(slf, -lag_d, wd, hol), span_d, wd, hol)
+            else:  # Finish to Start — must finish the working day BEFORE
+                cand = _add_wd(sls, -lag_d - 1, wd, hol)
             if cand < lf_date:
                 lf_date = cand
 
@@ -998,11 +1021,11 @@ def compute_dates(project: "Project", hold_unlinked_dates: bool = True,
                 if cd < lf_date:
                     lf_date = cd
             elif ct in ("start on or before", "must start on", "start on"):
-                start_cap = _add_wd(cd, dur_d, wd, hol) if dur_d > 0 else cd
+                start_cap = _add_wd(cd, span_d, wd, hol) if dur_d > 0 else cd
                 if start_cap < lf_date:
                     lf_date = start_cap
 
-        ls_date = _add_wd(lf_date, -dur_d, wd, hol) if dur_d > 0 else lf_date
+        ls_date = _add_wd(lf_date, -span_d, wd, hol) if dur_d > 0 else lf_date
         ls[uid] = ls_date
         lf[uid] = lf_date
 
