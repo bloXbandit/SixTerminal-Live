@@ -1972,8 +1972,8 @@ def _wbs_signature(project):
 # everything else, including adding and deleting activities.
 _TREE_ACTIONS = {
     "add_wbs", "rename_wbs", "bulk_create_wbs", "move_wbs", "reorder_wbs",
-    "delete_wbs", "duplicate_wbs", "move_activity_wbs", "copy_activities",
-    "bulk_rules",
+    "delete_wbs", "duplicate_wbs", "move_activity_wbs", "move_activities",
+    "copy_activities", "bulk_rules",
 }
 
 _STRUCTURAL_ACTIONS = {

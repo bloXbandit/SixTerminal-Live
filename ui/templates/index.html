@@ -1942,6 +1942,7 @@
         <button class="mini-btn" onclick="openAppendNamePopup(event,{wbsScope:false})" title="Add text to the end (or start) of the selected activities' names — the existing name is kept">✎+ Add text to names</button>
         <span class="sched-sep"></span>
         <button class="mini-btn" onclick="bulkCopy()" title="Copy the selected rows with their data and the logic between them">Copy</button>
+        <button class="mini-btn" onclick="bulkCut()" title="Cut the selected rows — pasting moves them, keeping their IDs, dates and all their logic">✂ Cut</button>
         <button class="mini-btn" id="bulk-paste-btn" onclick="bulkPaste()" disabled>Paste →</button>
         <button class="mini-btn" id="bulk-paste-new-btn" onclick="bulkPasteIntoNewFolder()" disabled
                 title="Create a sub-folder under the chosen WBS and paste the copied rows into it">Paste → new sub-folder</button>
@@ -3575,8 +3576,9 @@ let isEditMode   = false;
 let lastSchedData = null;         // last /api/schedule payload (for WBS lists)
 const selectedIds = new Set();    // activity_ids currently selected
 let clipboard    = [];            // copied activity specs (cross-schedule fallback)
-let _clipMeta    = null;          // {ids, projectId, rels} — lets a same-schedule
+let _clipMeta    = null;          // {ids, projectId, rels, cut} — lets a same-schedule
                                   // paste carry the logic between the copied rows
+let _clipWbs     = null;          // {uids, names} — folders on the cut clipboard
 let lastActWbs   = null;          // remember the WBS the user last added into
 let _lastSelectedId = null;       // anchor row for shift+click range selection
 
@@ -4123,6 +4125,53 @@ async function moveSelectedWbs(toRoot){
   await applyWbsMove(uids, targetUid, targetName, toRoot);
 }
 
+/**
+ * Cut the selected folders — the paste re-parents them, sub-folders,
+ * activities and logic included, because membership is by parent_uid.
+ */
+function cutSelectedWbs(){
+  const uids = [...selectedWbs];
+  if(!uids.length){ flashSched('Select a folder first', true); return; }
+  _clipWbs = {uids, names: uids.map(u => wbsNameOfUid(u) || 'folder')};
+  clipboard = []; _clipMeta = null;      // a folder clipboard replaces a row one
+  const n = uids.length;
+  flashSched(`Cut ${n === 1 ? `"${_clipWbs.names[0]}"` : n + ' folders'}`
+           + ' — right-click the folder to move it into', false);
+  refreshBulkBar();
+}
+
+/** Drop the cut folders under `parentUid` (or at the root). */
+async function moveCutWbsInto(parentUid){
+  if(!_clipWbs || !_clipWbs.uids.length){ flashSched('No folder cut', true); return; }
+  const uids = _clipWbs.uids;
+  if(parentUid && uids.includes(parentUid)){
+    flashSched('Cannot move a folder into itself', true); return;
+  }
+  // the engine rejects a cycle too, but catching it here keeps the message
+  // specific to the folder the user actually clicked
+  if(parentUid && descendantsOf(new Set(uids)).has(parentUid)){
+    flashSched('Cannot move a folder into its own sub-folder', true); return;
+  }
+  const targetName = parentUid ? (wbsNameOfUid(parentUid) || 'folder') : null;
+  _clipWbs = null;
+  await applyWbsMove(uids, parentUid, targetName, !parentUid);
+  refreshBulkBar();
+}
+
+/**
+ * Create an empty sub-folder under `parentUid`, named on the spot.
+ * The point is that right-clicking the parent IS the target, so there is no
+ * dropdown to fill in first.
+ */
+async function addSubfolder(parentUid){
+  if(!parentUid){ flashSched('No folder under the cursor', true); return; }
+  const parentName = wbsNameOfUid(parentUid) || 'the selected folder';
+  const name = (prompt(`Name for the new sub-folder under "${parentName}"`) || '').trim();
+  if(!name) return;
+  await directEdit([{action:'add_wbs', name, parent_uid:parentUid}],
+                   `New folder "${name}" under ${parentName}`);
+}
+
 /** Copy each selected folder (sub-folders, activities and internal logic). */
 async function duplicateSelectedWbs(){
   const uids = [...selectedWbs];
@@ -4137,11 +4186,13 @@ async function duplicateSelectedWbs(){
 }
 
 async function applyWbsMove(uids, targetUid, targetName, toRoot){
+  // Target by uid, never by name: 38 folders in this schedule share a name,
+  // and a move that lands one level off is painful to unpick.
   const cmds = uids.map(uid => {
-    const c = {action:'move_wbs', wbs_name: wbsNameOf(uid)};
-    if(toRoot) c.to_root = true; else c.parent_name = targetName;
+    const c = {action:'move_wbs', wbs_uid: uid};
+    if(toRoot) c.to_root = true; else c.parent_uid = targetUid;
     return c;
-  }).filter(c => c.wbs_name);
+  }).filter(c => c.wbs_uid);
   if(!cmds.length) return;
   const label = toRoot
     ? `Move ${cmds.length} folder${cmds.length===1?'':'s'} to root`
@@ -5670,8 +5721,19 @@ function refreshBulkBar(){
   document.getElementById('bulk-count').textContent = n + ' selected';
   bar.classList.toggle('show', isEditMode && n > 0);
   const canPaste = clipboard.length > 0 || !!(_clipMeta && (_clipMeta.ids||[]).length);
-  const pb = document.getElementById('bulk-paste-btn'); if(pb) pb.disabled = !canPaste;
-  const pnb = document.getElementById('bulk-paste-new-btn'); if(pnb) pnb.disabled = !canPaste;
+  const isCut    = !!(_clipMeta && _clipMeta.cut);
+  const pb = document.getElementById('bulk-paste-btn');
+  if(pb){
+    pb.disabled = !canPaste;
+    // say what the button will actually do — a cut moves, it doesn't duplicate
+    pb.textContent = isCut ? 'Move →' : 'Paste →';
+    pb.title = isCut ? 'Move the cut rows into the chosen WBS'
+                     : 'Paste the copied rows into the chosen WBS';
+  }
+  // "into a new sub-folder" mints the folder and pastes in one command; a cut
+  // is a relocation of existing rows, so that combination doesn't apply
+  const pnb = document.getElementById('bulk-paste-new-btn');
+  if(pnb) pnb.disabled = !canPaste || isCut;
 }
 function bulkSetDuration(){
   const v = parseFloat(document.getElementById('bulk-dur').value);
@@ -5724,28 +5786,71 @@ function bulkFillDown(){
  * Copy the selected rows.
  *
  * Two things are remembered: the activity IDs (so a paste back into the SAME
- * schedule can carry the relationships between them), and a plain data copy
- * (so a paste into a DIFFERENT schedule still works, minus the logic — those
- * activities don't exist over there to link to).
+ * schedule can carry the relationships between them), and a FULL data copy of
+ * every row — dates, constraint, type, duration and UDFs included.
+ *
+ * That second half is what makes the clipboard survive its source. Copying a
+ * block, deleting it, then pasting it back is a normal move gesture, and it
+ * used to fail outright: the paste asked the server to copy activity IDs that
+ * no longer existed, the engine rejected the whole command, and nothing
+ * appeared. Carrying the data means the paste can always be honoured — with
+ * the rows exactly as they were, not as blank stubs.
  */
-function bulkCopy(){
+function bulkCopy(mode){
   const order = visibleActRows().map(r => r.dataset.actid).filter(id => selectedIds.has(id));
   if(!order.length){ flashSched('Select some rows first', true); return; }
   clipboard = [];
   const sel = new Set(order);
   let internal = 0;
+  const byId = {};
   (lastSchedData?.wbs_sections || []).forEach(w => (w.activities||[]).forEach(a => {
     if(!sel.has(a.activity_id)) return;
-    clipboard.push({name:a.name, duration_days:a.duration_days, activity_type:a.activity_type});
+    byId[a.activity_id] = a;
     // count links whose BOTH ends are inside the selection — those travel
     (a.successors || []).forEach(s => { if(sel.has(s.activity_id)) internal++; });
   }));
-  _clipMeta = {ids: order, projectId: _activeProjectId, rels: internal};
+  // keep the on-screen order, not the order the sections happen to be in
+  order.forEach(id => {
+    const a = byId[id];
+    if(!a) return;
+    clipboard.push({
+      name: a.name, duration_days: a.duration_days, activity_type: a.activity_type,
+      planned_start: a.planned_start, planned_finish: a.planned_finish,
+      constraint_type: a.constraint_type || '', constraint_date: a.constraint_date || null,
+      udfs: a.udfs || {},
+    });
+  });
+  _clipMeta = {ids: order, projectId: _activeProjectId, rels: internal,
+               cut: mode === 'cut'};
+  _clipWbs = null;                       // an activity clipboard replaces a folder one
   const n = order.length;
+  if(mode === 'cut'){
+    flashSched(`Cut ${n} activit${n===1?'y':'ies'} — right-click the folder to move them into`, false);
+    refreshBulkBar();
+    return;
+  }
   flashSched(`Copied ${n} activit${n===1?'y':'ies'}`
     + (internal ? ` + ${internal} relationship${internal===1?'':'s'} between them` : '')
     + ' — pick a WBS and Paste', false);
   refreshBulkBar();
+}
+
+/** Cut the selected rows — same clipboard, but the paste MOVES them. */
+function bulkCut(){ bulkCopy('cut'); }
+
+/**
+ * True when every id on the clipboard still exists in the loaded schedule.
+ * A paste that names a deleted row is rejected by the engine as a whole, so
+ * this decides between "copy the live rows" and "rebuild them from the data
+ * we saved at copy time".
+ */
+function _clipRowsStillExist(){
+  const ids = (_clipMeta && _clipMeta.ids) || [];
+  if(!ids.length) return false;
+  const live = new Set();
+  (lastSchedData?.wbs_sections || []).forEach(w =>
+    (w.activities||[]).forEach(a => live.add(a.activity_id)));
+  return ids.every(id => live.has(id));
 }
 
 function _pasteTargets(){
@@ -5760,22 +5865,68 @@ function _pasteCommands(wbsUid){
   const wbsName = wbsNameOfUid(wbsUid) || 'folder';
   const sameSchedule = _clipMeta && _clipMeta.projectId === _activeProjectId
                        && (_clipMeta.ids || []).length;
-  if(sameSchedule){
+  const intact = sameSchedule && _clipRowsStillExist();
+
+  // Cut: relocate the rows themselves. Nothing is duplicated, so every id,
+  // date, constraint and link survives — including links to rows outside the
+  // selection, which a copy has to drop.
+  if(intact && _clipMeta.cut){
+    const n = _clipMeta.ids.length;
+    return {
+      cmds: [{action:'move_activities', activity_ids:_clipMeta.ids, wbs_uid:wbsUid,
+              skip_missing:true}],
+      label: `Move ${n} activit${n===1?'y':'ies'} → ${wbsName}`,
+      withLogic: true, wasCut: true,
+    };
+  }
+  if(intact){
     // one command — the engine copies the rows AND the links between them
     return {
-      cmds: [{action:'copy_activities', activity_ids:_clipMeta.ids, wbs_uid:wbsUid}],
+      cmds: [{action:'copy_activities', activity_ids:_clipMeta.ids, wbs_uid:wbsUid,
+              skip_missing:true}],
       label: `Paste ${_clipMeta.ids.length} activit${_clipMeta.ids.length===1?'y':'ies'}`
              + (_clipMeta.rels ? ` + logic` : '') + ` → ${wbsName}`,
       withLogic: true,
     };
   }
-  // different schedule: the source rows aren't here, so data only
+  // The source rows are gone — deleted after the copy, or we're in a different
+  // schedule. Rebuild them from the snapshot taken at copy time so the rows
+  // come back with their dates and constraints, not as blank stubs. The logic
+  // between them cannot follow: the activities it referred to no longer exist.
   return {
-    cmds: clipboard.map(c => ({action:'add_activity', wbs_uid:wbsUid, name:c.name,
-                               duration_days:c.duration_days, activity_type:c.activity_type})),
+    cmds: clipboard.map(c => ({
+      action:'add_activity', wbs_uid:wbsUid, name:c.name,
+      duration_days:c.duration_days, activity_type:c.activity_type,
+      planned_start:c.planned_start, planned_finish:c.planned_finish,
+      constraint_type:c.constraint_type, constraint_date:c.constraint_date,
+      udfs:c.udfs,
+    })),
     label: `Paste ${clipboard.length} activit${clipboard.length===1?'y':'ies'} → ${wbsName}`,
     withLogic: false,
+    rebuilt: sameSchedule,     // same schedule, but the source rows were deleted
   };
+}
+
+/**
+ * Tell the user what actually happened, and retire a cut clipboard.
+ *
+ * A cut is a one-shot move: once the rows have been relocated, pasting the
+ * same clipboard again would be a no-op at best, so it is cleared. A copy
+ * clipboard is kept, because pasting the same block into several folders is
+ * a normal thing to want.
+ */
+function _afterPaste(p){
+  if(p.wasCut){
+    clipboard = []; _clipMeta = null;
+    refreshBulkBar();
+    return;
+  }
+  if(p.rebuilt){
+    flashSched('The copied rows had been deleted — pasted from the copy, '
+             + 'with their dates; the logic between them could not follow', false);
+  } else if(!p.withLogic && _clipMeta && _clipMeta.rels){
+    flashSched('Pasted into a different schedule — row data only, the logic could not follow', true);
+  }
 }
 
 async function bulkPaste(){
@@ -5784,9 +5935,7 @@ async function bulkPaste(){
   if(!p.cmds.length) return;
   clearSelection();
   await directEdit(p.cmds, p.label);
-  if(!p.withLogic && _clipMeta && _clipMeta.rels){
-    flashSched('Pasted into a different schedule — row data only, the logic could not follow', true);
-  }
+  _afterPaste(p);
 }
 
 /** Create a sub-folder under the chosen WBS, then paste the copied rows into it. */
@@ -5802,9 +5951,7 @@ async function pasteIntoWbs(wbsUid){
   if(!p.cmds.length) return;
   clearSelection();
   await directEdit(p.cmds, p.label);
-  if(!p.withLogic && _clipMeta && _clipMeta.rels){
-    flashSched('Pasted into a different schedule — row data only, the logic could not follow', true);
-  }
+  _afterPaste(p);
 }
 
 /** Right-click equivalent of "paste into a new sub-folder". */
@@ -5968,26 +6115,40 @@ function onSchedContextMenu(e){
     selectedWbs.clear(); selectedWbs.add(tr.dataset.wbsuid); refreshWbsSelection();
   }
 
-  // How many rows are on the clipboard, for the paste labels below
+  // What is on the clipboard, for the paste labels below
   const clipCount = (_clipMeta && (_clipMeta.ids || []).length) || clipboard.length;
+  const isCut     = !!(_clipMeta && _clipMeta.cut);
+  const cutFolders = (_clipWbs && _clipWbs.uids.length) || 0;
+  const pasteVerb = isCut ? 'Move' : 'Paste';
+  const pasteIcon = isCut ? '✂' : '⎘';
 
   const items = isWbs ? [
-    ...(clipCount ? [
-      [`⎘ Paste ${clipCount} row${clipCount === 1 ? '' : 's'} here`,
-       () => pasteIntoWbs(tr.dataset.wbsuid)],
-      ['⎘ Paste into a new sub-folder…',
-       () => pasteIntoNewSubfolder(tr.dataset.wbsuid)],
+    ...(cutFolders ? [
+      [`✂ Move ${cutFolders === 1 ? `"${_clipWbs.names[0]}"` : cutFolders + ' folders'} in here`,
+       () => moveCutWbsInto(tr.dataset.wbsuid)],
       ['---'],
     ] : []),
+    ...(clipCount ? [
+      [`${pasteIcon} ${pasteVerb} ${clipCount} row${clipCount === 1 ? '' : 's'} here`,
+       () => pasteIntoWbs(tr.dataset.wbsuid)],
+      ...(isCut ? [] : [['⎘ Paste into a new sub-folder…',
+                         () => pasteIntoNewSubfolder(tr.dataset.wbsuid)]]),
+      ['---'],
+    ] : []),
+    ['＋ New sub-folder…',  () => addSubfolder(tr.dataset.wbsuid)],
     ['＋ Add activity here', () => quickAddActivity(tr.dataset.wbsuid, tr.dataset.wbsname)],
+    ['---'],
+    ['✂ Cut folder',        () => cutSelectedWbs()],
     ['⧉ Duplicate folder',  () => duplicateSelectedWbs()],
+    ['✎ Rename folder…',    () => beginWbsRename(tr)],
     ['⇱ Move to root',      () => moveSelectedWbs(true)],
     ['📌✕ Clear constraints', () => wbsClearConstraints()],
     ['✎+ Add text to names',  (ev) => openAppendNamePopup(ev, {wbsScope:true})],
     ['🗑 Delete folder…',     () => deleteSelectedWbs()],
   ] : [
     ['⎘ Copy selected', () => bulkCopy()],
-    ...(clipCount ? [[`⎘ Paste ${clipCount} row${clipCount === 1 ? '' : 's'} into this folder`,
+    ['✂ Cut selected',  () => bulkCut()],
+    ...(clipCount ? [[`${pasteIcon} ${pasteVerb} ${clipCount} row${clipCount === 1 ? '' : 's'} into this folder`,
                       () => pasteIntoWbs(tr.dataset.wbs)]] : []),
     ['---'],
     ['⛓ Link selected in sequence', () => bulkLinkSequence()],

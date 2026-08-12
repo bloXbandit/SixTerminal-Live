@@ -17,6 +17,7 @@ Supported commands:
   rename_wbs                — Rename a WBS node
   add_wbs                   — Add a new WBS node
   move_activity_wbs         — Move an activity to a different WBS node
+  move_activities           — Move a set of activities into a folder (cut & paste)
   reorder_wbs               — Move a WBS folder up/down among its siblings
   delete_wbs                — Delete a folder (contents move up, or go with it)
   recommend_logic           — Report what logic is missing (advisory; changes nothing)
@@ -217,6 +218,8 @@ def apply_command(project: Project, command: Dict[str, Any]) -> Tuple[bool, str]
             return _bulk_rules(project, command)
         elif action == "move_activity_wbs":
             return _move_activity_wbs(project, command)
+        elif action == "move_activities":
+            return _move_activities(project, command)
         elif action == "bulk_rename":
             return _bulk_rename(project, command)
         elif action == "bulk_update_duration":
@@ -525,7 +528,14 @@ def _add_activity(project: Project, cmd: Dict) -> Tuple[bool, str]:
         remaining_duration=_hours(duration_days),
         planned_start=cmd.get("planned_start"),
         planned_finish=cmd.get("planned_finish"),
+        # A paste carries the row as it was. Without these the pasted rows land
+        # with blank dates, which is exactly what a paste is not supposed to do.
+        constraint_type=cmd.get("constraint_type") or "",
+        constraint_date=cmd.get("constraint_date") or None,
     )
+    udfs = cmd.get("udfs")
+    if isinstance(udfs, dict):
+        new_act.udfs = {str(k): str(v) for k, v in udfs.items() if v not in (None, "")}
     project.activities.append(new_act)
     project.build_lookups()
     return True, f"Added activity '{act_id} — {name}' ({duration_days}d) to WBS '{wbs.name}'"
@@ -826,19 +836,25 @@ def _move_wbs(project: Project, cmd: Dict) -> Tuple[bool, str]:
     Re-parent a WBS folder (with everything under it — child folders and their
     activities move implicitly, since membership is by parent_uid / wbs_uid).
 
-    Pass parent_code/parent_name to nest it, or omit both (or parent_code=None)
-    to move it to the root.
+    Pass parent_uid/parent_code/parent_name to nest it, or omit them all (or
+    parent_code=None) to move it to the root. The grid passes uids, because
+    name matching is a substring match and this schedule has 38 folders whose
+    names repeat — a cut-and-paste must land on the folder that was clicked.
     """
-    wbs = _find_wbs(project, cmd.get("wbs_code"), cmd.get("wbs_name"))
+    wbs = _find_wbs(project, cmd.get("wbs_code"), cmd.get("wbs_name"), cmd.get("wbs_uid"))
     if not wbs:
-        raise EditError(f"WBS node not found: {cmd.get('wbs_code') or cmd.get('wbs_name')}")
+        raise EditError(f"WBS node not found: "
+                        f"{cmd.get('wbs_uid') or cmd.get('wbs_code') or cmd.get('wbs_name')}")
 
-    to_root = cmd.get("to_root") or not (cmd.get("parent_code") or cmd.get("parent_name"))
+    to_root = cmd.get("to_root") or not (cmd.get("parent_uid") or cmd.get("parent_code")
+                                         or cmd.get("parent_name"))
     parent = None
     if not to_root:
-        parent = _find_wbs(project, cmd.get("parent_code"), cmd.get("parent_name"))
+        parent = _find_wbs(project, cmd.get("parent_code"), cmd.get("parent_name"),
+                           cmd.get("parent_uid"))
         if not parent:
-            raise EditError(f"Target WBS not found: {cmd.get('parent_code') or cmd.get('parent_name')}")
+            raise EditError(f"Target WBS not found: "
+                            f"{cmd.get('parent_uid') or cmd.get('parent_code') or cmd.get('parent_name')}")
         if parent.uid == wbs.uid:
             raise EditError(f"Cannot move '{wbs.name}' into itself")
         # Walking up from the target must not reach the node being moved,
@@ -1010,16 +1026,33 @@ def _copy_activities(project: Project, cmd: Dict) -> Tuple[bool, str]:
     if not ids:
         raise EditError("activity_ids is required for copy_activities")
 
+    # An unresolvable id normally fails the whole command, before anything is
+    # created — a typo in one row must not leave a half-copy behind.
+    #
+    # skip_missing relaxes that for one caller: the grid replaying its
+    # clipboard, where the row list was captured earlier and a row may since
+    # have been deleted. There, dropping the entire paste is the wrong answer;
+    # the surviving rows should still land. Agent-issued commands leave the
+    # flag off and keep the strict check.
+    skip_missing = bool(cmd.get("skip_missing"))
     src_acts = []
     seen = set()
+    missing = []
     for aid in ids:
         matches = _find_activity(project, aid)
         if not matches:
-            raise EditError(f"Activity not found: {aid}")
+            if not skip_missing:
+                raise EditError(f"Activity not found: {aid}")
+            missing.append(aid)
+            continue
         a = matches[0]
         if a.uid not in seen:
             seen.add(a.uid)
             src_acts.append(a)
+    if not src_acts:
+        raise EditError(
+            f"None of the {len(ids)} copied activities still exist — "
+            f"nothing to copy from")
 
     target_uid = None
     if cmd.get("wbs_uid") or cmd.get("wbs_code") or cmd.get("wbs_name"):
@@ -1079,6 +1112,54 @@ def _copy_activities(project: Project, cmd: Dict) -> Tuple[bool, str]:
     msg = f"Copied {total_new} activity/activities carrying {rels_made} relationship(s)"
     if boundary:
         msg += f"; {len(boundary)} link(s) to activities outside the selection were not carried"
+    if missing:
+        msg += f"; {len(missing)} copied row(s) no longer exist and were skipped"
+    return True, msg
+
+
+def _move_activities(project: Project, cmd: Dict) -> Tuple[bool, str]:
+    """
+    Move a set of activities into a folder — the paste half of cut-and-paste.
+
+    Unlike copy+delete this keeps each row's identity: the activity_id, dates,
+    constraints, UDFs and *all* of its logic survive, including links to
+    activities outside the selection. Only the folder changes.
+
+      activity_ids : ids to move
+      wbs_uid / wbs_code / wbs_name : destination folder
+      skip_missing : drop ids that no longer exist instead of failing (the
+                     grid sets this when replaying a clipboard; agent
+                     commands leave it off so a typo is reported)
+    """
+    ids = cmd.get("activity_ids") or []
+    if not ids:
+        raise EditError("activity_ids is required for move_activities")
+    wbs = _find_wbs(project, cmd.get("wbs_code"), cmd.get("wbs_name"), cmd.get("wbs_uid"))
+    if not wbs:
+        raise EditError(f"Target WBS not found: "
+                        f"{cmd.get('wbs_uid') or cmd.get('wbs_code') or cmd.get('wbs_name')}")
+    skip_missing = bool(cmd.get("skip_missing"))
+    # resolve everything first — a half-finished move is worse than none
+    resolved, missing = [], []
+    for aid in ids:
+        matches = _find_activity(project, aid)
+        if not matches:
+            if not skip_missing:
+                raise EditError(f"Activity not found: {aid}")
+            missing.append(aid)
+            continue
+        resolved.append(matches[0])
+    if not resolved:
+        raise EditError(f"None of the {len(ids)} cut activities still exist")
+    moved = 0
+    for a in resolved:
+        if a.wbs_uid != wbs.uid:
+            moved += 1
+        a.wbs_uid = wbs.uid
+    project.build_lookups()
+    msg = f"Moved {moved} activity/activities to WBS '{wbs.name}'"
+    if missing:
+        msg += f"; {len(missing)} row(s) no longer exist and were skipped"
     return True, msg
 
 

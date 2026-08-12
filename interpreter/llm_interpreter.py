@@ -10,7 +10,7 @@ Supported actions (must match edit_engine.py):
   rename_activity, update_duration, update_activity_id,
   add_activity, delete_activity, add_relation, delete_relation,
   rename_wbs, add_wbs, move_wbs, reorder_wbs, delete_wbs, duplicate_wbs,
-  move_activity_wbs,
+  move_activity_wbs, move_activities,
   copy_activities, set_data_date,
   bulk_rename, bulk_update_duration,
   set_constraint, clear_constraint, set_actual_date, update_planned_date,
@@ -409,6 +409,14 @@ add_wbs:
 
 move_activity_wbs:
   {"action": "move_activity_wbs", "activity_id": "A1040", "wbs_name": "Finishes"}
+
+move_activities:
+  Move a whole set of activities into one folder in a single command — the
+  cut-and-paste of the grid. Prefer this over many move_activity_wbs commands.
+  Nothing is duplicated: IDs, dates, constraints and every relationship
+  survive, including links to activities outside the set. Only the folder
+  changes, so use it for "move these into ...", "regroup ... under ...".
+  {"action": "move_activities", "activity_ids": ["A1040", "A1050"], "wbs_name": "Finishes"}
 
 set_data_date:
   Set the project data date (the "as of" date the schedule is statused from).
