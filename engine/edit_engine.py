@@ -1244,6 +1244,71 @@ def _act_calendar(project: Project, act: Activity):
     return wd, hol, hpd
 
 
+_START_CONSTRAINTS = {"start on", "must start on", "mandatory start",
+                      "start on or after", "start on or before"}
+_FINISH_CONSTRAINTS = {"finish on", "must finish on", "mandatory finish",
+                       "finish on or after", "finish on or before"}
+
+
+def _carry_constraint(a, field: str, new_date, old_date, both: bool = False):
+    """
+    Move an existing constraint along with a date the user just set.
+
+    A constraint is a statement about where a date belongs, so re-dating the
+    activity without it leaves the two contradicting each other — and the
+    constraint wins on the next recalculation, which is exactly the "I type a
+    date and it jumps back" behaviour. Half this schedule is pinned with
+    Start On, so that hit most edits.
+
+    The constraint TYPE is never changed and one is never invented: this only
+    re-dates a pin that is already there. Clearing it stays an explicit act
+    (clear_constraint), so removing a constraint still means removing it.
+
+      start edit  + start pin  → pin moves to the new start
+      finish edit + finish pin → pin moves to the new finish
+      start edit  + finish pin → the finish travels with the start, so the pin
+                                 shifts by the same offset rather than jumping
+                                 to a start date it was never about
+      finish edit + start pin  → the start did not move; the pin is left alone
+                                 (unless `both`, i.e. a milestone, where the
+                                 one date is both)
+
+    Returns a note for the result message, or "" if nothing changed.
+    """
+    ct = (a.constraint_type or "").strip().lower()
+    if not ct or not a.constraint_date:
+        return ""
+    import datetime as _d
+    try:
+        cur = _d.date.fromisoformat(str(a.constraint_date)[:10])
+    except ValueError:
+        return ""
+
+    is_start, is_finish = ct in _START_CONSTRAINTS, ct in _FINISH_CONSTRAINTS
+    if both and (is_start or is_finish):
+        new_cd = new_date
+    elif field == "start" and is_start:
+        new_cd = new_date
+    elif field == "finish" and is_finish:
+        new_cd = new_date
+    elif field == "start" and is_finish:
+        # keep the gap the user had between the pinned finish and the start
+        if not old_date:
+            return ""
+        try:
+            old = _d.date.fromisoformat(str(old_date)[:10])
+        except ValueError:
+            return ""
+        new_cd = cur + (new_date - old)
+    else:
+        return ""
+
+    if new_cd == cur:
+        return ""
+    a.constraint_date = new_cd.isoformat()
+    return f"; {a.constraint_type} constraint moved to {new_cd.isoformat()}"
+
+
 def _update_planned_date(project: Project, cmd: Dict) -> Tuple[bool, str]:
     """
     Set a planned date directly — the no-constraint path the grid uses for
@@ -1256,6 +1321,11 @@ def _update_planned_date(project: Project, cmd: Dict) -> Tuple[bool, str]:
                      a finish adjusts the DURATION (on the activity's own
                      calendar). The start does not move — unlike a Finish On
                      constraint, which back-computes the start.
+
+    If the activity already carries a constraint it is re-dated to match (see
+    _carry_constraint), so the date the user typed is the date that survives
+    the next recalculation. Pass move_constraint=false to set the date and
+    leave the pin where it is.
     """
     import datetime as _d
 
@@ -1277,28 +1347,38 @@ def _update_planned_date(project: Project, cmd: Dict) -> Tuple[bool, str]:
 
     a = matches[0]
     is_milestone = a.activity_type in ("Start Milestone", "Finish Milestone")
+    carry = cmd.get("move_constraint", True)
 
     if field == "start":
         if a.actual_start:
             raise EditError(f"'{a.name}' has started — its start is the actual date")
+        old_start = a.planned_start
         a.planned_start = date[:10]
-        return True, f"'{a.name}' planned start → {date[:10]}"
+        note = _carry_constraint(a, "start", new_d, old_start) if carry else ""
+        return True, f"'{a.name}' planned start → {date[:10]}{note}"
 
     if a.actual_finish:
         raise EditError(f"'{a.name}' is complete — its finish is the actual date")
     if is_milestone:
+        old_start = a.planned_start
         a.planned_start = a.planned_finish = date[:10]
-        return True, f"'{a.name}' milestone date → {date[:10]}"
+        # a milestone is a single instant, so either kind of pin belongs on it
+        note = _carry_constraint(a, "finish", new_d, old_start, both=True) if carry else ""
+        return True, f"'{a.name}' milestone date → {date[:10]}{note}"
 
     ref = a.actual_start or a.planned_start or a.early_start
     if not ref:
+        old_finish = a.planned_finish
         a.planned_finish = date[:10]
-        return True, f"'{a.name}' planned finish → {date[:10]}"
+        note = _carry_constraint(a, "finish", new_d, old_finish) if carry else ""
+        return True, f"'{a.name}' planned finish → {date[:10]}{note}"
     try:
         ref_d = _d.date.fromisoformat(str(ref)[:10])
     except ValueError:
+        old_finish = a.planned_finish
         a.planned_finish = date[:10]
-        return True, f"'{a.name}' planned finish → {date[:10]}"
+        note = _carry_constraint(a, "finish", new_d, old_finish) if carry else ""
+        return True, f"'{a.name}' planned finish → {date[:10]}{note}"
     if new_d < ref_d:
         raise EditError(f"Finish {date[:10]} is before the start ({str(ref)[:10]})")
 
@@ -1312,8 +1392,10 @@ def _update_planned_date(project: Project, cmd: Dict) -> Tuple[bool, str]:
             days += 1
     a.planned_duration = float(days) * hpd
     a.remaining_duration = a.planned_duration * (1 - (a.percent_complete or 0) / 100.0)
+    old_finish = a.planned_finish
     a.planned_finish = date[:10]
-    return True, f"'{a.name}' finish → {date[:10]} (duration now {days}d)"
+    note = _carry_constraint(a, "finish", new_d, old_finish) if carry else ""
+    return True, f"'{a.name}' finish → {date[:10]} (duration now {days}d){note}"
 
 
 def _set_actual_date(project: Project, cmd: Dict) -> Tuple[bool, str]:

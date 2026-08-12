@@ -5011,11 +5011,22 @@ function beginDateEdit(td, actId, field){
              `${actId} finish → ${val}`);
       return;
     }
-    // Start on a not-started row: only a row with predecessors needs a pin —
-    // logic would otherwise drive the date right back. An unlinked row's
-    // planned date holds on its own, so no constraint is created.
+    // Start on a not-started row. Three cases, in order:
+    //
+    //  1. Already pinned — move the pin to the new date and keep its TYPE.
+    //     Overwriting it with "Start On" would silently convert a deadline or
+    //     an earliest-start into a hard pin, which is not what the user asked
+    //     for by typing a date. update_planned_date carries the constraint.
+    //  2. Linked but unpinned — logic would drive the date straight back, so
+    //     a Start On pin is what makes the typed date stick.
+    //  3. Unlinked and unpinned — the planned date holds on its own. No
+    //     constraint is invented; that was the "every date I enter comes with
+    //     a constraint" complaint.
     const hasPreds = rec && (rec.predecessors || []).length > 0;
-    if(hasPreds){
+    if(rec && rec.constraint_type){
+      finish(opts, {action:'update_planned_date', activity_id:actId, field, date:val},
+             `${actId} start → ${val} (${rec.constraint_type} moves with it)`);
+    } else if(hasPreds){
       finish(opts, {action:'set_constraint', activity_id:actId,
                     constraint_type:'Start On', constraint_date:val},
              `${actId} start pinned to ${val}`);
