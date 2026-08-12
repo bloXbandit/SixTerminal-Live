@@ -3595,13 +3595,31 @@ function markScheduleStale() {
   document.getElementById('sched-stale-notice').classList.add('show');
 }
 
+/** The element that actually scrolls the grid, so a reload can put it back. */
+function schedScroller(){
+  const wrap = document.getElementById('sched-content');
+  if(wrap && wrap.scrollHeight > wrap.clientHeight + 4) return wrap;
+  return document.scrollingElement || document.documentElement;
+}
+
 async function loadSchedule() {
   scheduleStale = false;
   document.getElementById('sched-stale-notice').classList.remove('show');
   const tbody = document.getElementById('sched-tbody');
   const table = document.getElementById('sched-table');
   const empty = document.getElementById('sched-empty');
-  tbody.innerHTML = '<tr><td colspan="20" style="text-align:center;padding:32px;color:var(--text3);"><span class="spinner"></span> Loading…</td></tr>';
+  // Reloading a grid that is already on screen must not blank it. Replacing
+  // the rows with a spinner threw the page back to the top and flashed the
+  // whole table on every structural edit; the old rows stay put and are
+  // swapped for the new ones once they arrive, with the scroll position
+  // restored, so the page sits still and the edit just appears.
+  const hadRows = tbody.querySelector('tr.sched-act-row');
+  const scroller = schedScroller();
+  const keepTop = hadRows ? scroller.scrollTop : 0;
+  if(!hadRows){
+    tbody.innerHTML = '<tr><td colspan="20" style="text-align:center;padding:32px;color:var(--text3);"><span class="spinner"></span> Loading…</td></tr>';
+  }
+  _restoreScrollTo = keepTop;
   table.style.display = 'table';
   empty.style.display = 'none';
   try {
@@ -3665,6 +3683,16 @@ function renderSchedule(data) {
 // up in the DOM, so selection, find, trace and drag-and-drop keep working
 // exactly as before — this changes when the work happens, not what exists.
 let _paintToken = 0;
+// Where to put the scroll back to after a reload. The target is usually far
+// below what the first chunk can reach, so it is re-applied as rows arrive
+// and cleared once it sticks.
+let _restoreScrollTo = 0;
+function _reapplyScroll(){
+  if(!_restoreScrollTo) return;
+  const sc = schedScroller();
+  sc.scrollTop = _restoreScrollTo;
+  if(Math.abs(sc.scrollTop - _restoreScrollTo) < 2) _restoreScrollTo = 0;
+}
 const _FIRST_CHUNK = 120;      // roughly three screenfuls — instant, and enough
 // Attaching a row to a live table costs ~1.8ms, so a chunk is sized to land
 // near a 16ms frame. Bigger chunks finish sooner in total but stall the main
@@ -3675,8 +3703,9 @@ const _CHUNK = 10;
 function paintRows(tbody, rows, done){
   const token = ++_paintToken;               // a newer render cancels this one
   tbody.innerHTML = rows.slice(0, _FIRST_CHUNK).join('');
-  if(rows.length <= _FIRST_CHUNK){ done(); return; }
+  if(rows.length <= _FIRST_CHUNK){ done(); _reapplyScroll(); _restoreScrollTo = 0; return; }
   done();                                    // wire up state against what is there
+  _reapplyScroll();
   let i = _FIRST_CHUNK;
   const step = () => {
     if(token !== _paintToken) return;        // superseded mid-paint
@@ -3686,9 +3715,10 @@ function paintRows(tbody, rows, done){
     // already active. Without this a find typed while the grid is still
     // filling would let later rows through unfiltered.
     applyViewStateTo(first ? first.nextElementSibling : tbody.firstElementChild);
+    _reapplyScroll();                        // creep back to where the user was
     i += _CHUNK;
     if(i < rows.length) requestAnimationFrame(step);
-    else done();                             // re-apply state over the full grid
+    else { done(); _reapplyScroll(); _restoreScrollTo = 0; }
   };
   requestAnimationFrame(step);
 }
@@ -4658,16 +4688,28 @@ function onRowShiftClick(e){
 }
 
 // ── Click-and-hold sweep select ────────────────────────────────────────────
-// Press on a row and drag across the grid to select everything you pass over.
-// We only start sweeping once the pointer actually leaves the starting row, so
-// a plain click and a double-click still behave normally.
+// Drag from a row's checkbox column and sweep down to select everything you
+// pass over. We only start sweeping once the pointer actually leaves the
+// starting row, so a plain click and a double-click still behave normally.
+//
+// The sweep starts from the checkbox column ONLY. It used to start anywhere on
+// the row, which meant that in edit mode a drag across the grid never selected
+// text — the gesture swallowed it, and there was no way to highlight a few
+// cells and copy them out. The narrow grab area gives back ordinary text
+// selection everywhere else while keeping the sweep a single gesture.
 let _sweep = null;   // {anchorId, additive, moved}
 
 function onRowSweepStart(e){
   if(!isEditMode || e.button !== 0) return;
   if(_pickState || _tracePicking) return;
   if(e.shiftKey) return;                       // shift+click owns range-select
-  if(e.target.closest('input,select,button,.chip-x,.row-add-link,td.editable .cell-input')) return;
+  const handle = e.target.closest('td.col-sel');
+  if(!handle) return;                          // the grab handle
+  // The checkbox fills most of that cell, so it has to be part of the handle
+  // or there is nothing to grab. Safe: a sweep only engages once the pointer
+  // leaves the starting row, so a plain click still just ticks the box.
+  if(e.target.closest('select,button,.chip-x,.row-add-link') ||
+     (e.target.closest('input') && !e.target.classList.contains('sel-box'))) return;
   const tr = e.target.closest('tr.sched-act-row');
   const id = tr && tr.dataset.actid;
   if(!id) return;
@@ -4972,10 +5014,10 @@ function wireCellKeys(input, td, commit, cancel){
     } else if(ev.key === 'Escape'){
       ev.preventDefault(); cancel();
     } else if((ev.key === 'ArrowDown' || ev.key === 'ArrowUp') && !ev.altKey){
-      // Arrows navigate rows — EXCEPT in a date input, where ↑/↓ is how the
-      // native control adjusts the focused month/day/year segment. Hijacking
-      // them there committed the unchanged value and threw the user onto
-      // another row, making dates impossible to adjust by keyboard.
+      // Arrows navigate rows, but only once the caret is a caret: while text
+      // is selected (a freshly opened cell selects its contents) the arrow
+      // belongs to the input, collapsing the selection. Native date inputs
+      // are excluded outright — there ↑/↓ adjusts the focused segment.
       if(input.type !== 'date' && input.selectionStart === input.selectionEnd){
         ev.preventDefault();
         commit({then: (t) => moveEdit(t, ev.key === 'ArrowDown' ? 1 : -1, 0)});
@@ -4985,9 +5027,12 @@ function wireCellKeys(input, td, commit, cancel){
 }
 
 // ── Dates and constraints ────────────────────────────────────────────────────
-// The grid's Start/Finish are CPM *outputs*, so simply overwriting one would be
-// undone by the next Schedule run. Setting a date therefore pins it with a
-// Start On / Finish On constraint — which is what makes it stick.
+// Editing a date writes the date, and nothing else does. Implicit recomputes no
+// longer rewrite Start/Finish, so a typed date stands on its own and needs no
+// pin to defend it. What the row already has still matters:
+//   already pinned  → the existing constraint moves WITH the date, type kept
+//   linked, no pin  → a Start On pin, or logic drives the date straight back
+//   unlinked, no pin→ nothing is added
 // Exception: a row whose displayed date is an ACTUAL (In Progress / Completed).
 // CPM anchors those to the actual date before it ever looks at constraints, so
 // the edit has to move the actual itself.
@@ -5000,15 +5045,73 @@ function actDataById(actId){
   return null;
 }
 
+// month name -> number, for parsing what the user types (_MONTHS above is the
+// reverse map, used for display)
+const _MONTH_NUM = {jan:1,feb:2,mar:3,apr:4,may:5,jun:6,
+                    jul:7,aug:8,sep:9,oct:10,nov:11,dec:12};
+
+/**
+ * Parse a date the way a person types one, and return ISO or ''.
+ *
+ * The grid used a native date input, which is three separate spin boxes: you
+ * cannot type "3/2/26" into it, you tab between month, day and year. This
+ * accepts what people actually type, including the dd-Mon-yy the grid itself
+ * displays, so a date can be typed straight over the one that is there.
+ *
+ *   2026-03-02   3/2/2026   3-2-26   02-Mar-26   Mar 2 2026   2 March 2026
+ *
+ * Two-digit years pivot at 50: 26 -> 2026, 98 -> 1998.
+ */
+function parseDateInput(raw){
+  const s = (raw || '').trim();
+  if(!s) return '';
+  const iso = (y, m, d) => {
+    if(y < 100) y += y < 50 ? 2000 : 1900;
+    if(!(m >= 1 && m <= 12) || !(d >= 1 && d <= 31)) return '';
+    const dt = new Date(Date.UTC(y, m - 1, d));
+    // rejects 31 Feb and friends — the Date would roll into the next month
+    if(dt.getUTCMonth() !== m - 1 || dt.getUTCDate() !== d) return '';
+    return dt.toISOString().slice(0, 10);
+  };
+  let m;
+  // 2026-03-02
+  if((m = s.match(/^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})$/)))
+    return iso(+m[1], +m[2], +m[3]);
+  // 3/2/2026 — US order, which is what P6 and the toolbar both use
+  if((m = s.match(/^(\d{1,2})[-/.](\d{1,2})[-/.](\d{2,4})$/)))
+    return iso(+m[3], +m[1], +m[2]);
+  // 02-Mar-26  /  2 March 2026
+  if((m = s.match(/^(\d{1,2})[-\s/.]*([A-Za-z]{3,})[-\s/.]*(\d{2,4})$/))){
+    const mo = _MONTH_NUM[m[2].slice(0,3).toLowerCase()];
+    if(mo) return iso(+m[3], mo, +m[1]);
+  }
+  // Mar 2 2026  /  March 2, 2026
+  if((m = s.match(/^([A-Za-z]{3,})[-\s/.]*(\d{1,2}),?[-\s/.]*(\d{2,4})$/))){
+    const mo = _MONTH_NUM[m[1].slice(0,3).toLowerCase()];
+    if(mo) return iso(+m[3], mo, +m[2]);
+  }
+  // 03022026 / 030226 — straight off the number pad, no separators
+  if((m = s.match(/^(\d{2})(\d{2})(\d{4}|\d{2})$/)))
+    return iso(+m[3], +m[1], +m[2]);
+  return '';
+}
+
 function beginDateEdit(td, actId, field){
   const orig = (td.dataset.val || '').slice(0,10);
   const restoreHTML = td.innerHTML;
   const input = document.createElement('input');
-  input.type = 'date';
+  // A text box, not a native date picker: the whole date can be typed in one
+  // go, in any of the usual formats, and selected/overwritten like any cell.
+  input.type = 'text';
   input.className = 'cell-input mono';
-  if(orig) input.value = orig;
+  input.autocomplete = 'off';
+  input.spellcheck = false;
+  input.placeholder = 'dd-mmm-yy';
+  input.title = 'Type a date in any usual form — 3/2/26, 2026-03-02, 02-Mar-26';
+  if(orig) input.value = fmtDate(orig);
   td.innerHTML = ''; td.appendChild(input);
   input.focus();
+  input.select();                     // typing replaces the date that is there
 
   let done = false;
   const finish = async (opts, cmd, label) => {
@@ -5022,11 +5125,21 @@ function beginDateEdit(td, actId, field){
   };
   const commit = (opts) => {
     if(done) return;
-    const val = (input.value || '').trim();
-    // A date input reads as "" until every segment (month, day, year) is
-    // typed. Treating that as a deliberate clear wiped dates when the user
-    // tabbed away mid-entry — an empty value now just cancels the edit.
-    if(val === orig || !val){ finish(opts, null); return; }
+    const typed = (input.value || '').trim();
+    // Blank cancels rather than clears — tabbing out mid-entry used to wipe
+    // the date. Anything unparseable says so instead of silently doing nothing.
+    if(!typed){ finish(opts, null); return; }
+    const val = parseDateInput(typed);
+    if(!val){
+      // On Enter/Tab, say so and stay put so it can be corrected. On blur
+      // there is nothing to correct — the cell has already lost focus, and
+      // holding it open would trap the cursor.
+      if(opts && opts.blur){ finish(opts, null); return; }
+      flashSched(`"${typed}" is not a date I can read — try 3/2/26 or 02-Mar-26`, true);
+      input.select();
+      return;
+    }
+    if(val === orig){ finish(opts, null); return; }
     const rec = actDataById(actId);
     const st = rec && rec.status;
     // Started/completed rows are anchored to their ACTUAL dates — CPM reads
@@ -5074,7 +5187,7 @@ function beginDateEdit(td, actId, field){
   };
   const cancel = () => { if(done) return; done = true; td.innerHTML = restoreHTML; };
   wireCellKeys(input, td, commit, cancel);
-  input.addEventListener('blur', () => commit());
+  input.addEventListener('blur', () => commit({blur: true}));
 }
 
 const CONSTRAINT_TYPES = [
