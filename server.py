@@ -1381,6 +1381,39 @@ def advise_milestones():
                         "trace": traceback.format_exc()}), 500
 
 
+@app.route("/api/rules/run", methods=["POST"])
+def rules_run():
+    """
+    Run if/then find-and-change rules, or preview them.
+
+    A preview reports what would change without writing, which matters when a
+    mistyped pattern can sweep thousands of activities — an undo stack helps
+    afterwards, but seeing the damage first is better.
+    """
+    sess = _get_session()
+    if sess is None or sess["project"] is None:
+        return jsonify({"error": "No schedule loaded"}), 400
+    data = request.get_json() or {}
+    rules = data.get("rules")
+    if not rules or not isinstance(rules, list):
+        return jsonify({"error": "rules (a non-empty list) is required"}), 400
+    cmd = {"action": "bulk_rules", "rules": rules,
+           "preview": bool(data.get("preview"))}
+    for k in ("wbs_uid", "wbs_name", "wbs_code"):
+        if data.get(k):
+            cmd[k] = data[k]
+
+    if cmd["preview"]:
+        # a dry run must not touch the undo stack or the session at all
+        from engine.edit_engine import apply_command as _apply
+        try:
+            ok, msg = _apply(sess["project"], cmd)
+            return jsonify({"success": ok, "preview": True, "message": msg})
+        except Exception as e:
+            return jsonify({"error": str(e)}), 400
+    return _apply_direct([cmd], data.get("label") or "Find and change")
+
+
 @app.route("/api/advise/area", methods=["GET"])
 def advise_area():
     """
@@ -1930,6 +1963,8 @@ def _activity_row(a, preds_map, succs_map):
         row["percent_complete"] = a.percent_complete
     if a.planned_labor_units:
         row["planned_labor_units"] = a.planned_labor_units
+    if getattr(a, "udfs", None):
+        row["udfs"] = dict(a.udfs)
     if is_milestone:
         row["is_milestone"] = True
     if a.is_critical:
@@ -2080,10 +2115,15 @@ def _schedule_view_inner():
         w["activity_count_direct"] = len(w["activities"])
         w["activity_count_total"] = totals[w["uid"]]
 
+    from engine.edit_engine import electricians_field
     return jsonify({
         "project_name":   project.name,
         "data_date":      project.data_date,
         "activity_count": len(project.activities),
+        # Which UDF the grid's Electricians column reads and writes — the grid
+        # needs the exact title because it varies between P6 projects.
+        "electricians_field": electricians_field(project),
+        "udf_titles":     sorted({u.title for u in (project.udf_types or []) if u.title}),
         "wbs_sections":   wbs_sections,
     })
 

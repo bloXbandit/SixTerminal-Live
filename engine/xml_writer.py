@@ -742,13 +742,86 @@ def _section_currency(root: ET.Element):
     _sub(c, "Symbol",              "$")
 
 
-def _section_udf_type(root: ET.Element):
+# UDF ObjectIds are minted in their own range so they cannot collide with the
+# fixed reference ids above.
+_UDF_OID_START = 900
+
+
+def _udf_oid_map(project) -> Dict[str, str]:
+    """
+    Title -> ObjectId for every activity UDF this export will carry.
+
+    Covers both the definitions the project arrived with and any field that
+    only appears as a value (added in-app), so a column created here exports
+    as a real P6 user-defined field rather than being dropped.
+    """
+    titles = []
+    for u in (getattr(project, "udf_types", None) or []):
+        if u.title and u.title not in titles:
+            titles.append(u.title)
+    for a in project.activities:
+        for t in (getattr(a, "udfs", None) or {}):
+            if t and t not in titles:
+                titles.append(t)
+    return {t: str(_UDF_OID_START + i) for i, t in enumerate(titles)}
+
+
+def _udf_data_type(project, title: str) -> str:
+    for u in (getattr(project, "udf_types", None) or []):
+        if u.title == title:
+            dt = (u.data_type or "").strip()
+            # XER spells these differently from XML
+            return {"FT_STATIC_TYPE_TEXT": "Text", "FT_STATIC_TYPE_DOUBLE": "Double",
+                    "FT_STATIC_TYPE_INT": "Integer", "FT_STATIC_TYPE_DATE": "Date",
+                    }.get(dt, dt or "Text")
+    return "Text"
+
+
+def _section_udf_type(root: ET.Element, project=None):
+    """
+    UDF definitions. Always emits COMMENTS (the reference export carries it),
+    then one block per user-defined field the project actually uses.
+    """
     u = _sub(root, "UDFType")
     _sub(u, "DataType",    "Text")
     _sub(u, "IsSecureCode", "0")
     _sub(u, "ObjectId",    "813")
     _sub(u, "SubjectArea", "Activity")
     _sub(u, "Title",       "COMMENTS")
+
+    if project is None:
+        return
+    for title, oid in _udf_oid_map(project).items():
+        if title == "COMMENTS":
+            continue
+        t = _sub(root, "UDFType")
+        _sub(t, "DataType",     _udf_data_type(project, title))
+        _sub(t, "IsSecureCode", "0")
+        _sub(t, "ObjectId",     oid)
+        _sub(t, "SubjectArea",  "Activity")
+        _sub(t, "Title",        title)
+
+
+def _write_activity_udfs(a_el: ET.Element, act, oid_map: Dict[str, str],
+                         project) -> None:
+    """Per-activity UDF values, in the typed element P6 expects."""
+    vals = getattr(act, "udfs", None) or {}
+    for title, value in vals.items():
+        oid = oid_map.get(title)
+        if not oid or value in (None, ""):
+            continue
+        u = _sub(a_el, "UDF")
+        _sub(u, "TypeObjectId", oid)
+        dt = _udf_data_type(project, title)
+        if dt in ("Double", "Integer"):
+            try:
+                num = float(str(value))
+                _sub(u, "Double" if dt == "Double" else "Integer",
+                     str(int(num)) if dt == "Integer" else str(num))
+                continue
+            except (TypeError, ValueError):
+                pass    # not numeric after all — fall through to text
+        _sub(u, "Text", str(value))
 
 
 def _section_obs(root: ET.Element):
@@ -1077,6 +1150,8 @@ def _write_activity(
     activity_oid_map: Dict[str, str],
     wbs_oid_map: Dict[str, str],
     calendar_oid_map: Dict[str, str],
+    udf_oid_map: Optional[Dict[str, str]] = None,
+    project=None,
 ):
     cal_uid = _map_calendar_oid(getattr(act, "calendar_uid", None), calendar_oid_map)
     # An activity whose folder isn't in the export (it sat in the project-name
@@ -1227,6 +1302,8 @@ def _write_activity(
     _sub(a, "Type",                 act.activity_type or "Task Dependent")
     _sub(a, "UnitsPercentComplete", "0")
     _sub(a, "WBSObjectId",          wbs_oid_map.get(_key(act.wbs_uid), fallback_wbs_uid))
+    if udf_oid_map:
+        _write_activity_udfs(a, act, udf_oid_map, project)
 
 
 # ── Relationship block ────────────────────────────────────────────────────────
@@ -1470,7 +1547,7 @@ def _write_p6_xml_impl(project: Project, output_path: str,
     # Enterprise envelope.
     _section_display_currency(root)
     _section_currency(root)
-    _section_udf_type(root)
+    _section_udf_type(root, project)
     _section_obs(root)
     _section_global_calendars(root, project)
 
@@ -1591,8 +1668,10 @@ def _write_p6_xml_impl(project: Project, output_path: str,
     for wbs in sorted_wbs:
         _write_wbs(proj_el, wbs, proj_uid, wbs_oid_map)
 
+    udf_oid_map = _udf_oid_map(project)
     for act in project.activities:
-        _write_activity(proj_el, act, proj_uid, activity_oid_map, wbs_oid_map, calendar_oid_map)
+        _write_activity(proj_el, act, proj_uid, activity_oid_map, wbs_oid_map,
+                        calendar_oid_map, udf_oid_map, project)
 
     for rel in valid_relations:
         _write_relationship(proj_el, rel, proj_uid, activity_oid_map, relationship_oid_map)

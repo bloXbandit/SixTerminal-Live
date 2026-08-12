@@ -10,7 +10,7 @@ root-level enterprise objects plus WBS/Activity/Relationship blocks inside Proje
 
 import xml.etree.ElementTree as ET
 from typing import Optional, Dict, Iterable, List
-from .schedule_model import Project, WBSNode, Activity, Relation, Calendar
+from .schedule_model import Project, WBSNode, Activity, Relation, Calendar, UDFType
 
 _XSI_NS = "http://www.w3.org/2001/XMLSchema-instance"
 _XSI_NIL = f"{{{_XSI_NS}}}nil"
@@ -173,6 +173,28 @@ def _unique_by_uid(items: Iterable[ET.Element]) -> List[ET.Element]:
     return out
 
 
+def _read_udfs(el, udf_titles):
+    """
+    Per-activity UDF values, keyed by the field's title.
+
+    P6 writes the value in one of several typed elements depending on the
+    field's data type, so take whichever one is present rather than assuming.
+    """
+    out = {}
+    for u in _descendants(el, "UDF"):
+        oid = _text(u, "TypeObjectId")
+        title = udf_titles.get(oid)
+        if not title:
+            continue
+        for tag in ("Text", "Double", "Integer", "StartDate", "FinishDate",
+                    "CodeValue", "Indicator"):
+            v = _text(u, tag)
+            if v not in (None, ""):
+                out[title] = v
+                break
+    return out
+
+
 def load_xml(path: str) -> Project:
     """
     Parse a P6 XML file and return a Project object.
@@ -192,6 +214,24 @@ def load_xml(path: str) -> Project:
 
     proj_uid = _text(proj_el, "ObjectId") or _text(proj_el, "Id") or "1"
 
+    # User-defined fields. P6 puts the definitions at the document root and
+    # references them by ObjectId on each activity, so the titles have to be
+    # collected before the activities are read. Without this every UDF — the
+    # electrician counts, crew sizes, anything a team added — was silently
+    # dropped on import and could never come back out on export.
+    udf_titles = {}
+    udf_defs = []
+    for u in _descendants(root, "UDFType"):
+        oid = _text(u, "ObjectId")
+        title = _text(u, "Title")
+        if not oid or not title:
+            continue
+        udf_titles[oid] = title
+        udf_defs.append(UDFType(
+            uid=oid, title=title,
+            subject_area=_text(u, "SubjectArea") or "Activity",
+            data_type=_text(u, "DataType") or "Text"))
+
     project = Project(
         uid=proj_uid,
         name=_text(proj_el, "Name") or _text(proj_el, "Id", "Unknown"),
@@ -201,6 +241,7 @@ def load_xml(path: str) -> Project:
         must_finish_by=_iso_date(_text(proj_el, "MustFinishByDate")),
         status_code=_text(proj_el, "Status", "Active"),
     )
+    project.udf_types = udf_defs
 
     # --- Calendars ---
     # Native P6 XML has root-level global calendars and nested project calendars.
@@ -329,6 +370,7 @@ def load_xml(path: str) -> Project:
             constraint_date=_iso_date(_text(act_el, "PrimaryConstraintDate")) or None,
             notes=_text(act_el, "NotebookTopic") or _text(act_el, "NotesToResources") or None,
             planned_labor_units=_float(act_el, "PlannedLaborUnits"),
+            udfs=_read_udfs(act_el, udf_titles),
         ))
 
     # Add placeholder WBS nodes for any activity WBS reference not emitted/read.

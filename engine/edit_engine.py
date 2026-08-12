@@ -26,6 +26,8 @@ Supported commands:
   clear_constraint          — Remove a date constraint from an activity
   set_actual_date           — Move (or clear) an actual start/finish date
   update_planned_date       — Set a planned start, or a finish (adjusts duration)
+  update_udf                — Set a user-defined field (e.g. Number of Electricians)
+  bulk_rules                — If/then find-and-change across the schedule or one folder
   bulk_add_activity         — Add the same activity to multiple WBS nodes in one call
   bulk_create_wbs           — Create multiple WBS folders under the same parent in one call
   bulk_rename_activities    — Rename activities by explicit from→to list (ID, name, or WBS scope)
@@ -209,6 +211,10 @@ def apply_command(project: Project, command: Dict[str, Any]) -> Tuple[bool, str]
             return _update_progress(project, command)
         elif action == "update_labor_units":
             return _update_labor_units(project, command)
+        elif action == "update_udf":
+            return _update_udf(project, command)
+        elif action in ("bulk_rules", "if_then"):
+            return _bulk_rules(project, command)
         elif action == "move_activity_wbs":
             return _move_activity_wbs(project, command)
         elif action == "bulk_rename":
@@ -1275,6 +1281,235 @@ def _set_actual_date(project: Project, cmd: Dict) -> Tuple[bool, str]:
             a.remaining_duration = a.planned_duration * (1 - a.percent_complete / 100.0)
     verb = f"actual {field} → {date}" if date else f"cleared actual {field}"
     return True, f"'{a.name}': {verb}"
+
+
+# The crew-size field. P6 teams name it slightly differently from job to job,
+# so the grid column binds to whichever UDF on the project matches — rather
+# than forcing one exact spelling and silently editing nothing.
+ELECTRICIANS_PATTERNS = ("electric", "crew size", "manpower", "headcount")
+
+
+def electricians_field(project: Project) -> str:
+    """
+    Title of the UDF the Electricians column edits.
+
+    Prefers a field the project already carries, so an edit writes back into
+    the same column P6 exported; falls back to creating the standard name.
+    """
+    titles = [u.title for u in (getattr(project, "udf_types", None) or []) if u.title]
+    for a in project.activities:
+        for t in (getattr(a, "udfs", None) or {}):
+            if t not in titles:
+                titles.append(t)
+    for t in titles:
+        low = (t or "").lower()
+        if any(pat in low for pat in ELECTRICIANS_PATTERNS):
+            return t
+    return "Number of Electricians"
+
+
+# ── Find-and-change rules ────────────────────────────────────────────────────
+
+_RULE_FIELDS = ("name", "activity_id", "wbs_name", "constraint_type", "type", "status")
+
+
+def _rule_haystack(project: Project, act: Activity, field: str) -> str:
+    if field == "wbs_name":
+        w = project.get_wbs(act.wbs_uid)
+        return (w.name if w else "") or ""
+    if field == "activity_id":
+        return act.activity_id or ""
+    if field == "type":
+        return act.activity_type or ""
+    if field == "status":
+        return act.status or ""
+    if field == "constraint_type":
+        return act.constraint_type or ""
+    return act.name or ""
+
+
+def _rule_matches(text: str, op: str, value: str) -> bool:
+    t, v = (text or ""), (value or "")
+    tl, vl = t.lower(), v.lower()
+    if op == "equals":       return tl == vl
+    if op == "not_contains": return vl not in tl
+    if op == "starts_with":  return tl.startswith(vl)
+    if op == "ends_with":    return tl.endswith(vl)
+    if op == "regex":
+        try:
+            return re.search(v, t, re.IGNORECASE) is not None
+        except re.error as e:
+            raise EditError(f"Bad pattern '{v}': {e}")
+    return vl in tl          # "contains" — the default
+
+
+def _apply_rule(project: Project, rule: Dict, scope: List[Activity],
+                preview: bool) -> Tuple[int, List[str]]:
+    """
+    Apply one if/then rule. Returns (changed_count, sample descriptions).
+
+    Nothing is written when preview is set, so the same code path produces the
+    dry run and the real change — a preview that ran different logic from the
+    edit would not be worth much.
+    """
+    where = rule.get("where") or {}
+    field = (where.get("field") or "name").strip().lower()
+    if field not in _RULE_FIELDS:
+        raise EditError(f"Cannot match on '{field}'. Use one of: {', '.join(_RULE_FIELDS)}")
+    op = (where.get("op") or "contains").strip().lower()
+    needle = where.get("value")
+    if needle is None:
+        raise EditError("where.value is required")
+
+    action = (rule.get("set") or {})
+    target = (action.get("field") or "").strip().lower()
+    new_value = action.get("value")
+    position = (action.get("position") or "suffix").strip().lower()
+
+    changed, samples = 0, []
+    for a in scope:
+        if not _rule_matches(_rule_haystack(project, a, field), op, str(needle)):
+            continue
+        before = None
+        if target in ("name", "activity_name"):
+            before = a.name
+            text = "" if new_value is None else str(new_value)
+            if action.get("mode") == "append":
+                after = f"{a.name} {text}".strip() if position != "prefix" else f"{text} {a.name}".strip()
+                if text and text in (a.name or ""):
+                    continue                       # already carries it — re-running is safe
+            else:
+                after = text
+            if after == before:
+                continue
+            if not preview:
+                a.name = after
+        elif target in ("duration", "duration_days"):
+            try:
+                days = float(new_value)
+            except (TypeError, ValueError):
+                raise EditError("duration needs a number of days")
+            if days < 0:
+                raise EditError("duration cannot be negative")
+            before, after = round((a.planned_duration or 0) / 8.0, 2), days
+            if before == after:
+                continue
+            if not preview:
+                a.planned_duration = days * 8.0
+                if a.status == "Not Started":
+                    a.remaining_duration = a.planned_duration
+        elif target in ("electricians", "udf"):
+            key = action.get("udf_field") or electricians_field(project)
+            before = (a.udfs or {}).get(key, "")
+            after = "" if new_value is None else str(new_value).strip()
+            if before == after:
+                continue
+            if not preview:
+                _update_udf(project, {"activity_id": a.activity_id,
+                                      "field": key, "value": after})
+        elif target in ("wbs_name", "folder"):
+            w = project.get_wbs(a.wbs_uid)
+            if not w:
+                continue
+            before, after = w.name, str(new_value or "").strip()
+            if not after or before == after:
+                continue
+            if not preview:
+                w.name = after
+        elif target == "constraint_type":
+            before, after = a.constraint_type or "", str(new_value or "").strip()
+            if before == after:
+                continue
+            if not preview:
+                a.constraint_type = after or None
+                if not after:
+                    a.constraint_date = None
+        else:
+            raise EditError(f"Cannot set '{target}'. Use name, duration, "
+                            f"electricians, wbs_name or constraint_type.")
+        changed += 1
+        if len(samples) < 8:
+            samples.append(f"{a.activity_id}: {before} → {after}")
+    return changed, samples
+
+
+def _bulk_rules(project: Project, cmd: Dict) -> Tuple[bool, str]:
+    """
+    Global find-and-change: "if the name contains X, set the duration to Y".
+
+    Runs over the whole schedule, or only inside a folder when wbs_name/
+    wbs_uid is given. preview=true reports what WOULD change without touching
+    anything, because a mistyped pattern across 2700 activities is expensive
+    to undo by hand even with an undo stack.
+    """
+    rules = cmd.get("rules")
+    if isinstance(cmd.get("where"), dict):        # a single rule, unwrapped
+        rules = [cmd]
+    if not rules or not isinstance(rules, list):
+        raise EditError("rules (a non-empty list) is required")
+
+    scope_name = cmd.get("wbs_name") or cmd.get("wbs_code") or cmd.get("wbs_uid")
+    if scope_name:
+        w = _find_wbs(project, cmd.get("wbs_code"), cmd.get("wbs_name"), cmd.get("wbs_uid"))
+        if not w:
+            raise EditError(f"WBS not found: {scope_name}")
+        branch = {w.uid}
+        grew = True
+        while grew:
+            grew = False
+            for n in project.wbs_nodes:
+                if n.parent_uid in branch and n.uid not in branch:
+                    branch.add(n.uid); grew = True
+        scope = [a for a in project.activities if a.wbs_uid in branch]
+        where = f" in '{w.name}'"
+    else:
+        scope, where = list(project.activities), ""
+
+    preview = bool(cmd.get("preview"))
+    total, lines = 0, []
+    for i, rule in enumerate(rules, 1):
+        n, samples = _apply_rule(project, rule, scope, preview)
+        total += n
+        head = f"Rule {i}: {n} activity/activities" if len(rules) > 1 else f"{n} activity/activities"
+        lines.append(head + (" would change" if preview else " changed"))
+        lines.extend("    " + s for s in samples)
+    if not preview:
+        project.build_lookups()
+    verb = "Would change" if preview else "Changed"
+    return True, f"{verb} {total} across {len(scope)} activities{where}.\n" + "\n".join(lines)
+
+
+def _update_udf(project: Project, cmd: Dict) -> Tuple[bool, str]:
+    """
+    Set a user-defined field on an activity — the Electricians column and any
+    other UDF the schedule carries.
+    """
+    from engine.schedule_model import UDFType
+
+    matches = _find_activity(project, cmd.get("activity_id"), cmd.get("target_name"))
+    if not matches:
+        raise EditError(f"No activity found: {cmd.get('activity_id') or cmd.get('target_name')}")
+    field = (cmd.get("field") or "").strip() or electricians_field(project)
+    raw = cmd.get("value")
+    value = "" if raw is None else str(raw).strip()
+
+    known = {u.title for u in (getattr(project, "udf_types", None) or [])}
+    if value and field not in known:
+        # A field edited into existence here must also be DEFINED, or the
+        # export would carry values referencing a column P6 never heard of.
+        numeric = value.replace(".", "", 1).isdigit()
+        project.udf_types.append(UDFType(
+            uid=str(900 + len(project.udf_types)), title=field,
+            subject_area="Activity",
+            data_type="Integer" if numeric else "Text"))
+
+    for a in matches:
+        if value == "":
+            a.udfs.pop(field, None)
+        else:
+            a.udfs[field] = value
+    what = f"{field} → {value}" if value else f"cleared {field}"
+    return True, f"{what} on {len(matches)} activity/activities"
 
 
 def _update_labor_units(project: Project, cmd: Dict) -> Tuple[bool, str]:

@@ -14,7 +14,7 @@ Supported actions (must match edit_engine.py):
   copy_activities, set_data_date,
   bulk_rename, bulk_update_duration,
   set_constraint, clear_constraint, set_actual_date, update_planned_date,
-  recommend_logic,
+  recommend_logic, update_udf, bulk_rules,
   update_labor_units, bulk_clear_constraints, bulk_append_name
 
 Supported models: claude, gpt-4.1-mini, gpt-4.1-nano, gpt-5.4-mini
@@ -477,6 +477,33 @@ TARGETING A FOLDER — ALWAYS PREFER wbs_uid:
   folder of that name.
   {"action": "add_wbs", "name": "ER 210", "parent_uid": "26084", "new_wbs_uid": "tmp-er210"}
   {"action": "copy_activities", "activity_ids": ["A1000"], "wbs_uid": "tmp-er210"}
+
+update_udf:
+  Set a user-defined field on an activity — crew sizes, electrician counts,
+  anything the team added as a column in P6. Omit "field" to use the
+  project's electricians field, whatever it is called there.
+  {"action": "update_udf", "activity_id": "A1000", "value": "6"}
+  {"action": "update_udf", "activity_id": "A1000", "field": "Number of Electricians", "value": "6"}
+
+bulk_rules:
+  If/then find-and-change across the schedule, or inside one folder. Use this
+  instead of emitting hundreds of individual edits when the user describes a
+  pattern ("every activity named X should be 5 days").
+  Match on: name, activity_id, wbs_name, type, status, constraint_type.
+  Operators: contains (default), equals, starts_with, ends_with,
+             not_contains, regex.
+  Set: name, duration, electricians, wbs_name, constraint_type.
+  For names, mode "append" ADDS text instead of replacing it (position
+  "prefix" or "suffix") and re-running is safe — an activity that already
+  carries the text is skipped.
+  Pass preview true first when the change is broad, and report the count back
+  before applying it.
+  {"action": "bulk_rules", "preview": true, "rules": [
+     {"where": {"field": "name", "op": "contains", "value": "Set Generator"},
+      "set": {"field": "electricians", "value": "6"}}]}
+  {"action": "bulk_rules", "wbs_name": "Phase 1 (Build-Out)", "rules": [
+     {"where": {"field": "name", "op": "contains", "value": "Pull LBB"},
+      "set": {"field": "name", "mode": "append", "value": "(ER 209)"}}]}
 
 delete_wbs:
   Delete a folder and everything nested under it. By default the activities

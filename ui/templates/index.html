@@ -957,6 +957,7 @@
     #sched-table.hide-status     .col-status,
     #sched-table.hide-pct        .col-pct,
     #sched-table.hide-blu        .col-blu,
+    #sched-table.hide-elec       .col-elec,
     #sched-table.hide-float      .col-float,
     #sched-table.hide-earlystart .col-earlystart,
     #sched-table.hide-earlyfinish .col-earlyfinish,
@@ -1167,6 +1168,23 @@
     .mini-btn.ok{color:var(--green);border-color:rgba(34,197,94,.3);}
     .mini-btn.ok:hover{background:var(--green-bg);}
     .mini-btn.no:hover{background:var(--red-bg);color:var(--red);}
+    .ctx-sep{height:1px;background:var(--border);margin:4px 6px;}
+    /* Find & change rule rows */
+    .rule-row{
+      display:flex;align-items:center;gap:6px;flex-wrap:wrap;
+      padding:8px;margin-bottom:6px;border-radius:var(--r-sm);
+      background:var(--panel2);border:1px solid var(--border);
+    }
+    .rule-word{font-size:11px;color:var(--text3);}
+    .rule-row select,.rule-row input[type="text"],.rule-row input:not([type]){
+      background:var(--surface);color:var(--text);border:1px solid var(--border2);
+      border-radius:var(--r-sm);font-family:var(--font);font-size:11.5px;
+      padding:4px 7px;outline:none;
+    }
+    .rule-row select:focus,.rule-row input:focus{border-color:var(--accent);}
+    .rule-value,.rule-newvalue{min-width:150px;flex:1;}
+    .rule-append{display:inline-flex;align-items:center;gap:4px;font-size:10.5px;color:var(--text3);}
+    .rule-x{margin-left:auto;}
     .mini-btn.danger{color:var(--red);border-color:rgba(239,68,68,.35);}
     .mini-btn.danger:hover{background:var(--red-bg);border-color:var(--red);}
     /* Add-WBS inline form */
@@ -1404,6 +1422,40 @@
 </div>
 
 <!-- ══ PASTE ROWS MODAL ═══════════════════════════════════ -->
+<div class="modal-overlay" id="rules-modal" onclick="closeModal('rules-modal',event)">
+  <div class="modal" style="max-width:820px;">
+    <div class="modal-head">
+      <h2><span class="mh-icon">⇄</span> Find &amp; change</h2>
+    </div>
+    <div class="modal-body">
+      <div style="font-size:11.5px;color:var(--text2);margin-bottom:12px;">
+        Change many activities at once by rule — <em>if</em> something matches,
+        <em>then</em> set a value. Preview first; nothing is written until you apply.
+      </div>
+
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px;font-size:11.5px;">
+        <span style="color:var(--text3);">Apply to</span>
+        <select id="rules-scope" class="cmp-select" style="min-width:280px;">
+          <option value="">Whole schedule</option>
+        </select>
+      </div>
+
+      <div id="rules-list"></div>
+      <button class="mini-btn" onclick="addRuleRow()" style="margin-top:6px;">＋ Add another rule</button>
+
+      <div id="rules-result" style="display:none;margin-top:14px;padding:10px 12px;
+           border-radius:6px;background:var(--panel2);border:1px solid var(--border2);
+           font-size:11.5px;white-space:pre-wrap;max-height:230px;overflow:auto;
+           font-family:var(--mono);"></div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn btn-ghost btn-sm" onclick="closeModal('rules-modal')">Cancel</button>
+      <button class="btn btn-ghost btn-sm" id="rules-preview-btn" onclick="runRules(true)">Preview</button>
+      <button class="btn btn-primary btn-sm" id="rules-apply-btn" onclick="runRules(false)" disabled>Apply</button>
+    </div>
+  </div>
+</div>
+
 <div class="modal-overlay" id="paste-modal" onclick="closeModal('paste-modal',event)">
   <div class="modal wide">
     <div class="modal-head">
@@ -1696,6 +1748,7 @@
               <button class="col-toggle on"  data-col="status"      onclick="toggleCol('status')">Status</button>
               <button class="col-toggle on"  data-col="pct"         onclick="toggleCol('pct')">% Complete</button>
               <button class="col-toggle on"  data-col="blu"         onclick="toggleCol('blu')">BLU</button>
+              <button class="col-toggle on"  data-col="elec"        onclick="toggleCol('elec')">Electricians</button>
               <button class="col-toggle on"  data-col="float"       onclick="toggleCol('float')">Total Float</button>
               <button class="col-toggle"     data-col="earlystart"  onclick="toggleCol('earlystart')">Early Start</button>
               <button class="col-toggle"     data-col="earlyfinish" onclick="toggleCol('earlyfinish')">Early Finish</button>
@@ -1717,6 +1770,10 @@
             <button class="tb-item" onclick="tbDo(() => askAdvisor('milestones'))">
               <span class="tb-item-ico">◈</span> Milestone logic…
               <span class="tb-item-hint">what should drive each milestone</span></button>
+            <button class="tb-item" onclick="tbDo(openRulesModal)">
+              <span class="tb-item-ico">⇄</span> Find &amp; change…
+              <span class="tb-item-hint">if name contains X, set Y</span></button>
+            <div class="tb-pop-sep"></div>
             <button class="tb-item" onclick="tbDo(() => askAdvisor('procurement'))">
               <span class="tb-item-ico">⛁</span> Procurement check…
               <span class="tb-item-hint">equipment dated before delivery</span></button>
@@ -1831,6 +1888,7 @@
               <th data-col="status"    class="col-status">Status</th>
               <th data-col="pct"       class="col-pct"    style="text-align:right;">% Done</th>
               <th data-col="blu"       class="col-blu"    style="text-align:right;">BLU</th>
+              <th data-col="elec"      class="col-elec"   style="text-align:right;" id="th-elec">Electricians</th>
               <th data-col="float"     class="col-float"  style="text-align:right;">Float (d)</th>
               <th data-col="constraint" class="col-constraint">Constraint</th>
               <th data-col="type"       class="col-type">Type</th>
@@ -3591,6 +3649,12 @@ function renderSchedule(data) {
   applyWbsVisibility();      // one pass drives all collapse state, incl. nesting
   updateColVisibility();
   populateWbsSelects(data);
+  const thElec = document.getElementById('th-elec');
+  if(thElec && data.electricians_field){
+    thElec.textContent = data.electricians_field.length > 16 ? 'Electricians'
+                                                             : data.electricians_field;
+    thElec.title = data.electricians_field;
+  }
   refreshBulkBar();
   if (_pickState) markPickTargets();   // survive re-renders while picking
   if (_traceState) renderTrace();      // keep the trace filter applied
@@ -3601,7 +3665,13 @@ function renderSchedule(data) {
   refreshWbsSelection();
 }
 
+/** Title of the UDF the Electricians column edits, as the server resolved it. */
+function elecField(){
+  return (lastSchedData && lastSchedData.electricians_field) || 'Number of Electricians';
+}
+
 function renderActivityRow(a, wbsUid, hidden) {
+  const elecVal = ((a.udfs || {})[elecField()] ?? '') + '';
   const isMilestone = a.is_milestone;
   const isCritical  = a.is_critical;
   const isLP        = a.is_longest_path;
@@ -3687,6 +3757,10 @@ function renderActivityRow(a, wbsUid, hidden) {
           data-val="${a.planned_labor_units || 0}"
           style="text-align:right;font-family:var(--mono);font-size:10px;"
           title="Double-click to set budgeted labor units">${a.planned_labor_units > 0 ? a.planned_labor_units : '—'}</td>
+      <td class="col-elec editable" data-actid="${escAttr(aid)}" data-edit="elec"
+          data-val="${escAttr(elecVal)}"
+          style="text-align:right;font-family:var(--mono);font-size:10px;"
+          title="Double-click to set ${escAttr(elecField())}">${elecVal !== '' ? escHtml(elecVal) : '—'}</td>
       <td class="col-float">${floatHtml}</td>
       <td class="col-constraint editable" data-actid="${escAttr(aid)}" data-edit="constraint"
           data-val="${escAttr(ct)}" data-cdate="${escAttr(a.constraint_date || '')}"
@@ -4511,7 +4585,7 @@ function beginCellEdit(td){
   if(field === 'type'){ beginSelectEdit(td, actId); return; }
 
   let orig;
-  if(field === 'duration' || field === 'pct' || field === 'blu') orig = td.dataset.val;
+  if(field === 'duration' || field === 'pct' || field === 'blu' || field === 'elec') orig = td.dataset.val;
   else if(field === 'id')  orig = actId;
   else { const s = td.querySelector('.sched-name'); orig = s ? s.textContent : td.textContent.trim(); }
 
@@ -4522,6 +4596,7 @@ function beginCellEdit(td){
   if(field === 'duration'){ input.type = 'number'; input.min = '0'; input.step = '1'; }
   if(field === 'pct'){ input.type = 'number'; input.min = '0'; input.max = '100'; input.step = '5'; }
   if(field === 'blu'){ input.type = 'number'; input.min = '0'; input.step = '1'; }
+  if(field === 'elec'){ input.type = 'number'; input.min = '0'; input.step = '1'; }
   td.innerHTML = ''; td.appendChild(input); input.focus(); input.select();
 
   let done = false;
@@ -4593,6 +4668,16 @@ function buildCellCommand(actId, field, val, orig){
     return {cmd:{action:'update_progress', activity_id:actId, percent_complete:n},
             label:`${actId} → ${n}% complete`};
   }
+  if(field === 'elec'){
+    // blank clears the field; anything else must be a non-negative count
+    if(val !== ''){
+      const n = parseFloat(val);
+      if(isNaN(n) || n < 0){ flashSched('Enter a whole number of people', true); return false; }
+    }
+    return {cmd:{action:'update_udf', activity_id:actId, field:elecField(), value:val},
+            label: val === '' ? `${actId} ${elecField()} cleared`
+                              : `${actId} ${elecField()} → ${val}`};
+  }
   if(field === 'blu'){
     const n = parseFloat(val);
     if(isNaN(n) || n < 0){ flashSched('Enter a valid number', true); return false; }
@@ -4621,7 +4706,7 @@ function buildCellCommand(actId, field, val, orig){
 // ═══════════════════════════════════════════════════
 //  Keyboard-first entry — Tab/Enter/arrows move the active cell
 // ═══════════════════════════════════════════════════
-const EDIT_FIELD_ORDER = ['id', 'name', 'duration', 'start', 'finish', 'pct', 'blu', 'constraint', 'type'];
+const EDIT_FIELD_ORDER = ['id', 'name', 'duration', 'start', 'finish', 'pct', 'blu', 'elec', 'constraint', 'type'];
 
 /** Editable cells of a row, in visual order, skipping hidden columns. */
 function editableCellsOf(tr){
@@ -5592,6 +5677,38 @@ async function bulkPaste(){
 }
 
 /** Create a sub-folder under the chosen WBS, then paste the copied rows into it. */
+/**
+ * Paste the clipboard straight into a folder, without going through the
+ * bulk bar's target dropdown. Right-clicking the folder you want IS the
+ * target — that is the whole point of the gesture.
+ */
+async function pasteIntoWbs(wbsUid){
+  if(!wbsUid){ flashSched('No folder under the cursor', true); return; }
+  if(!clipboard.length && !_clipMeta){ flashSched('Nothing copied yet', true); return; }
+  const p = _pasteCommands(wbsUid);
+  if(!p.cmds.length) return;
+  clearSelection();
+  await directEdit(p.cmds, p.label);
+  if(!p.withLogic && _clipMeta && _clipMeta.rels){
+    flashSched('Pasted into a different schedule — row data only, the logic could not follow', true);
+  }
+}
+
+/** Right-click equivalent of "paste into a new sub-folder". */
+async function pasteIntoNewSubfolder(parentUid){
+  if(!parentUid){ flashSched('No folder under the cursor', true); return; }
+  if(!clipboard.length && !_clipMeta){ flashSched('Nothing copied yet', true); return; }
+  const parentName = wbsNameOfUid(parentUid) || 'the selected folder';
+  const name = (prompt(`Name for the new sub-folder under "${parentName}"`) || '').trim();
+  if(!name) return;
+  const newUid = 'new-' + Date.now().toString(36) + '-' + Math.floor(Math.random()*1e6).toString(36);
+  const p = _pasteCommands(newUid);
+  if(!p.cmds.length) return;
+  clearSelection();
+  await directEdit([{action:'add_wbs', name, parent_uid:parentUid, new_wbs_uid:newUid}, ...p.cmds],
+                   `New folder "${name}" under ${parentName} + ${p.cmds.length} activities`);
+}
+
 async function bulkPasteIntoNewFolder(){
   const parentUid = _pasteTargets(); if(!parentUid) return;
   const parentName = wbsNameOfUid(parentUid) || 'the selected folder';
@@ -5738,7 +5855,17 @@ function onSchedContextMenu(e){
     selectedWbs.clear(); selectedWbs.add(tr.dataset.wbsuid); refreshWbsSelection();
   }
 
+  // How many rows are on the clipboard, for the paste labels below
+  const clipCount = (_clipMeta && (_clipMeta.ids || []).length) || clipboard.length;
+
   const items = isWbs ? [
+    ...(clipCount ? [
+      [`⎘ Paste ${clipCount} row${clipCount === 1 ? '' : 's'} here`,
+       () => pasteIntoWbs(tr.dataset.wbsuid)],
+      ['⎘ Paste into a new sub-folder…',
+       () => pasteIntoNewSubfolder(tr.dataset.wbsuid)],
+      ['---'],
+    ] : []),
     ['＋ Add activity here', () => quickAddActivity(tr.dataset.wbsuid, tr.dataset.wbsname)],
     ['⧉ Duplicate folder',  () => duplicateSelectedWbs()],
     ['⇱ Move to root',      () => moveSelectedWbs(true)],
@@ -5746,6 +5873,10 @@ function onSchedContextMenu(e){
     ['✎+ Add text to names',  (ev) => openAppendNamePopup(ev, {wbsScope:true})],
     ['🗑 Delete folder…',     () => deleteSelectedWbs()],
   ] : [
+    ['⎘ Copy selected', () => bulkCopy()],
+    ...(clipCount ? [[`⎘ Paste ${clipCount} row${clipCount === 1 ? '' : 's'} into this folder`,
+                      () => pasteIntoWbs(tr.dataset.wbs)]] : []),
+    ['---'],
     ['⛓ Link selected in sequence', () => bulkLinkSequence()],
     ['⇊ Fill duration down',        () => bulkFillDown()],
     ['＋ Add predecessor',          () => addLink(actId, 'pred')],
@@ -5761,7 +5892,9 @@ function onSchedContextMenu(e){
   const menu = document.createElement('div');
   menu.id = 'ctx-menu';
   menu.className = 'ctx-menu';
-  menu.innerHTML = items.map((it, i) => `<div class="ctx-item" data-i="${i}">${it[0]}</div>`).join('');
+  menu.innerHTML = items.map((it, i) => it[0] === '---'
+      ? '<div class="ctx-sep"></div>'
+      : `<div class="ctx-item" data-i="${i}">${it[0]}</div>`).join('');
   document.body.appendChild(menu);
   menu.style.top  = (window.scrollY + Math.min(e.clientY, window.innerHeight - menu.offsetHeight - 10)) + 'px';
   menu.style.left = (window.scrollX + Math.min(e.clientX, window.innerWidth - 230)) + 'px';
@@ -6341,6 +6474,139 @@ async function askAdvisor(scope){
     }
     switchTab('editor');   // the chat/editor panel is where system notes land
   }catch(e){ flashSched(e.message, true); }
+}
+
+// ═══════════════════════════════════════════════════
+//  Find & change — if/then rules
+// ═══════════════════════════════════════════════════
+const RULE_MATCH_FIELDS = [
+  ['name','Activity name'], ['activity_id','Activity ID'], ['wbs_name','WBS folder name'],
+  ['type','Activity type'], ['status','Status'], ['constraint_type','Constraint'],
+];
+const RULE_OPS = [
+  ['contains','contains'], ['equals','is exactly'], ['starts_with','starts with'],
+  ['ends_with','ends with'], ['not_contains','does not contain'], ['regex','matches pattern'],
+];
+const RULE_SET_FIELDS = [
+  ['name','Activity name'], ['duration','Duration (days)'],
+  ['electricians','Electricians'], ['wbs_name','WBS folder name'],
+  ['constraint_type','Constraint type'],
+];
+
+function addRuleRow(){
+  const list = document.getElementById('rules-list');
+  const row = document.createElement('div');
+  row.className = 'rule-row';
+  const opt = (arr, sel) => arr.map(([v,l]) =>
+    `<option value="${v}"${v===sel?' selected':''}>${escHtml(l)}</option>`).join('');
+  row.innerHTML = `
+    <span class="rule-word">If</span>
+    <select class="rule-field">${opt(RULE_MATCH_FIELDS,'name')}</select>
+    <select class="rule-op">${opt(RULE_OPS,'contains')}</select>
+    <input class="rule-value" placeholder="text to look for">
+    <span class="rule-word">then set</span>
+    <select class="rule-target" onchange="onRuleTargetChange(this)">${opt(RULE_SET_FIELDS,'electricians')}</select>
+    <label class="rule-append" style="display:none;">
+      <input type="checkbox" class="rule-mode"> add to existing
+    </label>
+    <input class="rule-newvalue" placeholder="new value">
+    <button class="mini-btn no rule-x" title="Remove this rule">&times;</button>`;
+  row.querySelector('.rule-x').onclick = () => { row.remove(); markRulesDirty(); };
+  row.querySelectorAll('input,select').forEach(el => el.addEventListener('input', markRulesDirty));
+  list.appendChild(row);
+}
+
+/** "Add to existing" only means something for the name field. */
+function onRuleTargetChange(sel){
+  const row = sel.closest('.rule-row');
+  row.querySelector('.rule-append').style.display =
+    sel.value === 'name' ? 'inline-flex' : 'none';
+  markRulesDirty();
+}
+
+/** Any edit invalidates a previous preview, so Apply must be earned again. */
+function markRulesDirty(){
+  const b = document.getElementById('rules-apply-btn');
+  if(b) b.disabled = true;
+}
+
+function openRulesModal(){
+  if(!lastSchedData){ flashSched('Load a schedule first', true); return; }
+  const sel = document.getElementById('rules-scope');
+  const byUid = {};
+  (lastSchedData.wbs_sections || []).forEach(w => byUid[w.uid] = w);
+  sel.innerHTML = '<option value="">Whole schedule</option>' +
+    (lastSchedData.wbs_sections || []).map(w =>
+      `<option value="${escAttr(w.uid)}">${escHtml(wbsLabel(w, byUid))}</option>`).join('');
+  document.getElementById('rules-list').innerHTML = '';
+  document.getElementById('rules-result').style.display = 'none';
+  markRulesDirty();
+  addRuleRow();
+  openModal('rules-modal');
+}
+
+function collectRules(){
+  return [...document.querySelectorAll('#rules-list .rule-row')].map(r => {
+    const target = r.querySelector('.rule-target').value;
+    const set = {field: target, value: r.querySelector('.rule-newvalue').value};
+    if(target === 'name' && r.querySelector('.rule-mode').checked) set.mode = 'append';
+    return {
+      where: {field: r.querySelector('.rule-field').value,
+              op: r.querySelector('.rule-op').value,
+              value: r.querySelector('.rule-value').value},
+      set,
+    };
+  }).filter(r => r.where.value !== '');
+}
+
+async function runRules(preview){
+  const rules = collectRules();
+  if(!rules.length){ flashSched('Fill in what to look for', true); return; }
+  const body = {rules, preview};
+  const scope = document.getElementById('rules-scope').value;
+  if(scope) body.wbs_uid = scope;
+
+  const btn = document.getElementById(preview ? 'rules-preview-btn' : 'rules-apply-btn');
+  const label = btn.textContent; btn.disabled = true; btn.textContent = preview ? 'Checking…' : 'Applying…';
+  const out = document.getElementById('rules-result');
+  try{
+    const d = await fetch('/api/rules/run', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify(body)
+    }).then(r => r.json());
+    btn.textContent = label;
+    if(d.error){
+      out.style.display='block'; out.style.color='var(--red)'; out.textContent = '⚠ ' + d.error;
+      btn.disabled = false; return;
+    }
+    if(preview){
+      const msg = d.message || '';
+      out.style.display='block'; out.style.color='var(--text2)'; out.textContent = msg;
+      // only offer Apply when the preview actually found something
+      document.getElementById('rules-apply-btn').disabled = /^Would change 0\b/.test(msg);
+      btn.disabled = false;
+    } else {
+      const m = (d.results || []).map(r => r.message).join('\n');
+      closeModal('rules-modal');
+      // This posts straight to /api/rules/run rather than through directEdit,
+      // so nothing has refreshed the grid — without this the rule applies but
+      // the screen still shows the old values, which reads as "it did nothing".
+      undoCount = d.undo_count ?? undoCount;
+      redoCount = d.redo_count ?? redoCount;
+      if(d.edit_count != null){
+        editCount = d.edit_count;
+        const ei = document.getElementById('info-edits'); if(ei) ei.textContent = editCount;
+      }
+      updateUndoBtn();
+      await loadSchedule();
+      flashSched(m.split('\n')[0] || 'Applied');
+      addMsg('system', `<strong>Find &amp; change</strong><br>`
+        + escHtml(m).replace(/\n/g,'<br>'));
+    }
+  }catch(e){
+    btn.textContent = label; btn.disabled = false;
+    out.style.display='block'; out.style.color='var(--red)'; out.textContent = e.message;
+  }
 }
 
 (function initTheme(){

@@ -10,7 +10,7 @@ All writes go through xml_writer.py (P6 XML output).
 
 import re
 from typing import Dict, List, Optional, Tuple
-from .schedule_model import Project, WBSNode, Activity, Relation, Calendar
+from .schedule_model import Project, WBSNode, Activity, Relation, Calendar, UDFType
 
 
 def _parse_xer_tables(path: str) -> Dict[str, List[Dict]]:
@@ -153,6 +153,31 @@ def load_xer(path: str) -> Project:
             constraint_type=cstr_map.get(row.get("cstr_type", "")) or None,
             constraint_date=_iso_date(row.get("cstr_date", "")) or None,
         ))
+
+    # --- User-defined fields (UDFTYPE defines them, UDFVALUE holds values) ---
+    # Without this, columns a team added in P6 — electrician counts, crew
+    # sizes — are dropped on import and cannot be written back out.
+    udf_titles = {}
+    for row in tables.get("UDFTYPE", []):
+        oid, title = row.get("udf_type_id", ""), row.get("udf_type_label", "")
+        if oid and title:
+            udf_titles[oid] = title
+            project.udf_types.append(UDFType(
+                uid=oid, title=title,
+                subject_area=row.get("table_name", "TASK"),
+                data_type=row.get("logical_data_type", "Text")))
+    if udf_titles:
+        act_by_uid = {a.uid: a for a in project.activities}
+        for row in tables.get("UDFVALUE", []):
+            title = udf_titles.get(row.get("udf_type_id", ""))
+            act = act_by_uid.get(row.get("fk_id", ""))
+            if not title or act is None:
+                continue
+            for col in ("udf_text", "udf_number", "udf_date", "udf_code_id"):
+                v = row.get(col, "")
+                if v not in ("", None):
+                    act.udfs[title] = v
+                    break
 
     # --- Budgeted Labor Units from TASKRSRC (resource assignments) ---
     blu_map: Dict[str, float] = {}

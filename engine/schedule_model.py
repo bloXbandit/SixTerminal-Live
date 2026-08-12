@@ -63,6 +63,10 @@ class Activity:
     constraint_date: Optional[str] = None
     notes: Optional[str] = None
     planned_labor_units: float = 0.0       # Budgeted Labor Units (BLU)
+    # P6 user-defined fields, keyed by their TITLE as it appears in P6
+    # ("Number of Electricians"). Kept generic so an imported schedule keeps
+    # every UDF it arrived with rather than only the ones this app knows.
+    udfs: Dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -75,6 +79,15 @@ class Relation:
 
 
 @dataclass
+class UDFType:
+    """A P6 user-defined field definition (the column header, essentially)."""
+    uid: str
+    title: str
+    subject_area: str = "Activity"
+    data_type: str = "Text"          # Text | Double | Integer | Date | Indicator
+
+
+@dataclass
 class Project:
     uid: str
     name: str
@@ -84,6 +97,7 @@ class Project:
     must_finish_by: Optional[str] = None
     status_code: str = "Active"
     calendars: List[Calendar] = field(default_factory=list)
+    udf_types: List["UDFType"] = field(default_factory=list)
     wbs_nodes: List[WBSNode] = field(default_factory=list)
     activities: List[Activity] = field(default_factory=list)
     relations: List[Relation] = field(default_factory=list)
