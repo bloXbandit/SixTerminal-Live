@@ -3645,7 +3645,72 @@ function renderSchedule(data) {
       rows.push(renderActivityRow(a, wbs.uid, isCollapsed));
     }
   }
-  tbody.innerHTML = rows.join('');
+  paintRows(tbody, rows, () => finishRender(data));
+}
+
+// A full grid is ~100,000 DOM elements on a 2700-activity schedule, and
+// building them in one go blocks the page for seconds. The rows are painted in
+// chunks instead: the first screenful lands immediately so the grid is usable
+// at once, and the rest fill in across following frames. Every row still ends
+// up in the DOM, so selection, find, trace and drag-and-drop keep working
+// exactly as before — this changes when the work happens, not what exists.
+let _paintToken = 0;
+const _FIRST_CHUNK = 120;      // roughly three screenfuls — instant, and enough
+// Attaching a row to a live table costs ~1.8ms, so a chunk is sized to land
+// near a 16ms frame. Bigger chunks finish sooner in total but stall the main
+// thread in visible steps; this keeps typing and scrolling responsive while
+// the rest of the grid fills in behind you.
+const _CHUNK = 10;
+
+function paintRows(tbody, rows, done){
+  const token = ++_paintToken;               // a newer render cancels this one
+  tbody.innerHTML = rows.slice(0, _FIRST_CHUNK).join('');
+  if(rows.length <= _FIRST_CHUNK){ done(); return; }
+  done();                                    // wire up state against what is there
+  let i = _FIRST_CHUNK;
+  const step = () => {
+    if(token !== _paintToken) return;        // superseded mid-paint
+    const first = tbody.lastElementChild;
+    tbody.insertAdjacentHTML('beforeend', rows.slice(i, i + _CHUNK).join(''));
+    // Rows arriving after the first paint must respect whatever view state is
+    // already active. Without this a find typed while the grid is still
+    // filling would let later rows through unfiltered.
+    applyViewStateTo(first ? first.nextElementSibling : tbody.firstElementChild);
+    i += _CHUNK;
+    if(i < rows.length) requestAnimationFrame(step);
+    else done();                             // re-apply state over the full grid
+  };
+  requestAnimationFrame(step);
+}
+
+/**
+ * Apply the active collapse/find state to rows from `startEl` onward.
+ * Scoped to the newly-added rows so it stays cheap during a streaming paint.
+ */
+function applyViewStateTo(startEl){
+  const secs = lastSchedData?.wbs_sections || [];
+  if(!secs.length) return;
+  const byUid = {}; secs.forEach(w => byUid[w.uid] = w);
+  const hiddenBranch = (uid) => {
+    let cur = byUid[uid]?.parent_uid, guard = 0;
+    while(cur && guard++ < 200){
+      if(collapsedWbs.has(cur)) return true;
+      cur = byUid[cur]?.parent_uid;
+    }
+    return false;
+  };
+  for(let el = startEl; el; el = el.nextElementSibling){
+    if(!el.classList || !el.classList.contains('sched-act-row')) continue;
+    const uid = el.dataset.wbs;
+    const vis = !hiddenBranch(uid) && !(collapsedWbs.has(uid) && !_findTerm)
+                && !findHides(el);
+    el.style.display = vis ? '' : 'none';
+  }
+}
+
+function finishRender(data){
+  const tbody = document.getElementById('sched-tbody');
+  if(!tbody) return;
   applyWbsVisibility();      // one pass drives all collapse state, incl. nesting
   updateColVisibility();
   populateWbsSelects(data);
