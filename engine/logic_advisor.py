@@ -791,6 +791,133 @@ def milestone_drivers(project: Project, milestone: Activity,
     return out
 
 
+_TIE_QUESTION_RE = re.compile(
+    r"""(?ix)
+    \b(?:best|good|right|correct|recommend\w*|suggest\w*|what|which|where|how)\b
+    .{0,60}?
+    \b(?:connect\w*|tie|ties|link\w*|logic|predecessor|successor|
+        pred|succ|relationship|sequence|anchor)\b
+    """)
+
+_QUOTED_RE = re.compile(r"[\"'“‘]([^\"'”’]{2,80})[\"'”’]")
+_IDLIKE_RE = re.compile(r"\b([A-Z][A-Z0-9]*(?:[.\-][A-Z0-9]+){1,5}|A\d{3,6})\b")
+
+
+def tie_question(text: str) -> bool:
+    """
+    Does this read as "what should X connect to?" rather than an instruction?
+
+    Only a question of that shape should produce clickable tie options — the
+    user asked for them explicitly. "Link A to B" is an instruction and must
+    stay an instruction.
+    """
+    t = (text or "").strip()
+    if not t or not _TIE_QUESTION_RE.search(t):
+        return False
+    # an explicit instruction, even if it mentions ties, is not a question
+    if re.match(r"(?i)^\s*(add|make|create|tie|link|connect|set|apply|delete|remove)\b", t):
+        return False
+    return True
+
+
+def find_activity_in(project: Project, text: str) -> List[Activity]:
+    """
+    The activity a tie question is about: a quoted name, an id-looking token,
+    or the longest exact name from the schedule that appears in the text.
+
+    Everything returned is a real row — nothing is constructed from the text.
+    """
+    by_id = {a.activity_id.lower(): a for a in project.activities}
+    for m in _IDLIKE_RE.finditer(text or ""):
+        hit = by_id.get(m.group(1).lower())
+        if hit:
+            return [hit]
+    for m in _QUOTED_RE.finditer(text or ""):
+        needle = m.group(1).strip().lower()
+        exact = [a for a in project.activities if a.name.strip().lower() == needle]
+        if exact:
+            return exact
+        part = [a for a in project.activities if needle in a.name.lower()]
+        if part:
+            return part[:8]
+    low = (text or "").lower()
+    hits = [a for a in project.activities
+            if len(a.name) >= 6 and a.name.strip().lower() in low]
+    hits.sort(key=lambda a: -len(a.name))
+    if hits:
+        top = hits[0].name.strip().lower()
+        return [a for a in project.activities if a.name.strip().lower() == top][:8]
+    return []
+
+
+def tie_options(project: Project, act: Activity, limit: int = 4) -> Dict[str, Any]:
+    """
+    Ranked predecessor and successor candidates for ONE activity, each with the
+    confidence and the reasons behind it, ready to be offered as apply buttons.
+
+    Same scoring as everywhere else — this is the single-activity view of it,
+    for when the user points at a row and asks what it should connect to.
+    """
+    ctx = _Ctx(project)
+    start = _parse(act.actual_start or act.planned_start or act.early_start)
+    finish = _parse(act.actual_finish or act.planned_finish or act.early_finish)
+    linked_pred = {r.predecessor_uid for r in project.relations if r.successor_uid == act.uid}
+    linked_succ = {r.successor_uid for r in project.relations if r.predecessor_uid == act.uid}
+
+    preds, succs = [], []
+    for other in project.activities:
+        if other.uid == act.uid:
+            continue
+        o_fin = _parse(other.planned_finish or other.early_finish)
+        o_start = _parse(other.planned_start or other.early_start)
+
+        # candidate predecessor: finishes before this one starts
+        if (start and o_fin and o_fin <= start
+                and (start - o_fin).days <= _MAX_GAP_DAYS
+                and other.uid not in linked_pred):
+            lag = implied_lag(project, other, act)
+            if lag is not None:
+                c, why = score_tie(ctx, other, act, lag)
+                if c >= _MIN_CONFIDENCE:
+                    preds.append((c, lag, other, why))
+
+        # candidate successor: starts after this one finishes
+        if (finish and o_start and o_start >= finish
+                and (o_start - finish).days <= _MAX_GAP_DAYS
+                and other.uid not in linked_succ):
+            lag = implied_lag(project, act, other)
+            if lag is not None:
+                c, why = score_tie(ctx, act, other, lag)
+                if c >= _MIN_CONFIDENCE:
+                    succs.append((c, lag, other, why))
+
+    preds.sort(key=lambda t: (-t[0], abs(t[1])))
+    succs.sort(key=lambda t: (-t[0], abs(t[1])))
+
+    def pack(items, as_pred: bool):
+        out = []
+        for c, lag, other, why in items[:limit]:
+            rec = (_rec(project, other, act, "Finish to Start", "; ".join(why[:3]))
+                   if as_pred else
+                   _rec(project, act, other, "Finish to Start", "; ".join(why[:3])))
+            rec["confidence"] = round(c, 2)
+            rec["signals"] = why
+            out.append(rec)
+        return out
+
+    return {
+        "activity_id": act.activity_id,
+        "name": act.name,
+        "wbs_path": wbs_path(project, act),
+        "start": str(act.planned_start or "")[:10],
+        "finish": str(act.planned_finish or "")[:10],
+        "has_predecessor": bool(linked_pred),
+        "has_successor": bool(linked_succ),
+        "predecessors": pack(preds, True),
+        "successors": pack(succs, False),
+    }
+
+
 def milestone_report(project: Project, limit_per_milestone: int = 3) -> Dict[str, Any]:
     """
     Every milestone, its logic state, and what could drive it.

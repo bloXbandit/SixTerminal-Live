@@ -314,6 +314,21 @@
       margin-top:2px;background:var(--surface2);
       border:1px solid rgba(59,130,246,.35);border-radius:var(--r-md);overflow:hidden;
     }
+    /* Tie options — ranked candidates with a one-click Apply */
+    .tie-group{padding:2px 0 6px;}
+    .tie-group-head{
+      padding:7px 14px 5px;font-size:10px;font-weight:700;letter-spacing:.06em;
+      text-transform:uppercase;color:var(--text3);
+    }
+    .tie-lag{font-family:var(--mono);font-size:10px;text-align:right;white-space:nowrap;}
+    .tie-conf{
+      display:inline-block;min-width:38px;text-align:center;padding:1px 6px;
+      border-radius:9px;font-family:var(--mono);font-size:10px;font-weight:700;
+    }
+    .tie-hi {background:var(--green-bg);color:var(--green);}
+    .tie-mid{background:var(--orange-bg);color:var(--orange);}
+    .tie-lo {background:var(--surface3);color:var(--text3);}
+    .tie-why{color:var(--text3);font-size:10px;max-width:340px;}
     .disambig-header{
       padding:9px 14px;background:var(--blue-bg);
       border-bottom:1px solid rgba(59,130,246,.2);
@@ -2896,6 +2911,7 @@ async function sendInstruction() {
     else if (d.type === 'chat')           { addMsg('assistant', escHtml(d.message)); }
     else if (d.type === 'clarify')        { handleClarify(d); }
     else if (d.type === 'disambiguation') { addMsg('system', disambigCard(d)); }
+    else if (d.type === 'tie_options')    { addMsg('system', tieOptionsCard(d)); }
     else                                  { handleResult(d); }
   } catch(e) { removePending(); addMsg('system', errorCard(e.message)); }
   setSendDisabled(false);
@@ -2916,6 +2932,76 @@ function updateInputHint(text) {
   } else {
     hint.innerHTML = 'Enter to send &nbsp;&middot;&nbsp; Shift+Enter for new line';
   }
+}
+
+// ═══════════════════════════════════════════════════
+//  Tie options — "what should this connect to?"
+// ═══════════════════════════════════════════════════
+// Answered from the schedule, not the model: the server scores every candidate
+// and returns them ranked, so each row here is a real activity with a real
+// implied lag. One click applies the tie.
+
+/** Cards live long enough to be clicked, so their data is kept out of the DOM. */
+const _tieCards = {};
+
+function tieOptionsCard(d){
+  const id = 'ties-' + Date.now();
+  _tieCards[id] = d;
+  const row = (r, i, kind) => {
+    const conf = Math.round((r.confidence || 0) * 100);
+    const other = kind === 'pred' ? r.predecessor_id : r.successor_id;
+    const oname = kind === 'pred' ? r.predecessor_name : r.successor_name;
+    const bar = conf >= 65 ? 'tie-hi' : conf >= 45 ? 'tie-mid' : 'tie-lo';
+    return `<tr>
+      <td class="act-id">${escHtml(other)}</td>
+      <td>${escHtml(oname)}</td>
+      <td class="tie-lag">${r.implied_lag_days == null ? '—' : r.implied_lag_days + 'd'}</td>
+      <td><span class="tie-conf ${bar}">${conf}%</span></td>
+      <td class="tie-why">${escHtml((r.signals || []).slice(0, 2).join('; '))}</td>
+      <td><button class="btn btn-primary btn-sm"
+            onclick="applyTie('${id}','${kind}',${i},this)">Apply</button></td>
+    </tr>`;
+  };
+  const table = (list, kind, label) => !list.length ? '' : `
+    <div class="tie-group">
+      <div class="tie-group-head">${label}</div>
+      <table class="disambig-table">
+        <thead><tr><th>ID</th><th>Activity</th><th>Gap</th><th>Confidence</th>
+                   <th>Why</th><th></th></tr></thead>
+        <tbody>${list.map((r, i) => row(r, i, kind)).join('')}</tbody>
+      </table>
+    </div>`;
+  return `<div class="disambig-card" id="${id}">
+    <div class="disambig-header">⇆ Logic options for ${escHtml(d.activity_id)}
+      <span>&nbsp;—&nbsp;${escHtml(d.name)}</span></div>
+    <div class="disambig-subtext">
+      ${escHtml(d.wbs_path || '')} · ${fmtDate(d.start)} → ${fmtDate(d.finish)}
+      ${d.has_predecessor ? '' : ' · <b>no predecessor</b>'}
+      ${d.has_successor ? '' : ' · <b>no successor</b>'}
+    </div>
+    ${table(d.predecessors, 'pred', 'Could come BEFORE it (predecessors)')}
+    ${table(d.successors, 'succ', 'Could come AFTER it (successors)')}
+    <div class="disambig-actions">
+      <span class="disambig-hint">Ranked on dates, shared subject, area, WBS
+        distance and trade order. Apply adds a Finish-to-Start tie at lag 0.</span>
+    </div>
+  </div>`;
+}
+
+async function applyTie(cardId, kind, idx, btn){
+  const d = _tieCards[cardId];
+  if(!d) return;
+  const r = (kind === 'pred' ? d.predecessors : d.successors)[idx];
+  if(!r) return;
+  btn.disabled = true; btn.textContent = '…';
+  const ok = await directEdit(
+    [{action:'add_relation', predecessor_id:r.predecessor_id,
+      successor_id:r.successor_id, type:'fs', lag_days:0}],
+    `${r.predecessor_id} → ${r.successor_id}`);
+  const applied = ok && ok.commands_applied > 0;
+  btn.textContent = applied ? '✓ Added' : 'Failed';
+  btn.classList.toggle('btn-primary', false);
+  if(!applied) btn.disabled = false;
 }
 
 // ═══════════════════════════════════════════════════

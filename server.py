@@ -43,6 +43,7 @@ from engine.logic_advisor import (milestone_report, milestone_drivers,
                                   commissioning_ladder, to_commands, find_wbs,
                                   area_digest, area_report, procurement_report,
                                   sequence_recommendations)
+from engine import logic_advisor as _advisor
 
 TEMPLATE_DIR = str(ROOT / "ui" / "templates")
 STATIC_DIR   = str(ROOT / "ui" / "static")
@@ -1160,6 +1161,21 @@ def edit():
 
     if not force_commands:
         _append_chat("user", instruction)
+
+    # "What should X connect to?" is answered from the schedule itself, not by
+    # the model: the candidates are scored, ranked and returned as buttons the
+    # user clicks. Nothing can be invented on this path, and it costs no round
+    # trip. Only a QUESTION of that shape takes it — "link A to B" is an
+    # instruction and goes to the interpreter as usual.
+    if force_commands is None and _advisor.tie_question(instruction):
+        matches = _advisor.find_activity_in(project, instruction)
+        if len(matches) == 1:
+            opts = _advisor.tie_options(project, matches[0])
+            if opts["predecessors"] or opts["successors"]:
+                _append_chat("assistant",
+                             f"Options for {opts['activity_id']} — {opts['name']}")
+                return jsonify({"type": "tie_options", "instruction": instruction,
+                                **opts})
 
     try:
         if force_commands is not None:
