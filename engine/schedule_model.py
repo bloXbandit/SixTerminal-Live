@@ -786,6 +786,22 @@ def compute_dates(project: "Project", hold_unlinked_dates: bool = True) -> None:
         return
     origin = _snap(origin, base_wd, base_hol)
 
+    # ── Data-date floor ──────────────────────────────────────────────────────
+    # Remaining work cannot be scheduled into the past. P6 holds not-started
+    # work at or after the data date and leaves any older constraint in place,
+    # which is why the reference schedule exports 75 activities sitting on the
+    # first working day after its data date while still carrying a pin from
+    # two months earlier. Without this floor those pins won, and the CPM
+    # cheerfully scheduled remaining work before the date the project was
+    # statused from.
+    data_floor: Optional[_date] = None
+    if project.data_date:
+        try:
+            data_floor = _snap(_date.fromisoformat(str(project.data_date)[:10]),
+                               base_wd, base_hol)
+        except (ValueError, TypeError):
+            data_floor = None
+
     MILESTONE_TYPES = {"Start Milestone", "Finish Milestone"}
 
     # ── Build predecessor / successor maps ───────────────────────────────────
@@ -871,15 +887,30 @@ def compute_dates(project: "Project", hold_unlinked_dates: bool = True) -> None:
             # "Mandatory Start" — exact-string matching silently ignored them.
             ct = (act.constraint_type or "").strip().lower()
             cd = _parse(act.constraint_date)
-            if ct in ("must start on", "start on", "mandatory start") and cd:
+            if ct in ("must start on", "mandatory start") and cd:
+                # MSO — the one constraint that genuinely overrides logic.
                 es_date = _snap(cd, wd, hol)
-            elif ct == "start on or after" and cd and cd > es_date:
-                # SNET — an early constraint: work cannot begin before this
+            elif ct in ("start on", "start on or after") and cd and cd > es_date:
+                # A start pin raises the early date, but it does not pull work
+                # back in front of the logic that drives it. P6 behaves this
+                # way and the reference schedule proves it: 51 activities are
+                # exported with a Start On pin their own predecessors push them
+                # past, and every P6 date field agrees with the LATER date.
+                # Overriding with the pin here rescheduled work before its own
+                # predecessors and threw away dates the user had typed. For
+                # "Start On" the slip is not silent — the backward pass caps
+                # the late date at the pin, so it surfaces as negative float.
                 es_date = _snap(cd, wd, hol)
             # "Start On Or Before" (SNLT) is a DEADLINE, not a pull. It limits
             # the late start in the backward pass so missing it surfaces as
             # negative float; forcing the early date here would silently
             # reschedule the work instead of reporting that it is late.
+
+            # Applied after the constraints, so a pin dated before the data
+            # date cannot drag remaining work into the past. Started work is
+            # left alone — its actual start is a fact, not a projection.
+            if data_floor and act.status == "Not Started" and es_date < data_floor:
+                es_date = data_floor
 
         ef_date = _add_wd(es_date, dur_d, wd, hol) if dur_d > 0 else es_date
 
@@ -888,12 +919,16 @@ def compute_dates(project: "Project", hold_unlinked_dates: bool = True) -> None:
         anchored = act.status == "In Progress" and act.actual_start
         ct = (act.constraint_type or "").strip().lower()
         cd = _parse(act.constraint_date)
-        if ct in ("must finish on", "finish on", "mandatory finish") and cd:
+        if ct in ("must finish on", "mandatory finish") and cd:
+            # MFO — genuinely overrides logic, and back-computes the start.
             ef_date = _snap(cd, wd, hol)
             if not anchored:
                 es_date = _add_wd(ef_date, -dur_d, wd, hol) if dur_d > 0 else ef_date
-        elif ct == "finish on or after" and cd and cd > ef_date:
-            # FNET — an early constraint: cannot finish before this date
+        elif ct in ("finish on", "finish on or after") and cd and cd > ef_date:
+            # Same rule as the start pins: a finish pin can push the finish
+            # out, never drag it in front of the work driving it. "Finish On"
+            # still caps the late finish in the backward pass, so a slip past
+            # it shows up as negative float instead of being scheduled away.
             ef_date = _snap(cd, wd, hol)
         # "Finish On Or Before" (FNLT) is a deadline — handled in the backward
         # pass for the same reason as Start On Or Before.
