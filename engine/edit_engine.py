@@ -31,6 +31,7 @@ Supported commands:
   bulk_rules                — If/then find-and-change across the schedule or one folder
   bulk_add_activity         — Add the same activity to multiple WBS nodes in one call
   bulk_create_wbs           — Create multiple WBS folders under the same parent in one call
+  add_wbs_for_each          — Add a child folder under EVERY folder matching a pattern
   bulk_rename_activities    — Rename activities by explicit from→to list (ID, name, or WBS scope)
   bulk_update_activity_id   — Mass ID updates: resequence, pattern replace, or prefix swap
 
@@ -96,6 +97,56 @@ def _find_wbs(project: Project, wbs_code: Optional[str] = None,
             if name_low in w.name.lower():
                 return w
     return None
+
+
+def _suggest(needle: str, candidates: List[Tuple[str, str]], n: int = 5) -> str:
+    """
+    "Did you mean" for a name or id that did not resolve.
+
+    `candidates` is a list of (id, label) pairs. Matching is deliberately
+    generous: an exact-prefix or substring hit ranks above a fuzzy one, so a
+    half-remembered id still lands somewhere useful.
+    """
+    import difflib
+    if not needle or not candidates:
+        return ""
+    low = str(needle).strip().lower()
+    scored = []
+    for ident, label in candidates:
+        hay = f"{ident} {label}".lower()
+        if low and low in hay:
+            score = 1.0 + (0.5 if str(ident).lower().startswith(low) else 0.0)
+        else:
+            score = max(difflib.SequenceMatcher(None, low, str(ident).lower()).ratio(),
+                        difflib.SequenceMatcher(None, low, str(label).lower()).ratio())
+        if score >= 0.5:
+            scored.append((score, ident, label))
+    if not scored:
+        return ""
+    scored.sort(key=lambda t: (-t[0], t[1]))
+    shown = "; ".join(f"{i} — {l}" for _, i, l in scored[:n])
+    return f" Did you mean: {shown}"
+
+
+def _no_activity(project: Project, needle) -> str:
+    """
+    The message for an activity that does not exist.
+
+    An agent that gets a flat "not found" tends to guess another id and fail
+    again — that is how MDC1.MIL.1130 and MDC1.MIL.1070 got invented. Handing
+    back the real neighbours turns a dead end into the answer.
+    """
+    cands = [(a.activity_id, a.name) for a in project.activities]
+    return (f"Activity '{needle}' not found in this schedule."
+            + (_suggest(needle, cands) or
+               " Use an activity_id exactly as it appears in the schedule context."))
+
+
+def _no_wbs(project: Project, needle) -> str:
+    cands = [(w.code or w.uid, w.name) for w in project.wbs_nodes]
+    return (f"WBS folder '{needle}' not found in this schedule."
+            + (_suggest(needle, cands) or
+               " Use a folder name or code exactly as it appears in the context."))
 
 
 def _new_uid() -> str:
@@ -240,6 +291,8 @@ def apply_command(project: Project, command: Dict[str, Any]) -> Tuple[bool, str]
             return _bulk_add_activity(project, command)
         elif action == "bulk_create_wbs":
             return _bulk_create_wbs(project, command)
+        elif action in ("add_wbs_for_each", "bulk_create_wbs_for_each"):
+            return _add_wbs_for_each(project, command)
         elif action == "bulk_rename_activities":
             return _bulk_rename_activities(project, command)
         elif action == "bulk_update_activity_id":
@@ -456,7 +509,7 @@ def generate_schedule_report(project: Project) -> Dict[str, Any]:
 def _rename_activity(project: Project, cmd: Dict) -> Tuple[bool, str]:
     matches = _find_activity(project, cmd.get("activity_id"), cmd.get("target_name"))
     if not matches:
-        raise EditError(f"No activity found matching: {cmd.get('activity_id') or cmd.get('target_name')}")
+        raise EditError(_no_activity(project, cmd.get("activity_id") or cmd.get("target_name")))
     new_name = cmd.get("new_name", "").strip()
     if not new_name:
         raise EditError("new_name is required for rename_activity")
@@ -471,7 +524,7 @@ def _rename_activity(project: Project, cmd: Dict) -> Tuple[bool, str]:
 def _update_duration(project: Project, cmd: Dict) -> Tuple[bool, str]:
     matches = _find_activity(project, cmd.get("activity_id"), cmd.get("target_name"))
     if not matches:
-        raise EditError(f"No activity found matching: {cmd.get('activity_id') or cmd.get('target_name')}")
+        raise EditError(_no_activity(project, cmd.get("activity_id") or cmd.get("target_name")))
     new_days = cmd.get("new_duration_days")
     if new_days is None:
         raise EditError("new_duration_days is required for update_duration")
@@ -489,7 +542,7 @@ def _update_duration(project: Project, cmd: Dict) -> Tuple[bool, str]:
 def _update_activity_id(project: Project, cmd: Dict) -> Tuple[bool, str]:
     matches = _find_activity(project, cmd.get("activity_id"), cmd.get("target_name"))
     if not matches:
-        raise EditError(f"No activity found matching: {cmd.get('activity_id') or cmd.get('target_name')}")
+        raise EditError(_no_activity(project, cmd.get("activity_id") or cmd.get("target_name")))
     if len(matches) > 1:
         raise EditError(f"Found {len(matches)} activities — use activity_id for exact match when changing IDs")
     new_id = cmd.get("new_activity_id", "").strip()
@@ -508,8 +561,7 @@ def _add_activity(project: Project, cmd: Dict) -> Tuple[bool, str]:
     wbs = _find_wbs(project, cmd.get("wbs_code"), cmd.get("wbs_name"),
                     cmd.get("wbs_uid"))
     if not wbs:
-        raise EditError(f"WBS node not found: "
-                        f"{cmd.get('wbs_uid') or cmd.get('wbs_code') or cmd.get('wbs_name')}")
+        raise EditError(_no_wbs(project, cmd.get("wbs_code") or cmd.get("wbs_name") or cmd.get("wbs_uid")))
     act_id = cmd.get("activity_id", "").strip()
     if not act_id:
         # Auto-assign the next available ID (quick-add / paste from the grid)
@@ -549,7 +601,7 @@ def _add_activity(project: Project, cmd: Dict) -> Tuple[bool, str]:
 def _delete_activity(project: Project, cmd: Dict) -> Tuple[bool, str]:
     matches = _find_activity(project, cmd.get("activity_id"), cmd.get("target_name"))
     if not matches:
-        raise EditError(f"No activity found matching: {cmd.get('activity_id') or cmd.get('target_name')}")
+        raise EditError(_no_activity(project, cmd.get("activity_id") or cmd.get("target_name")))
     if len(matches) > 1 and not cmd.get("apply_to_all"):
         raise EditError(f"Found {len(matches)} activities. Use activity_id for exact match or set apply_to_all=true.")
     uids = {a.uid for a in matches}
@@ -564,9 +616,9 @@ def _add_relation(project: Project, cmd: Dict) -> Tuple[bool, str]:
     pred_matches = _find_activity(project, cmd.get("predecessor_id"), cmd.get("predecessor_name"))
     succ_matches = _find_activity(project, cmd.get("successor_id"), cmd.get("successor_name"))
     if not pred_matches:
-        raise EditError(f"Predecessor not found: {cmd.get('predecessor_id') or cmd.get('predecessor_name')}")
+        raise EditError("Predecessor — " + _no_activity(project, cmd.get("predecessor_id") or cmd.get("predecessor_name")))
     if not succ_matches:
-        raise EditError(f"Successor not found: {cmd.get('successor_id') or cmd.get('successor_name')}")
+        raise EditError("Successor — " + _no_activity(project, cmd.get("successor_id") or cmd.get("successor_name")))
     if len(pred_matches) > 1:
         raise EditError(f"Multiple predecessors matched '{cmd.get('predecessor_name')}' — use activity_id")
     if len(succ_matches) > 1:
@@ -621,7 +673,7 @@ def _rename_wbs(project: Project, cmd: Dict) -> Tuple[bool, str]:
     wbs = _find_wbs(project, cmd.get("wbs_code"), cmd.get("wbs_name"),
                     cmd.get("wbs_uid"))
     if not wbs:
-        raise EditError(f"WBS node not found: {cmd.get('wbs_code') or cmd.get('wbs_name')}")
+        raise EditError(_no_wbs(project, cmd.get("wbs_code") or cmd.get("wbs_name")))
     new_name = cmd.get("new_name", "").strip()
     new_code = cmd.get("new_code", "").strip()
     if not new_name and not new_code:
@@ -753,8 +805,7 @@ def _delete_wbs(project: Project, cmd: Dict) -> Tuple[bool, str]:
     wbs = _find_wbs(project, cmd.get("wbs_code"), cmd.get("wbs_name"),
                     cmd.get("wbs_uid"))
     if not wbs:
-        raise EditError(f"WBS node not found: "
-                        f"{cmd.get('wbs_uid') or cmd.get('wbs_code') or cmd.get('wbs_name')}")
+        raise EditError(_no_wbs(project, cmd.get("wbs_code") or cmd.get("wbs_name") or cmd.get("wbs_uid")))
 
     # the whole branch: this folder plus every descendant
     branch = {wbs.uid}
@@ -813,8 +864,7 @@ def _reorder_wbs(project: Project, cmd: Dict) -> Tuple[bool, str]:
     wbs = _find_wbs(project, cmd.get("wbs_code"), cmd.get("wbs_name"),
                     cmd.get("wbs_uid"))
     if not wbs:
-        raise EditError(f"WBS node not found: "
-                        f"{cmd.get('wbs_uid') or cmd.get('wbs_code') or cmd.get('wbs_name')}")
+        raise EditError(_no_wbs(project, cmd.get("wbs_code") or cmd.get("wbs_name") or cmd.get("wbs_uid")))
     direction = (cmd.get("direction") or "").strip().lower()
     if direction not in ("up", "down"):
         raise EditError("direction must be 'up' or 'down'")
@@ -848,8 +898,7 @@ def _move_wbs(project: Project, cmd: Dict) -> Tuple[bool, str]:
     """
     wbs = _find_wbs(project, cmd.get("wbs_code"), cmd.get("wbs_name"), cmd.get("wbs_uid"))
     if not wbs:
-        raise EditError(f"WBS node not found: "
-                        f"{cmd.get('wbs_uid') or cmd.get('wbs_code') or cmd.get('wbs_name')}")
+        raise EditError(_no_wbs(project, cmd.get("wbs_code") or cmd.get("wbs_name") or cmd.get("wbs_uid")))
 
     to_root = cmd.get("to_root") or not (cmd.get("parent_uid") or cmd.get("parent_code")
                                          or cmd.get("parent_name"))
@@ -900,13 +949,13 @@ def _duplicate_wbs(project: Project, cmd: Dict) -> Tuple[bool, str]:
     """
     src = _find_wbs(project, cmd.get("wbs_code"), cmd.get("wbs_name"))
     if not src:
-        raise EditError(f"WBS node not found: {cmd.get('wbs_code') or cmd.get('wbs_name')}")
+        raise EditError(_no_wbs(project, cmd.get("wbs_code") or cmd.get("wbs_name")))
 
     parent_uid = src.parent_uid
     if cmd.get("parent_code") or cmd.get("parent_name"):
         tgt = _find_wbs(project, cmd.get("parent_code"), cmd.get("parent_name"))
         if not tgt:
-            raise EditError(f"Target WBS not found: {cmd.get('parent_code') or cmd.get('parent_name')}")
+            raise EditError("Target " + _no_wbs(project, cmd.get("parent_code") or cmd.get("parent_name")))
         parent_uid = tgt.uid
 
     try:
@@ -1047,7 +1096,7 @@ def _copy_activities(project: Project, cmd: Dict) -> Tuple[bool, str]:
         matches = _find_activity(project, aid)
         if not matches:
             if not skip_missing:
-                raise EditError(f"Activity not found: {aid}")
+                raise EditError(_no_activity(project, aid))
             missing.append(aid)
             continue
         a = matches[0]
@@ -1141,8 +1190,7 @@ def _move_activities(project: Project, cmd: Dict) -> Tuple[bool, str]:
         raise EditError("activity_ids is required for move_activities")
     wbs = _find_wbs(project, cmd.get("wbs_code"), cmd.get("wbs_name"), cmd.get("wbs_uid"))
     if not wbs:
-        raise EditError(f"Target WBS not found: "
-                        f"{cmd.get('wbs_uid') or cmd.get('wbs_code') or cmd.get('wbs_name')}")
+        raise EditError("Target " + _no_wbs(project, cmd.get("wbs_code") or cmd.get("wbs_name") or cmd.get("wbs_uid")))
     skip_missing = bool(cmd.get("skip_missing"))
     # resolve everything first — a half-finished move is worse than none
     resolved, missing = [], []
@@ -1150,7 +1198,7 @@ def _move_activities(project: Project, cmd: Dict) -> Tuple[bool, str]:
         matches = _find_activity(project, aid)
         if not matches:
             if not skip_missing:
-                raise EditError(f"Activity not found: {aid}")
+                raise EditError(_no_activity(project, aid))
             missing.append(aid)
             continue
         resolved.append(matches[0])
@@ -1203,7 +1251,7 @@ def _update_activity_type(project: Project, cmd: Dict) -> Tuple[bool, str]:
     """Change an activity's type. Milestones are zero-duration by definition."""
     matches = _find_activity(project, cmd.get("activity_id"), cmd.get("target_name"))
     if not matches:
-        raise EditError(f"No activity found: {cmd.get('activity_id') or cmd.get('target_name')}")
+        raise EditError(_no_activity(project, cmd.get("activity_id") or cmd.get("target_name")))
     raw = str(cmd.get("activity_type", "")).strip()
     new_type = _ACTIVITY_TYPES.get(raw.lower())
     if not new_type:
@@ -1220,7 +1268,7 @@ def _update_progress(project: Project, cmd: Dict) -> Tuple[bool, str]:
     """Set % complete, keeping status consistent with it."""
     matches = _find_activity(project, cmd.get("activity_id"), cmd.get("target_name"))
     if not matches:
-        raise EditError(f"No activity found: {cmd.get('activity_id') or cmd.get('target_name')}")
+        raise EditError(_no_activity(project, cmd.get("activity_id") or cmd.get("target_name")))
     try:
         pct = float(cmd.get("percent_complete"))
     except (TypeError, ValueError):
@@ -1364,7 +1412,7 @@ def _update_planned_date(project: Project, cmd: Dict) -> Tuple[bool, str]:
 
     matches = _find_activity(project, cmd.get("activity_id"), cmd.get("target_name"))
     if not matches:
-        raise EditError(f"No activity found: {cmd.get('activity_id') or cmd.get('target_name')}")
+        raise EditError(_no_activity(project, cmd.get("activity_id") or cmd.get("target_name")))
     if len(matches) > 1:
         raise EditError(f"Found {len(matches)} activities — use activity_id for dates")
     field = (cmd.get("field") or "").strip().lower()
@@ -1454,7 +1502,7 @@ def _set_actual_date(project: Project, cmd: Dict) -> Tuple[bool, str]:
     """
     matches = _find_activity(project, cmd.get("activity_id"), cmd.get("target_name"))
     if not matches:
-        raise EditError(f"No activity found: {cmd.get('activity_id') or cmd.get('target_name')}")
+        raise EditError(_no_activity(project, cmd.get("activity_id") or cmd.get("target_name")))
     if len(matches) > 1:
         raise EditError(f"Found {len(matches)} activities — use activity_id for actual dates")
     field = (cmd.get("field") or "").strip().lower()
@@ -1695,7 +1743,7 @@ def _update_udf(project: Project, cmd: Dict) -> Tuple[bool, str]:
 
     matches = _find_activity(project, cmd.get("activity_id"), cmd.get("target_name"))
     if not matches:
-        raise EditError(f"No activity found: {cmd.get('activity_id') or cmd.get('target_name')}")
+        raise EditError(_no_activity(project, cmd.get("activity_id") or cmd.get("target_name")))
     field = (cmd.get("field") or "").strip() or electricians_field(project)
     raw = cmd.get("value")
     value = "" if raw is None else str(raw).strip()
@@ -1723,7 +1771,7 @@ def _update_labor_units(project: Project, cmd: Dict) -> Tuple[bool, str]:
     """Set budgeted labor units on an activity."""
     matches = _find_activity(project, cmd.get("activity_id"), cmd.get("target_name"))
     if not matches:
-        raise EditError(f"No activity found: {cmd.get('activity_id') or cmd.get('target_name')}")
+        raise EditError(_no_activity(project, cmd.get("activity_id") or cmd.get("target_name")))
     try:
         units = float(cmd.get("labor_units"))
     except (TypeError, ValueError):
@@ -1737,12 +1785,11 @@ def _update_labor_units(project: Project, cmd: Dict) -> Tuple[bool, str]:
 def _move_activity_wbs(project: Project, cmd: Dict) -> Tuple[bool, str]:
     matches = _find_activity(project, cmd.get("activity_id"), cmd.get("target_name"))
     if not matches:
-        raise EditError(f"No activity found: {cmd.get('activity_id') or cmd.get('target_name')}")
+        raise EditError(_no_activity(project, cmd.get("activity_id") or cmd.get("target_name")))
     wbs = _find_wbs(project, cmd.get("wbs_code"), cmd.get("wbs_name"),
                     cmd.get("wbs_uid"))
     if not wbs:
-        raise EditError(f"Target WBS not found: "
-                        f"{cmd.get('wbs_uid') or cmd.get('wbs_code') or cmd.get('wbs_name')}")
+        raise EditError("Target " + _no_wbs(project, cmd.get("wbs_code") or cmd.get("wbs_name") or cmd.get("wbs_uid")))
     if len(matches) > 1 and not cmd.get("apply_to_all"):
         raise EditError(f"Found {len(matches)} activities. Use activity_id or set apply_to_all=true.")
     for a in matches:
@@ -1784,7 +1831,7 @@ def _bulk_update_duration(project: Project, cmd: Dict) -> Tuple[bool, str]:
 def _set_constraint(project: Project, cmd: Dict) -> Tuple[bool, str]:
     matches = _find_activity(project, cmd.get("activity_id"), cmd.get("target_name"))
     if not matches:
-        raise EditError(f"No activity found: {cmd.get('activity_id') or cmd.get('target_name')}")
+        raise EditError(_no_activity(project, cmd.get("activity_id") or cmd.get("target_name")))
     if len(matches) > 1:
         raise EditError(f"Found {len(matches)} activities — use activity_id for constraints")
     constraint_type = cmd.get("constraint_type", "").strip()
@@ -1799,7 +1846,7 @@ def _set_constraint(project: Project, cmd: Dict) -> Tuple[bool, str]:
 def _clear_constraint(project: Project, cmd: Dict) -> Tuple[bool, str]:
     matches = _find_activity(project, cmd.get("activity_id"), cmd.get("target_name"))
     if not matches:
-        raise EditError(f"No activity found: {cmd.get('activity_id') or cmd.get('target_name')}")
+        raise EditError(_no_activity(project, cmd.get("activity_id") or cmd.get("target_name")))
     for a in matches:
         a.constraint_type = None
         a.constraint_date = None
@@ -2002,6 +2049,145 @@ def _bulk_add_activity(project: Project, cmd: Dict) -> Tuple[bool, str]:
     return bool(added), msg
 
 
+def _add_wbs_for_each(project: Project, cmd: Dict) -> Tuple[bool, str]:
+    """
+    Add a child folder under EVERY folder matching a pattern, naming each one
+    from the parent it lands under.
+
+    This is the shape of request that is painful one folder at a time:
+    "add a sub-folder under each MV room called WBO MV <room>". Doing it as
+    N separate add_wbs commands means the agent has to enumerate the rooms
+    correctly first — which is exactly where it invents names.
+
+      match_contains : parent qualifies if its name contains this (case-insensitive)
+      match_regex    : ...or matches this regex. Groups are available to the
+                       template as {1}, {2}, ...
+      name_template  : name for the new child. Placeholders:
+                         {name}  parent folder name        ("MV 105")
+                         {code}  parent folder code
+                         {num}   first run of digits in the parent name ("105")
+                         {1}..{9} regex capture groups
+      code_template  : optional, same placeholders (defaults to the name)
+      skip_existing  : default true — a parent that already has a child of that
+                       name is left alone, so re-running is safe
+      under_parent_name / under_parent_code / under_parent_uid :
+                       optional, restricts matching to one branch
+
+    Matching never selects a folder that is itself one of the children this
+    command would create, so running it twice cannot nest WBO under WBO.
+    """
+    name_tpl = str(cmd.get("name_template") or "").strip()
+    if not name_tpl:
+        raise EditError("name_template is required for add_wbs_for_each "
+                        "(e.g. \"WBO {name}\")")
+    contains = str(cmd.get("match_contains") or "").strip().lower()
+    regex_src = str(cmd.get("match_regex") or "").strip()
+    if not contains and not regex_src:
+        raise EditError("add_wbs_for_each needs match_contains or match_regex")
+    try:
+        rx = re.compile(regex_src, re.IGNORECASE) if regex_src else None
+    except re.error as e:
+        raise EditError(f"match_regex is not a valid pattern: {e}")
+
+    scope_uid = None
+    if cmd.get("under_parent_uid") or cmd.get("under_parent_code") or cmd.get("under_parent_name"):
+        scope = _find_wbs(project, cmd.get("under_parent_code"), cmd.get("under_parent_name"),
+                          cmd.get("under_parent_uid"))
+        if not scope:
+            raise EditError("Scope " + _no_wbs(project, cmd.get("under_parent_name")
+                                               or cmd.get("under_parent_code")))
+        scope_uid = scope.uid
+
+    def in_scope(node) -> bool:
+        if scope_uid is None:
+            return True
+        by_uid = {w.uid: w for w in project.wbs_nodes}
+        cur, guard = node.parent_uid, 0
+        while cur and guard < 200:
+            if cur == scope_uid:
+                return True
+            cur = by_uid.get(cur).parent_uid if by_uid.get(cur) else None
+            guard += 1
+        return False
+
+    def render(tpl: str, node, m) -> str:
+        digits = re.search(r"\d+", node.name or "")
+        out = (tpl.replace("{name}", node.name or "")
+                  .replace("{code}", node.code or "")
+                  .replace("{num}", digits.group(0) if digits else ""))
+        if m:
+            for gi in range(1, (m.re.groups or 0) + 1):
+                out = out.replace("{%d}" % gi, m.group(gi) or "")
+        return out.strip()
+
+    skip_existing = cmd.get("skip_existing", True)
+
+    # A folder this command already created is usually still a match for the
+    # same pattern — "WBO MV 105" contains "MV" — so a second run would nest
+    # WBO inside WBO. Recognise the template's own output by the fixed text
+    # around its placeholders and never treat that as a parent.
+    lit_prefix = name_tpl.split("{", 1)[0].strip().lower()
+    lit_suffix = name_tpl.rsplit("}", 1)[-1].strip().lower() if "}" in name_tpl else ""
+
+    def is_own_output(node) -> bool:
+        nm = (node.name or "").strip().lower()
+        if lit_prefix and nm.startswith(lit_prefix):
+            return True
+        if lit_suffix and nm.endswith(lit_suffix):
+            return True
+        return False
+
+    # snapshot first: appending as we go would otherwise let a new child match
+    targets = []
+    for w in list(project.wbs_nodes):
+        if not in_scope(w) or is_own_output(w):
+            continue
+        m = rx.search(w.name or "") if rx else None
+        if rx and not m:
+            continue
+        if contains and contains not in (w.name or "").lower():
+            continue
+        targets.append((w, m))
+
+    if not targets:
+        raise EditError(f"No WBS folder matches "
+                        f"{'regex ' + regex_src if rx else repr(cmd.get('match_contains'))} — "
+                        f"nothing to add under")
+
+    children_by_parent = {}
+    for w in project.wbs_nodes:
+        children_by_parent.setdefault(w.parent_uid, []).append(w)
+
+    created, skipped = [], 0
+    for parent, m in targets:
+        new_name = render(name_tpl, parent, m)
+        if not new_name:
+            continue
+        sibs = children_by_parent.get(parent.uid, [])
+        if skip_existing and any((c.name or "").strip().lower() == new_name.lower()
+                                 for c in sibs):
+            skipped += 1
+            continue
+        code_tpl = str(cmd.get("code_template") or "").strip()
+        new_code = render(code_tpl, parent, m) if code_tpl else new_name[:20]
+        node = WBSNode(uid=_new_uid(), name=new_name, code=new_code,
+                       parent_uid=parent.uid,
+                       sequence_num=(max(s.sequence_num for s in sibs) + 10) if sibs else 0)
+        project.wbs_nodes.append(node)
+        children_by_parent.setdefault(parent.uid, []).append(node)
+        created.append(f"'{new_name}' under '{parent.name}'")
+
+    project.build_lookups()
+    if not created:
+        return True, (f"Every one of the {len(targets)} matching folders already has "
+                      f"that sub-folder — nothing to add")
+    head = "; ".join(created[:8]) + (f"; +{len(created) - 8} more" if len(created) > 8 else "")
+    msg = f"Added {len(created)} sub-folder(s): {head}"
+    if skipped:
+        msg += f" ({skipped} already had one)"
+    return True, msg
+
+
 def _bulk_create_wbs(project: Project, cmd: Dict) -> Tuple[bool, str]:
     """
     Create multiple WBS folders under the same optional parent in one call.
@@ -2020,7 +2206,7 @@ def _bulk_create_wbs(project: Project, cmd: Dict) -> Tuple[bool, str]:
     if cmd.get("parent_code") or cmd.get("parent_name"):
         parent = _find_wbs(project, cmd.get("parent_code"), cmd.get("parent_name"))
         if not parent:
-            raise EditError(f"Parent WBS not found: {cmd.get('parent_code') or cmd.get('parent_name')}")
+            raise EditError("Parent " + _no_wbs(project, cmd.get("parent_code") or cmd.get("parent_name")))
 
     created = []
     parent_uid_for_seq = parent.uid if parent else None

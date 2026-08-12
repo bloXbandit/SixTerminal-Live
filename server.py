@@ -2014,14 +2014,16 @@ def _out_of_date_count(project) -> int:
 
 
 _TREE_ACTIONS = {
-    "add_wbs", "rename_wbs", "bulk_create_wbs", "move_wbs", "reorder_wbs",
+    "add_wbs", "rename_wbs", "bulk_create_wbs", "add_wbs_for_each",
+    "bulk_create_wbs_for_each", "move_wbs", "reorder_wbs",
     "delete_wbs", "duplicate_wbs", "move_activity_wbs", "move_activities",
     "copy_activities", "bulk_rules",
 }
 
 _STRUCTURAL_ACTIONS = {
     "add_activity", "delete_activity", "bulk_add_activity",
-    "add_wbs", "rename_wbs", "bulk_create_wbs", "move_activity_wbs", "move_wbs",
+    "add_wbs", "rename_wbs", "bulk_create_wbs", "add_wbs_for_each",
+    "bulk_create_wbs_for_each", "move_activity_wbs", "move_wbs",
     "reorder_wbs", "delete_wbs",
     "duplicate_wbs", "copy_activities", "update_activity_type",
     "update_activity_id", "bulk_update_activity_id",
