@@ -374,46 +374,420 @@ def _open_ended(project: Project) -> Tuple[set, set]:
     return has_pred, has_succ
 
 
+# ── Candidate scoring ────────────────────────────────────────────────────────
+# Ranking purely by "whose finish is nearest the milestone" is what produced
+# ties like "Complete Construction <- Final Floor Finishes, implied lag 55d":
+# nothing better was in scope, so the least-bad date won and got offered as a
+# driver. A date 55 working days off is not a driver, it is a coincidence.
+#
+# A tie is judged on several independent signals instead, each of which a
+# scheduler would actually check:
+#
+#   date fit     does the gap look like a handoff, or like unrelated work
+#   subject      do the two activities talk about the same thing at all
+#   area         same room / level / area / unit — or demonstrably different
+#   WBS distance how far apart they sit in the breakdown
+#   trade order  does the predecessor's trade run before the successor's
+#   terminal     a turnover / complete / ready activity anchors a milestone
+#   procurement  an install cannot precede its own delivery
+#
+# They are summed, so agreement between weak signals can carry a tie and one
+# strong contradiction (wrong room, reversed trade) can sink it. Anything that
+# does not clear _MIN_CONFIDENCE is reported as "no confident driver" rather
+# than offered — saying nothing beats suggesting a wrong tie.
+
+_MIN_CONFIDENCE = 0.30
+
+# Beyond this the pair cannot be a handoff, and skipping it keeps the
+# day-by-day working-day count off the hot path entirely.
+_MAX_GAP_DAYS = 120
+
+_STOP = frozenset("""
+a an and or of the to for at in on by with from into onto per is be
+phase ph level lvl area zone room rm unit no num complete completed completion
+start starts starting finish finishes finishing begin end
+""".split())
+
+_AREA_RE = re.compile(
+    r"""(?ix)
+    \b(?:
+        (?P<eq>MV|LV|UPS|CRAH|CDU|GEN|PDU|RMU|WCC|CWP|PCHWP|SCHWP|CUP|UP)\s*-?\s*(?P<eqn>\d{1,4})
+      | (?:level|lvl|l)\s*(?P<lvl>\d{1,2})\b
+      | (?:area|zone|grid\s*line)\s*(?P<area>[\w.-]{1,8})
+      | (?:phase|ph)\s*(?P<ph>\d{1,2})\b
+    )
+    """)
+
+
+def _tokens(text: str) -> frozenset:
+    """Significant words in a name, for judging whether two rows share a subject."""
+    words = re.findall(r"[a-z0-9]+", (text or "").lower())
+    return frozenset(w for w in words if len(w) > 2 and w not in _STOP)
+
+
+def _area_tags(text: str) -> frozenset:
+    """
+    Room / level / area / phase identifiers in a name.
+
+    "MV 105", "Level 3", "Area 7", "CUP-01", "PH2" all name a place. Two rows
+    that name DIFFERENT places are almost never a handoff, however close their
+    dates — that is how work in MV 105 gets tied to work in MV 109.
+    """
+    out = set()
+    for m in _AREA_RE.finditer(text or ""):
+        if m.group("eq"):
+            out.add(f"{m.group('eq').lower()}{int(m.group('eqn'))}")
+        elif m.group("lvl"):
+            out.add(f"lvl{int(m.group('lvl'))}")
+        elif m.group("area"):
+            out.add(f"area{m.group('area').lower()}")
+        elif m.group("ph"):
+            out.add(f"ph{int(m.group('ph'))}")
+    return frozenset(out)
+
+
+# Rough order in which construction trades run. Only relative order matters,
+# and only when both rows classify — an unknown trade simply scores neutral.
+_TRADE_SEQUENCE: List[Tuple[int, Tuple[str, ...]]] = [
+    (10, ("design", "engineer", "ifc", "shop drawing", "submittal", "permit",
+          "review", "approval", "procure", "award", "buy-out", "buyout",
+          "fabricat", "deliver", "lead time", "order")),
+    (20, ("mobiliz", "clear", "grub", "demo", "erosion", "e&s", "survey", "layout")),
+    (30, ("excavat", "blast", "grade", "grading", "undercut", "backfill",
+          "underground", "utilit", "duct bank", "ductbank")),
+    (40, ("footing", "pier", "caisson", "deep foundation", "grade beam",
+          "foundation", "pile", "pad", "slab on grade")),
+    (50, ("precast", "steel", "erect", "structure", "superstructure", "deck",
+          "topping", "tilt")),
+    (60, ("roof", "envelope", "curtain wall", "cladding", "glazing",
+          "waterproof", "skin")),
+    (70, ("rough-in", "rough in", "overhead", "conduit", "raceway", "hanger",
+          "sleeve", "in-wall", "in wall")),
+    (75, ("rigging", "rig ", "set ", "install", "mount", "place equipment",
+          "equipment set")),
+    (80, ("pull", "terminat", "wire", "cable", "splice", "bus", "feeder",
+          "pipe", "duct", "insulat")),
+    (85, ("framing", "drywall", "close in", "close-in", "tape", "mud",
+          "prime", "paint", "ceiling", "floor finish", "flooring", "trim")),
+    (90, ("qa/qc", "qaqc", "inspection", "checklist", "pre-functional",
+          "prefunctional", "point to point", "megger", "test")),
+    (95, ("energiz", "start-up", "start up", "startup", "commission", "cx",
+          "functional", "integrated", "ist", "tab", "balanc")),
+    # Project closeout only. "Turnover" deliberately does NOT belong here: an
+    # area turnover is the end of THAT area's work, not the end of the job, and
+    # ranking it as closeout made "Precast Area 7 Turnover" read as running
+    # backwards against precast erection.
+    (99, ("punch", "substantial completion", "tco", "occupancy",
+          "closeout", "close-out", "final completion", "training", "o&m")),
+]
+
+
+def _trade_rank(name: str) -> Optional[int]:
+    """Where this activity's work sits in the trade sequence, if recognisable."""
+    low = (name or "").lower()
+    best = None
+    for rank, pats in _TRADE_SEQUENCE:
+        for p in pats:
+            if p in low:
+                # last match wins: "Install and Test" is gated by the test
+                best = rank if best is None else max(best, rank)
+                break
+    return best
+
+
+_TERMINAL_RE = re.compile(
+    r"(?i)\b(turnover|turn\s*over|complete|completion|ready|accepted|approved|"
+    r"received|issued|released|finish|energiz\w*|substantial)\b")
+
+
+def _is_terminal(name: str) -> bool:
+    """Does this activity read as the END of a body of work?"""
+    return bool(_TERMINAL_RE.search(name or ""))
+
+
+def _wbs_chain(project: Project, act: Activity) -> List[str]:
+    by_uid = {w.uid: w for w in project.wbs_nodes}
+    chain, cur, guard = [], act.wbs_uid, 0
+    while cur and guard < 60:
+        chain.append(cur)
+        node = by_uid.get(cur)
+        cur = node.parent_uid if node else None
+        guard += 1
+    return chain
+
+
+def _wbs_closeness(chain_a: List[str], chain_b: List[str]) -> int:
+    """
+    12 same folder, 8 one hop apart, 5 two hops, 0 distant.
+    Distance is how far up either chain you must walk to meet.
+    """
+    if not chain_a or not chain_b:
+        return 0
+    if chain_a[0] == chain_b[0]:
+        return 12
+    pos_b = {uid: i for i, uid in enumerate(chain_b)}
+    for i, uid in enumerate(chain_a):
+        if uid in pos_b:
+            hops = i + pos_b[uid]
+            return 8 if hops <= 2 else (5 if hops <= 4 else 0)
+    return 0
+
+
+class _Ctx:
+    """Per-call caches so scoring stays cheap over a big pool."""
+
+    def __init__(self, project: Project):
+        self.project = project
+        self._tok: Dict[str, frozenset] = {}
+        self._area: Dict[str, frozenset] = {}
+        self._chain: Dict[str, List[str]] = {}
+        self._trade: Dict[str, Optional[int]] = {}
+        has_pred, has_succ = _open_ended(project)
+        self.has_succ = has_succ
+
+    def tok(self, a: Activity) -> frozenset:
+        if a.uid not in self._tok:
+            self._tok[a.uid] = _tokens(a.name)
+        return self._tok[a.uid]
+
+    def area(self, a: Activity) -> frozenset:
+        if a.uid not in self._area:
+            self._area[a.uid] = _area_tags(a.name) or _area_tags(
+                wbs_path(self.project, a))
+        return self._area[a.uid]
+
+    def chain(self, a: Activity) -> List[str]:
+        if a.uid not in self._chain:
+            self._chain[a.uid] = _wbs_chain(self.project, a)
+        return self._chain[a.uid]
+
+    def trade(self, a: Activity) -> Optional[int]:
+        if a.uid not in self._trade:
+            self._trade[a.uid] = _trade_rank(a.name)
+        return self._trade[a.uid]
+
+
+def score_tie(ctx: _Ctx, pred: Activity, succ: Activity,
+              lag: Optional[int], scope_latest: bool = False) -> Tuple[float, List[str]]:
+    """
+    How much this pair looks like a real handoff, 0.0 - 1.0, plus the
+    human-readable reasons behind the number.
+    """
+    score, why = 0.0, []
+
+    # 1. Date fit is a GATE, not a contribution.
+    #
+    # Added to the other signals it could be outvoted, which is how a 78-day
+    # gap still scored 0.53 — enough agreement elsewhere to look confident
+    # about work three months apart. It multiplies instead: a tie needs BOTH a
+    # plausible relationship and a plausible gap, and neither alone is enough.
+    if lag is None:
+        date_factor = 0.15
+    elif lag < 0:
+        date_factor = 0.05
+        why.append(f"successor starts {-lag}d before it finishes")
+    elif lag <= 2:
+        date_factor = 1.00; why.append(f"dates already behave as this tie ({lag}d gap)")
+    elif lag <= 5:
+        date_factor = 0.92; why.append(f"tight {lag}d gap")
+    elif lag <= 10:
+        date_factor = 0.80; why.append(f"{lag}d gap")
+    elif lag <= 22:
+        date_factor = 0.55; why.append(f"{lag}d gap — loose")
+    elif lag <= 44:
+        date_factor = 0.30; why.append(f"{lag}d gap — too far to be the driver")
+    else:
+        date_factor = 0.10; why.append(f"{lag}d apart — unrelated work")
+
+    # 2. subject overlap
+    ta, tb = ctx.tok(pred), ctx.tok(succ)
+    if ta and tb:
+        shared = ta & tb
+        j = len(shared) / len(ta | tb)
+        if shared:
+            score += 25 * min(1.0, j * 2.2)
+            why.append("same subject: " + ", ".join(sorted(shared)[:3]))
+        # A milestone's name IS its subject, and it is short: "Finish Precast"
+        # is one word after stopwords. When every word of one name appears in
+        # the other, they are about the same work however the jaccard reads
+        # against a long descriptive name like "Precast Area 7 Turnover".
+        if shared and (tb <= ta or ta <= tb):
+            score += 12; why.append("one name is entirely about the other's subject")
+
+    # 3. area — a specific place is strong evidence; a mismatch sinks the tie.
+    #    A shared PHASE is much weaker: half the schedule is in PH1.
+    aa, ab = ctx.area(pred), ctx.area(succ)
+    if aa and ab:
+        common = aa & ab
+        specific = {t for t in common if not t.startswith("ph")}
+        if specific:
+            score += 20; why.append("same area: " + ", ".join(sorted(specific)[:2]))
+        elif common:
+            score += 6;  why.append("same phase")
+        else:
+            spec_a = {t for t in aa if not t.startswith("ph")}
+            spec_b = {t for t in ab if not t.startswith("ph")}
+            if spec_a and spec_b:
+                score -= 18
+                why.append(f"different areas ({','.join(sorted(spec_a)[:2])} "
+                           f"vs {','.join(sorted(spec_b)[:2])})")
+
+    # 4. WBS proximity
+    near = _wbs_closeness(ctx.chain(pred), ctx.chain(succ))
+    if near:
+        score += near
+        why.append("same folder" if near == 12 else "nearby in the WBS")
+
+    # 5. trade order
+    ra, rb = ctx.trade(pred), ctx.trade(succ)
+    if ra is not None and rb is not None:
+        if ra < rb:
+            score += 8;  why.append("trade order runs the right way")
+        elif ra == rb:
+            score += 4
+        else:
+            score -= 12; why.append("trade order runs backwards")
+
+    # 6. a milestone wants the END of something
+    if succ.activity_type in ("Start Milestone", "Finish Milestone") and _is_terminal(pred.name):
+        score += 8; why.append("predecessor is a completion/turnover")
+
+    # 7. procurement coupling — an install cannot precede its own delivery
+    if _is_install(succ.name):
+        eq = set(_equipment_of(succ.name)) & set(_equipment_of(pred.name))
+        if eq and re.search(r"(?i)deliver|fabricat|award|procure", pred.name or ""):
+            score += 15
+            why.append(f"delivery of {sorted(eq)[0]} gates this install")
+
+    # 8. anchoring a dangling row is a bonus, never a reason on its own
+    if pred.uid not in ctx.has_succ:
+        score += 2
+
+    # 9. Being the LAST work in the milestone's own phase is real evidence, and
+    #    it is often the only evidence available: "Terminations" drives "Level 3
+    #    Commissioning Start" without sharing a single word with it. Requiring
+    #    shared vocabulary would reject exactly the ties a scheduler makes by
+    #    looking at where the work runs out.
+    if scope_latest:
+        score += 15
+        why.append("last work to finish in this milestone's phase")
+
+    # Support tops out around 60 in practice — subject + area + same folder is
+    # already a strong case, and further agreement should not be needed.
+    support = max(0.0, min(1.0, score / 60.0))
+    # Nothing says these two are about the same work: no shared word, no shared
+    # room, and not the last thing to finish in the phase either. Sitting in the
+    # same folder and running in a sensible trade order is true of thousands of
+    # pairs and is not evidence of a handoff.
+    if (not scope_latest and not (ta & tb)
+            and not {t for t in (aa & ab) if not t.startswith("ph")}):
+        support *= 0.5
+    # A perfect date with nothing else behind it lands at 0.15 — well under the
+    # bar. Two unrelated activities that happen to abut are a coincidence, not
+    # a handoff, and the floor has to sit low enough that a stray point or two
+    # of incidental agreement cannot carry one over the line.
+    return date_factor * (0.15 + 0.85 * support), why
+
+
 def milestone_drivers(project: Project, milestone: Activity,
-                      limit: int = 3) -> List[Dict[str, Any]]:
+                      limit: int = 3, ctx: Optional["_Ctx"] = None) -> List[Dict[str, Any]]:
     """
     What should drive this milestone's date.
 
     Candidates are the work inside the milestone's own phase that finishes at
-    or before the milestone, ranked by how close the implied lag sits to zero —
-    i.e. by how completely the candidate already explains the date. Work that
-    is itself dangling is preferred as a tie-break, since anchoring it serves
-    the milestone and closes an open end at the same time.
+    or before it. They are ranked by score_tie — date fit, shared subject,
+    matching area, WBS distance, trade order, whether the candidate reads as
+    the end of something — not by date proximity alone, which is what used to
+    offer a 55-day gap as a driver simply because nothing closer existed.
+
+    A milestone with no candidate clearing _MIN_CONFIDENCE returns nothing.
+    "I cannot see what drives this" is a useful answer; a wrong tie is not.
     """
     ms_date = _parse(milestone.planned_start or milestone.planned_finish)
     if ms_date is None:
         return []
     scope_uid, scope_label = _phase_scope(project, milestone)
     pool = (activities_in(project, scope_uid) if scope_uid else list(project.activities))
-    _, has_succ = _open_ended(project)
+    ctx = ctx or _Ctx(project)
 
-    scored = []
+    # Everything in scope that finishes by the milestone and is close enough to
+    # be a handoff. The calendar-day gate comes before the working-day count,
+    # which walks a day at a time — work four months upstream is not the driver
+    # and this keeps the scan off it entirely.
+    eligible = []
     for a in pool:
         if a.uid == milestone.uid or a.activity_type in ("Start Milestone", "Finish Milestone"):
             continue
         fin = _parse(a.planned_finish or a.early_finish)
-        if fin is None or fin > ms_date:
+        if fin is None or fin > ms_date or (ms_date - fin).days > _MAX_GAP_DAYS:
             continue
+        eligible.append((a, fin))
+
+    # Which of them is the last to finish — the "where does the work run out"
+    # question a scheduler asks first.
+    latest_fin = max((f for _, f in eligible), default=None)
+
+    scored = []
+    for a, fin in eligible:
         lag = implied_lag(project, a, milestone)
         if lag is None:
             continue
-        scored.append((abs(lag), 0 if a.uid not in has_succ else 1,
-                       -(a.planned_duration or 0), a, lag))
-    scored.sort(key=lambda t: (t[0], t[1], t[2]))
+        is_latest = latest_fin is not None and (latest_fin - fin).days <= 2
+        conf, why = score_tie(ctx, a, milestone, lag, scope_latest=is_latest)
+        scored.append((conf, lag, a, why))
+
+    # Before trusting the date, check the work this milestone is ABOUT.
+    #
+    # "Finish Precast" is dated 2025-11-03 in the reference schedule while
+    # every precast activity finishes between 2026-01 and 2026-04. Searching
+    # backwards from a date like that can only turn up unrelated work that
+    # happens to abut it — which is exactly what it did, offering MEP
+    # Underground Excavations as the driver of a precast milestone. The
+    # milestone's date is the thing that is wrong, and saying so is the useful
+    # answer.
+    subject_best, subject_conf = None, 0.0
+    for a in pool:
+        if a.uid == milestone.uid or a.activity_type in ("Start Milestone", "Finish Milestone"):
+            continue
+        c, _ = score_tie(ctx, a, milestone, 0)      # date held neutral
+        if c > subject_conf:
+            subject_best, subject_conf = a, c
+    if subject_best is not None and subject_conf >= 0.55:
+        sb_fin = _parse(subject_best.planned_finish or subject_best.early_finish)
+        if sb_fin and sb_fin > ms_date:
+            gap = working_days_between(ms_date, sb_fin, _calendar_of(project, milestone))
+            rec = _rec(project, subject_best, milestone, "Finish to Start",
+                       f"The work this milestone is about finishes {gap}d AFTER the "
+                       f"milestone's own date — the date is unsupportable, not the tie")
+            rec["verdict"] = CONFLICT
+            rec["confidence"] = round(subject_conf, 2)
+            rec["signals"] = [f"{subject_best.name} finishes "
+                              f"{str(sb_fin)} vs milestone {str(ms_date)}",
+                              "no earlier work on this subject exists to drive it"]
+            rec["date_check"] = (
+                f"Nothing that finishes by {ms_date} is about this milestone's work. "
+                f"Move the milestone to {sb_fin}, or point it at different work.")
+            return [rec]
+
+    if not scored:
+        return []
+    scored.sort(key=lambda t: (-t[0], abs(t[1])))
+
+    # A clear winner is a clear winner — no need to offer runners-up and make
+    # the user choose between an obvious tie and two worse ones.
+    top = scored[0][0]
+    if top >= 0.75:
+        scored = scored[:1]
 
     out = []
-    for _abs, _open, _dur, a, lag in scored[:limit]:
-        rationale = (f"Latest work in {scope_label} that lands on this milestone's date"
-                     if _abs <= _CONFIRM_WINDOW else
-                     f"Nearest finishing work in {scope_label}")
-        if _open == 0:
-            rationale += "; it currently has no successor, so this closes an open end too"
-        out.append(_rec(project, a, milestone, "Finish to Start", rationale))
+    for conf, lag, a, why in scored[:limit]:
+        if conf < _MIN_CONFIDENCE:
+            break
+        rationale = "; ".join(why[:3]) if why else f"nearest work in {scope_label}"
+        rec = _rec(project, a, milestone, "Finish to Start", rationale)
+        rec["confidence"] = round(conf, 2)
+        rec["signals"] = why
+        out.append(rec)
     return out
 
 
@@ -430,8 +804,10 @@ def milestone_report(project: Project, limit_per_milestone: int = 3) -> Dict[str
                   if a.activity_type in ("Start Milestone", "Finish Milestone")]
     milestones.sort(key=lambda a: str(a.planned_start or a.planned_finish or ""))
 
+    ctx = _Ctx(project)          # one set of caches for every milestone
     items = []
     for m in milestones:
+        drivers = milestone_drivers(project, m, limit=limit_per_milestone, ctx=ctx)
         items.append({
             "activity_id": m.activity_id,
             "name": m.name,
@@ -441,7 +817,10 @@ def milestone_report(project: Project, limit_per_milestone: int = 3) -> Dict[str
             "has_predecessor": m.uid in has_pred,
             "has_successor": m.uid in has_succ,
             "constraint": m.constraint_type or None,
-            "drivers": milestone_drivers(project, m, limit=limit_per_milestone),
+            "drivers": drivers,
+            # said out loud so the agent reports "nothing confident here"
+            # instead of reaching for whatever was nearest
+            "no_confident_driver": not drivers and m.uid not in has_pred,
         })
 
     ladder = commissioning_ladder(project)
