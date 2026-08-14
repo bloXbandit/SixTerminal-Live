@@ -30,7 +30,7 @@ import uuid
 import threading
 import xml.etree.ElementTree as ET
 from xml.dom import minidom
-from typing import Optional, List, Any, Dict
+from typing import Optional, List, Any, Dict, Tuple
 from .schedule_model import Project, Activity, WBSNode, Relation, Calendar
 
 # ── Namespaces ─────────────────────────────────────────────────────────────────
@@ -747,15 +747,30 @@ def _section_currency(root: ET.Element):
 _UDF_OID_START = 900
 
 
-def _udf_oid_map(project) -> Dict[str, str]:
-    """
-    Title -> ObjectId for every activity UDF this export will carry.
+# COMMENTS is emitted with the ObjectId the reference export uses, and every
+# value that references it must use the SAME id. Handing it a second id from
+# the generated range wrote <TypeObjectId>900</TypeObjectId> against a type
+# only ever declared as 813, so P6 could not resolve the field and rejected
+# the activity with an invalid-UDF-data-type error.
+_COMMENTS_OID = "813"
 
-    Covers both the definitions the project arrived with and any field that
-    only appears as a value (added in-app), so a column created here exports
-    as a real P6 user-defined field rather than being dropped.
+
+def _udf_declarations(project) -> List[Tuple[str, str, str]]:
     """
-    titles = []
+    (title, ObjectId, DataType) for every activity UDF this export will carry —
+    the single source of truth for BOTH the UDFType blocks and the per-activity
+    values, so a value can never point at a type that was not declared.
+
+    Covers the definitions the project arrived with and any field that only
+    appears as a value (a column added in-app), so it exports as a real P6
+    user-defined field rather than being dropped.
+
+    A field declared numeric whose values are not all numeric is declared as
+    Text instead. Writing <Text> under a <DataType>Double</DataType> is the
+    same invalid-type rejection by another route, and downgrading keeps the
+    data — dropping the value would lose it silently.
+    """
+    titles: List[str] = []
     for u in (getattr(project, "udf_types", None) or []):
         if u.title and u.title not in titles:
             titles.append(u.title)
@@ -763,39 +778,65 @@ def _udf_oid_map(project) -> Dict[str, str]:
         for t in (getattr(a, "udfs", None) or {}):
             if t and t not in titles:
                 titles.append(t)
-    return {t: str(_UDF_OID_START + i) for i, t in enumerate(titles)}
+
+    declared = {}
+    for u in (getattr(project, "udf_types", None) or []):
+        if u.title:
+            dt = (u.data_type or "").strip()
+            declared[u.title] = {
+                "FT_STATIC_TYPE_TEXT": "Text", "FT_STATIC_TYPE_DOUBLE": "Double",
+                "FT_STATIC_TYPE_INT": "Integer", "FT_STATIC_TYPE_DATE": "Date",
+            }.get(dt, dt or "Text")
+
+    out: List[Tuple[str, str, str]] = []
+    next_oid = _UDF_OID_START
+    for title in titles:
+        dt = declared.get(title, "Text")
+        if dt in ("Double", "Integer"):
+            for a in project.activities:
+                v = (getattr(a, "udfs", None) or {}).get(title)
+                if v in (None, ""):
+                    continue
+                try:
+                    float(str(v))
+                except (TypeError, ValueError):
+                    dt = "Text"
+                    break
+        if title == "COMMENTS":
+            oid = _COMMENTS_OID
+        else:
+            oid = str(next_oid)
+            next_oid += 1
+        out.append((title, oid, dt))
+    return out
+
+
+def _udf_oid_map(project) -> Dict[str, str]:
+    """Title -> ObjectId, matching what _section_udf_type declares."""
+    return {t: oid for t, oid, _ in _udf_declarations(project)}
 
 
 def _udf_data_type(project, title: str) -> str:
-    for u in (getattr(project, "udf_types", None) or []):
-        if u.title == title:
-            dt = (u.data_type or "").strip()
-            # XER spells these differently from XML
-            return {"FT_STATIC_TYPE_TEXT": "Text", "FT_STATIC_TYPE_DOUBLE": "Double",
-                    "FT_STATIC_TYPE_INT": "Integer", "FT_STATIC_TYPE_DATE": "Date",
-                    }.get(dt, dt or "Text")
+    for t, _oid, dt in _udf_declarations(project):
+        if t == title:
+            return dt
     return "Text"
 
 
 def _section_udf_type(root: ET.Element, project=None):
     """
-    UDF definitions. Always emits COMMENTS (the reference export carries it),
-    then one block per user-defined field the project actually uses.
-    """
-    u = _sub(root, "UDFType")
-    _sub(u, "DataType",    "Text")
-    _sub(u, "IsSecureCode", "0")
-    _sub(u, "ObjectId",    "813")
-    _sub(u, "SubjectArea", "Activity")
-    _sub(u, "Title",       "COMMENTS")
+    UDF definitions — one block per field, from the same list the values are
+    written against, so every TypeObjectId a value references is declared here.
 
-    if project is None:
-        return
-    for title, oid in _udf_oid_map(project).items():
-        if title == "COMMENTS":
-            continue
+    COMMENTS is always emitted (the reference export carries it) even when no
+    activity uses it.
+    """
+    decls = _udf_declarations(project) if project is not None else []
+    if not any(t == "COMMENTS" for t, _o, _d in decls):
+        decls = [("COMMENTS", _COMMENTS_OID, "Text")] + decls
+    for title, oid, dt in decls:
         t = _sub(root, "UDFType")
-        _sub(t, "DataType",     _udf_data_type(project, title))
+        _sub(t, "DataType",     dt)
         _sub(t, "IsSecureCode", "0")
         _sub(t, "ObjectId",     oid)
         _sub(t, "SubjectArea",  "Activity")
@@ -806,22 +847,26 @@ def _write_activity_udfs(a_el: ET.Element, act, oid_map: Dict[str, str],
                          project) -> None:
     """Per-activity UDF values, in the typed element P6 expects."""
     vals = getattr(act, "udfs", None) or {}
+    if not vals:
+        return
+    types = {t: dt for t, _oid, dt in _udf_declarations(project)}
     for title, value in vals.items():
         oid = oid_map.get(title)
         if not oid or value in (None, ""):
             continue
         u = _sub(a_el, "UDF")
         _sub(u, "TypeObjectId", oid)
-        dt = _udf_data_type(project, title)
-        if dt in ("Double", "Integer"):
-            try:
-                num = float(str(value))
-                _sub(u, "Double" if dt == "Double" else "Integer",
-                     str(int(num)) if dt == "Integer" else str(num))
-                continue
-            except (TypeError, ValueError):
-                pass    # not numeric after all — fall through to text
-        _sub(u, "Text", str(value))
+        dt = types.get(title, "Text")
+        # The declared type already accounts for every value this field holds
+        # (_udf_declarations downgrades a numeric field whose values are not
+        # all numeric), so the element written here always matches it. Falling
+        # back to <Text> under a numeric declaration is what P6 rejects.
+        if dt == "Double":
+            _sub(u, "Double", str(float(str(value))))
+        elif dt == "Integer":
+            _sub(u, "Integer", str(int(float(str(value)))))
+        else:
+            _sub(u, "Text", str(value))
 
 
 def _section_obs(root: ET.Element):
