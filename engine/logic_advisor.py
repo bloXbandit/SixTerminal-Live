@@ -918,6 +918,79 @@ def tie_options(project: Project, act: Activity, limit: int = 4) -> Dict[str, An
     }
 
 
+def wire_folder(project: Project, root_uid: str, min_confidence: float = 0.45,
+                limit: int = 400) -> Dict[str, Any]:
+    """
+    Every tie worth making inside one folder, ranked — the bulk answer to open
+    ends. The reference schedule has 1,610 activities with no predecessor and
+    1,608 with no successor; one at a time is not a plan.
+
+    Only rows that are ALREADY open are candidates for the end being closed, so
+    this never second-guesses logic somebody put in deliberately. Each proposal
+    is the single best predecessor for that row — not a list to choose from —
+    because the point is a reviewable batch, not another decision per activity.
+    A row whose best candidate does not clear `min_confidence` is left alone and
+    counted, so the number that could not be answered is visible rather than
+    quietly absent.
+
+    The bar is deliberately higher than the single-activity view: this applies
+    in bulk, so a wrong tie here is a wrong tie many times over.
+    """
+    scope = _descendants(project, root_uid)
+    acts = [a for a in project.activities if a.wbs_uid in scope]
+    if not acts:
+        return {"proposals": [], "unresolved": 0, "activity_count": 0,
+                "open_starts": 0, "open_finishes": 0}
+
+    has_pred, has_succ = _open_ended(project)
+    ctx = _Ctx(project)
+    by_uid = {a.uid: a for a in acts}
+    open_start = [a for a in acts if a.uid not in has_pred
+                  and a.activity_type not in ("Start Milestone", "Finish Milestone")
+                  and a.status != "Completed"]
+
+    proposals, unresolved = [], 0
+    for succ in open_start:
+        s_date = _parse(succ.actual_start or succ.planned_start or succ.early_start)
+        if s_date is None:
+            unresolved += 1
+            continue
+        best = None
+        for pred in acts:
+            if pred.uid == succ.uid or _has_link(project, pred.uid, succ.uid):
+                continue
+            if pred.activity_type in ("Start Milestone", "Finish Milestone"):
+                continue
+            f = _parse(pred.planned_finish or pred.early_finish)
+            if f is None or f > s_date or (s_date - f).days > _MAX_GAP_DAYS:
+                continue
+            lag = implied_lag(project, pred, succ)
+            if lag is None:
+                continue
+            c, why = score_tie(ctx, pred, succ, lag)
+            if best is None or c > best[0]:
+                best = (c, lag, pred, why)
+        if best is None or best[0] < min_confidence:
+            unresolved += 1
+            continue
+        c, lag, pred, why = best
+        rec = _rec(project, pred, succ, "Finish to Start", "; ".join(why[:3]))
+        rec["confidence"] = round(c, 2)
+        rec["signals"] = why
+        proposals.append(rec)
+
+    proposals.sort(key=lambda r: -r["confidence"])
+    return {
+        "proposals": proposals[:limit],
+        "unresolved": unresolved,
+        "activity_count": len(acts),
+        "open_starts": len(open_start),
+        "open_finishes": sum(1 for a in acts if a.uid not in has_succ
+                             and a.status != "Completed"),
+        "min_confidence": min_confidence,
+    }
+
+
 def milestone_report(project: Project, limit_per_milestone: int = 3) -> Dict[str, Any]:
     """
     Every milestone, its logic state, and what could drive it.

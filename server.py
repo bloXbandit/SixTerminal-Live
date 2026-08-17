@@ -15,6 +15,7 @@ import gzip
 import copy
 import json
 import uuid
+import datetime as _dt
 import time
 import tempfile
 import traceback
@@ -270,6 +271,78 @@ def _push_undo(label: str):
     if len(stack) > _MAX_UNDO:
         stack.pop(0)
     _mark_dirty(_active_id[0])
+
+
+# ── Checkpoints ───────────────────────────────────────────────────────────────
+# Undo is a stack, not a safety net: fifty steps deep, and a bulk rule or a
+# mass rename can burn through it in one action. A checkpoint is a named
+# snapshot you can come back to however many edits later — the thing to take
+# before running something across hundreds of rows.
+_MAX_CHECKPOINTS = 20
+
+
+def _checkpoints(sess) -> list:
+    return sess.setdefault("checkpoints", [])
+
+
+@app.route("/api/checkpoint", methods=["GET", "POST", "DELETE"])
+def checkpoints():
+    sess = _get_session()
+    if sess is None or sess["project"] is None:
+        return jsonify({"error": "No schedule loaded"}), 400
+    project = sess["project"]
+    cps = _checkpoints(sess)
+
+    def listing():
+        return [{"id": c["id"], "label": c["label"], "at": c["at"],
+                 "activity_count": c["activity_count"],
+                 "relation_count": c["relation_count"],
+                 "wbs_count": c["wbs_count"]} for c in cps]
+
+    if request.method == "GET":
+        return jsonify({"checkpoints": listing()})
+
+    data = request.get_json(silent=True) or {}
+
+    if request.method == "DELETE":
+        cid = str(data.get("id") or request.args.get("id") or "")
+        cps[:] = [c for c in cps if c["id"] != cid]
+        return jsonify({"success": True, "checkpoints": listing()})
+
+    action = (data.get("action") or "save").lower()
+    if action == "restore":
+        cid = str(data.get("id") or "")
+        hit = next((c for c in cps if c["id"] == cid), None)
+        if not hit:
+            return jsonify({"error": "That checkpoint no longer exists"}), 404
+        # Restoring is itself undoable — it must never be the destructive step.
+        _push_undo(f"Before restoring '{hit['label']}'")
+        sess["project"] = _snapshot_project(hit["project"])
+        sess["redo_stack"].clear()
+        sess["edit_history"].append(f"Restored checkpoint '{hit['label']}'")
+        _mark_dirty(_active_id[0])
+        p = sess["project"]
+        return jsonify({"success": True, "restored": hit["label"],
+                        "activity_count": len(p.activities),
+                        "wbs_count": len(p.wbs_nodes),
+                        "relation_count": len(p.relations),
+                        "undo_count": len(sess["undo_stack"]),
+                        "checkpoints": listing()})
+
+    label = (data.get("label") or "").strip() or _dt.datetime.now().strftime(
+        "Checkpoint %d %b %H:%M")
+    cps.append({
+        "id": uuid.uuid4().hex[:8],
+        "label": label[:80],
+        "at": _dt.datetime.now().isoformat(timespec="seconds"),
+        "project": _snapshot_project(project),
+        "activity_count": len(project.activities),
+        "relation_count": len(project.relations),
+        "wbs_count": len(project.wbs_nodes),
+    })
+    if len(cps) > _MAX_CHECKPOINTS:
+        cps.pop(0)
+    return jsonify({"success": True, "saved": label, "checkpoints": listing()})
 
 
 # ── Cloud persistence (Cloudflare R2, optional) ────────────────────────────────
@@ -1572,6 +1645,28 @@ def advise_apply():
     if not cmds:
         return jsonify({"error": "Nothing to apply — every recommendation was a conflict"}), 400
     return _apply_direct(cmds, data.get("label") or f"Apply {len(recs)} logic recommendation(s)")
+
+
+@app.route("/api/advise/wire", methods=["GET"])
+def advise_wire():
+    """Every tie worth making inside one folder — the bulk answer to open ends."""
+    sess = _get_session()
+    if sess is None or sess["project"] is None:
+        return jsonify({"error": "No schedule loaded"}), 400
+    uid = request.args.get("wbs_uid") or ""
+    if not uid:
+        return jsonify({"error": "Pick a folder to wire"}), 400
+    try:
+        floor = float(request.args.get("min_confidence", 0.45))
+    except (TypeError, ValueError):
+        floor = 0.45
+    from engine.logic_advisor import wire_folder
+    node = next((w for w in sess["project"].wbs_nodes if w.uid == uid), None)
+    if node is None:
+        return jsonify({"error": "That folder is not in this schedule"}), 404
+    out = wire_folder(sess["project"], uid, min_confidence=floor)
+    out["wbs_name"] = node.name
+    return jsonify(out)
 
 
 @app.route("/api/loading", methods=["GET"])

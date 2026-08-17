@@ -1485,6 +1485,58 @@
 </div>
 
 <!-- ══ PASTE ROWS MODAL ═══════════════════════════════════ -->
+<!-- Wire a folder — every tie worth making in one area -->
+<div class="modal-overlay" id="wire-modal" onclick="closeModal('wire-modal',event)">
+  <div class="modal" style="max-width:1000px;">
+    <div class="modal-head"><h2><span class="mh-icon">⛓</span> Wire a folder</h2></div>
+    <div class="modal-body">
+      <div style="font-size:11.5px;color:var(--text2);margin-bottom:10px;">
+        Proposes one predecessor for every activity in the area that has none.
+        Nothing is written until you apply, and existing logic is never touched.
+      </div>
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px;font-size:11.5px;flex-wrap:wrap;">
+        <span style="color:var(--text3);">Area</span>
+        <select id="wire-scope" style="flex:1;min-width:220px;max-width:420px;"></select>
+        <span style="color:var(--text3);">Min confidence</span>
+        <select id="wire-conf">
+          <option value="0.6">High (60%)</option>
+          <option value="0.45" selected>Medium (45%)</option>
+          <option value="0.35">Low (35%)</option>
+        </select>
+        <button class="btn btn-primary btn-sm" onclick="runWire()">Find ties</button>
+      </div>
+      <div id="wire-body"></div>
+    </div>
+    <div class="modal-foot">
+      <span id="wire-count" style="font-size:11px;color:var(--text3);margin-right:auto;"></span>
+      <button class="btn btn-ghost" onclick="closeModal('wire-modal')">Close</button>
+      <button class="btn btn-primary" id="wire-apply" onclick="applyWire()" disabled>Apply selected</button>
+    </div>
+  </div>
+</div>
+
+<!-- Checkpoints — a restore point you name -->
+<div class="modal-overlay" id="cp-modal" onclick="closeModal('cp-modal',event)">
+  <div class="modal" style="max-width:680px;">
+    <div class="modal-head"><h2><span class="mh-icon">⚑</span> Checkpoints</h2></div>
+    <div class="modal-body">
+      <div style="font-size:11.5px;color:var(--text2);margin-bottom:12px;">
+        Undo is a stack — a bulk rule can burn through it in one action. A
+        checkpoint is a named restore point you can come back to however many
+        edits later. Restoring is itself undoable.
+      </div>
+      <div style="display:flex;gap:8px;margin-bottom:12px;">
+        <input id="cp-label" type="text" placeholder="e.g. before MV rename" style="flex:1;">
+        <button class="btn btn-primary btn-sm" onclick="saveCheckpoint()">⚑ Save checkpoint</button>
+      </div>
+      <div id="cp-list"></div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn btn-ghost" onclick="closeModal('cp-modal')">Close</button>
+    </div>
+  </div>
+</div>
+
 <!-- Crew loading — the manpower curve behind the dates -->
 <div class="modal-overlay" id="loading-modal" onclick="closeModal('loading-modal',event)">
   <div class="modal" style="max-width:940px;">
@@ -1902,6 +1954,13 @@
             <button class="tb-item" onclick="tbDo(openLookaheadModal)">
               <span class="tb-item-ico">▤</span> Lookahead…
               <span class="tb-item-hint">next weeks of work, by area, to CSV</span></button>
+            <button class="tb-item" onclick="tbDo(openWireModal)">
+              <span class="tb-item-ico">⛓</span> Wire a folder…
+              <span class="tb-item-hint">propose every tie in an area, accept what fits</span></button>
+            <div class="tb-pop-sep"></div>
+            <button class="tb-item" onclick="tbDo(openCheckpointModal)">
+              <span class="tb-item-ico">⚑</span> Checkpoints…
+              <span class="tb-item-hint">save a restore point before a bulk change</span></button>
             <div class="tb-pop-sep"></div>
             <div class="tb-row">
               <span class="tb-row-label">Calendar</span>
@@ -7265,6 +7324,139 @@ function onRuleTargetChange(sel){
 function markRulesDirty(){
   const b = document.getElementById('rules-apply-btn');
   if(b) b.disabled = true;
+}
+
+// ═══════════════════════════════════════════════════
+//  Wire a folder — the bulk answer to open ends
+// ═══════════════════════════════════════════════════
+let _wireProposals = [];
+
+function openWireModal(){
+  if(!lastSchedData){ flashSched('Load a schedule first', true); return; }
+  fillScopeSelect('wire-scope');
+  document.getElementById('wire-scope').querySelector('option[value=""]')?.remove();
+  document.getElementById('wire-body').innerHTML =
+    '<div style="padding:20px;color:var(--text3);">Pick an area and click Find ties.</div>';
+  document.getElementById('wire-apply').disabled = true;
+  document.getElementById('wire-count').textContent = '';
+  _wireProposals = [];
+  openModal('wire-modal');
+}
+
+async function runWire(){
+  const uid = document.getElementById('wire-scope').value;
+  if(!uid){ flashSched('Pick an area', true); return; }
+  const conf = document.getElementById('wire-conf').value;
+  const body = document.getElementById('wire-body');
+  body.innerHTML = '<div style="padding:20px;color:var(--text3);"><span class="spinner"></span> Reading the network…</div>';
+  const d = await fetch(`/api/advise/wire?wbs_uid=${encodeURIComponent(uid)}&min_confidence=${conf}`)
+                  .then(r => r.json());
+  if(d.error){ body.innerHTML = `<div style="color:var(--red);padding:16px;">${escHtml(d.error)}</div>`; return; }
+  _wireProposals = d.proposals || [];
+  document.getElementById('wire-apply').disabled = !_wireProposals.length;
+  document.getElementById('wire-count').textContent =
+    `${d.activity_count} activities · ${d.open_starts} with no predecessor · `
+  + `${_wireProposals.length} proposed · ${d.unresolved} left alone`;
+  if(!_wireProposals.length){
+    body.innerHTML = `<div style="padding:20px;color:var(--text3);">`
+      + `Nothing confident enough in <b>${escHtml(d.wbs_name || '')}</b>. `
+      + `${d.open_starts} activities have no predecessor; none of them had a candidate `
+      + `above the bar. Try a lower confidence.</div>`;
+    return;
+  }
+  body.innerHTML = `<div class="look-body"><table class="disambig-table">
+    <thead><tr>
+      <th><input type="checkbox" id="wire-all" checked onclick="wireToggleAll(this.checked)"></th>
+      <th>Predecessor</th><th>→ Activity</th><th>Gap</th><th>Conf</th><th>Why</th>
+    </tr></thead><tbody>
+    ${_wireProposals.map((r, i) => {
+      const c = Math.round(r.confidence * 100);
+      return `<tr>
+        <td><input type="checkbox" class="wire-cb" data-i="${i}" checked></td>
+        <td><span class="act-id">${escHtml(r.predecessor_id)}</span><br>
+            <span style="color:var(--text3);">${escHtml(r.predecessor_name)}</span></td>
+        <td><span class="act-id">${escHtml(r.successor_id)}</span><br>
+            <span style="color:var(--text3);">${escHtml(r.successor_name)}</span></td>
+        <td class="tie-lag">${r.implied_lag_days == null ? '—' : r.implied_lag_days + 'd'}</td>
+        <td><span class="tie-conf ${c>=65?'tie-hi':c>=45?'tie-mid':'tie-lo'}">${c}%</span></td>
+        <td class="tie-why">${escHtml((r.signals || []).slice(0,2).join('; '))}</td>
+      </tr>`;
+    }).join('')}
+    </tbody></table></div>`;
+}
+
+function wireToggleAll(on){
+  document.querySelectorAll('.wire-cb').forEach(cb => cb.checked = on);
+}
+
+async function applyWire(){
+  const picked = [...document.querySelectorAll('.wire-cb:checked')]
+                   .map(cb => _wireProposals[+cb.dataset.i]).filter(Boolean);
+  if(!picked.length){ flashSched('Nothing selected', true); return; }
+  const btn = document.getElementById('wire-apply');
+  btn.disabled = true; btn.textContent = 'Applying…';
+  // A batch this size is exactly what checkpoints are for.
+  await fetch('/api/checkpoint', {method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({label: `Before wiring ${picked.length} ties`})});
+  const cmds = picked.map(r => ({action:'add_relation', predecessor_id:r.predecessor_id,
+                                 successor_id:r.successor_id, type:'fs', lag_days:0}));
+  closeModal('wire-modal');
+  btn.textContent = 'Apply selected';
+  await directEdit(cmds, `Wire ${cmds.length} tie${cmds.length===1?'':'s'}`);
+}
+
+// ═══════════════════════════════════════════════════
+//  Checkpoints
+// ═══════════════════════════════════════════════════
+function openCheckpointModal(){
+  if(!lastSchedData){ flashSched('Load a schedule first', true); return; }
+  document.getElementById('cp-label').value = '';
+  openModal('cp-modal');
+  refreshCheckpoints();
+}
+
+async function refreshCheckpoints(list){
+  const d = list || await fetch('/api/checkpoint').then(r => r.json());
+  const el = document.getElementById('cp-list');
+  const cps = (d.checkpoints || []).slice().reverse();
+  el.innerHTML = !cps.length
+    ? '<div style="padding:16px;color:var(--text3);font-size:11.5px;">No checkpoints yet.</div>'
+    : `<table class="disambig-table"><tbody>${cps.map(c => `<tr>
+        <td><b>${escHtml(c.label)}</b><br>
+            <span style="color:var(--text3);font-size:10px;">${escHtml(c.at.replace('T',' '))}</span></td>
+        <td class="tie-lag">${c.activity_count} act · ${c.relation_count} rel</td>
+        <td style="text-align:right;white-space:nowrap;">
+          <button class="btn btn-primary btn-sm" onclick="restoreCheckpoint('${c.id}','${escAttr(c.label)}')">Restore</button>
+          <button class="mini-btn" onclick="deleteCheckpoint('${c.id}')">✕</button>
+        </td></tr>`).join('')}</tbody></table>`;
+}
+
+async function saveCheckpoint(){
+  const label = document.getElementById('cp-label').value.trim();
+  const d = await fetch('/api/checkpoint', {method:'POST',
+    headers:{'Content-Type':'application/json'}, body: JSON.stringify({label})}).then(r=>r.json());
+  document.getElementById('cp-label').value = '';
+  flashSched(`Checkpoint saved: ${d.saved}`, false);
+  refreshCheckpoints(d);
+}
+
+async function restoreCheckpoint(id, label){
+  if(!confirm(`Restore "${label}"?\n\nThe schedule goes back to how it was then. `
+            + `This is itself undoable.`)) return;
+  const d = await fetch('/api/checkpoint', {method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({action:'restore', id})}).then(r=>r.json());
+  if(d.error){ flashSched(d.error, true); return; }
+  closeModal('cp-modal');
+  flashSched(`Restored "${d.restored}" — ${d.activity_count} activities`, false);
+  updateUndoBtn();
+  await loadSchedule();
+}
+
+async function deleteCheckpoint(id){
+  const d = await fetch('/api/checkpoint', {method:'DELETE',
+    headers:{'Content-Type':'application/json'}, body: JSON.stringify({id})}).then(r=>r.json());
+  refreshCheckpoints(d);
 }
 
 // ═══════════════════════════════════════════════════
