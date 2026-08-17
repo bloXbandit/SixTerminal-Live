@@ -1847,6 +1847,42 @@ def brain_toggle(did):
     return jsonify({"success": True, "enabled": d.enabled, **_brain_payload(brain)})
 
 
+@app.route("/api/brain/image", methods=["POST"])
+def brain_image():
+    """
+    Read one drawing — a snip, a screenshot, a photo of a screen, or a PDF
+    sheet — and come back with the facts on it that bear on sequence.
+
+    Nothing lands in the project from here. The reading is a set of proposals;
+    each directive is confirmed by a click into /api/brain, where it is
+    grounded against the schedule like anything typed by hand. A model's read
+    of a drawing informs; it does not lead.
+    """
+    sess = _get_session()
+    if sess is None or sess["project"] is None:
+        return jsonify({"error": "No schedule loaded"}), 400
+    if "file" not in request.files:
+        return jsonify({"error": "No drawing attached"}), 400
+    f = request.files["file"]
+    question = (request.form.get("question") or "").strip()
+    try:
+        from interpreter.vision import read_drawing
+        reading = read_drawing(f.read(), f.filename or "", sess["project"],
+                               question=question,
+                               model_key=_settings["model_key"],
+                               api_key=_settings["api_key"])
+    except RuntimeError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        return jsonify({"error": f"Could not read the drawing: {e}"}), 500
+    # The read joins the conversation so later questions can refer back to it.
+    label = reading.get("sheet_number") or reading.get("sheet_title") or f.filename
+    _append_chat("user", f"[uploaded drawing: {f.filename}]"
+                         + (f" — {question}" if question else ""))
+    _append_chat("assistant", f"Read sheet {label}: {reading.get('summary', '')}")
+    return jsonify({"success": True, "reading": reading, "filename": f.filename})
+
+
 @app.route("/api/brain/check", methods=["GET"])
 def brain_check():
     """Where the schedule as it stands breaks what was said about it."""

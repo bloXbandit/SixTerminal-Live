@@ -484,6 +484,14 @@
     #send-btn:disabled{opacity:.3;cursor:not-allowed;}
     #send-btn:hover:not(:disabled){background:#1ad8ff;box-shadow:0 0 14px rgba(0,207,255,.4);}
     #send-btn svg{width:16px;height:16px;fill:#000;}
+    #attach-btn{
+      width:36px;height:36px;border-radius:var(--r-md);background:transparent;
+      border:1px solid var(--line);cursor:pointer;display:flex;align-items:center;
+      justify-content:center;flex-shrink:0;transition:border-color .15s,background .15s;
+    }
+    #attach-btn:hover{border-color:var(--accent);background:rgba(0,207,255,.08);}
+    #attach-btn svg{width:16px;height:16px;fill:var(--text3);}
+    #attach-btn:hover svg{fill:var(--accent);}
     .input-hint{font-size:10px;color:var(--text3);margin-top:6px;padding:0 4px;}
 
     /* Modals */
@@ -2222,13 +2230,19 @@
   </div>
     <div class="input-bar">
       <div class="input-wrap">
+        <button id="attach-btn" onclick="document.getElementById('drawing-file').click()"
+                title="Attach a drawing — a snip, screenshot or PDF sheet. Anything typed in the box goes with it as your question.">
+          <svg viewBox="0 0 24 24"><path d="M16.5 6v11.5a4 4 0 01-8 0V5a2.5 2.5 0 015 0v10.5a1 1 0 01-2 0V6H10v9.5a2.5 2.5 0 005 0V5a4 4 0 00-8 0v12.5a5.5 5.5 0 0011 0V6h-1.5z"/></svg>
+        </button>
+        <input type="file" id="drawing-file" accept="image/png,image/jpeg,image/webp,image/gif,.pdf"
+               style="display:none;" onchange="sendDrawing(this.files[0]); this.value='';">
         <textarea id="instruction-input" placeholder="Type an edit or just chat…" rows="1"
           onkeydown="handleKey(event)" oninput="autoResize(this)"></textarea>
         <button id="send-btn" onclick="sendInstruction()" disabled title="Send">
           <svg viewBox="0 0 24 24"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
         </button>
       </div>
-      <div class="input-hint">Enter to send &nbsp;&middot;&nbsp; Shift+Enter for new line</div>
+      <div class="input-hint">Enter to send &nbsp;&middot;&nbsp; Shift+Enter for new line &nbsp;&middot;&nbsp; 📎 attach a drawing</div>
     </div>
 
 </div>
@@ -7670,6 +7684,95 @@ async function brainCheck(){
             <span style="color:var(--text3);">${escHtml(r.successor_name)}</span></td>
         <td class="tie-why">${escHtml(r.why)}</td>
       </tr>`).join('')}</tbody></table></div>`;
+}
+
+// ═══════════════════════════════════════════════════
+//  Drawings — read a sheet, confirm facts into the brain
+// ═══════════════════════════════════════════════════
+// A model's read of a drawing INFORMS; it does not lead. Everything extracted
+// arrives as a proposal card, and each sequencing statement is confirmed by a
+// click — through the same /api/brain door as anything typed by hand, so it
+// gets grounded against the schedule and reported back as rule or note.
+
+async function sendDrawing(file){
+  if(!file) return;
+  const input = document.getElementById('instruction-input');
+  const question = input.value.trim();
+  input.value = ''; autoResize(input);
+  addMsg('user', '📎 ' + escHtml(file.name) + (question ? ' — ' + escHtml(question) : ''));
+  addMsg('system', '<span class="spinner"></span><em style="color:var(--text3)">Reading the sheet…</em>', 'pending');
+  const fd = new FormData();
+  fd.append('file', file);
+  if(question) fd.append('question', question);
+  try{
+    const d = await fetch('/api/brain/image', {method:'POST', body: fd}).then(r => r.json());
+    removePending();
+    if(d.error){ addMsg('system', errorCard(d.error)); return; }
+    addMsg('system', drawingCard(d.reading, d.filename));
+  }catch(e){ removePending(); addMsg('system', errorCard(e.message)); }
+}
+
+function drawingCard(rd, filename){
+  const id = 'dwg-' + Date.now();
+  const chip = t => `<span style="display:inline-block;border:1px solid var(--line);`
+    + `border-radius:10px;padding:1px 8px;margin:2px;font-size:10.5px;color:var(--text2);">`
+    + escHtml(t) + '</span>';
+  const dirRow = (t, i) => `<tr>
+      <td class="tie-why">${escHtml(t)}</td>
+      <td style="white-space:nowrap;"><button class="btn btn-primary btn-sm"
+        id="${id}-d${i}" onclick="addDrawingDirective('${id}', ${i}, this)">Add to brain</button></td>
+    </tr>`;
+  window._drawingCards = window._drawingCards || {};
+  window._drawingCards[id] = rd;
+  const head = [rd.sheet_number, rd.sheet_title].filter(Boolean).join(' — ')
+               || filename || 'Drawing';
+  return `<div class="disambig-card" id="${id}">
+    <div class="disambig-header">▤ ${escHtml(head)}</div>
+    <div class="disambig-subtext">${escHtml(rd.summary || '')}</div>
+    ${(rd.rooms||[]).length ? '<div style="margin:6px 0;">' + rd.rooms.map(chip).join('') + '</div>' : ''}
+    ${(rd.equipment||[]).length ? '<div style="margin:6px 0;">' + rd.equipment.map(chip).join('') + '</div>' : ''}
+    ${(rd.facts||[]).length ? `<ul style="font-size:11.5px;color:var(--text2);margin:8px 0 8px 18px;">
+        ${rd.facts.map(f => '<li>' + escHtml(f) + '</li>').join('')}</ul>` : ''}
+    ${(rd.directives||[]).length ? `
+      <div class="tie-group-head" style="margin-top:8px;">Sequencing this sheet supports — confirm what you agree with</div>
+      <table class="disambig-table"><tbody>
+        ${rd.directives.map(dirRow).join('')}
+      </tbody></table>` :
+      '<div style="font-size:11px;color:var(--text3);margin-top:6px;">No clear sequencing on this sheet — layout only.</div>'}
+    <div class="disambig-actions">
+      <span class="disambig-hint">Nothing is saved until you confirm it. Confirmed
+        lines are checked against the schedule like anything typed by hand.</span>
+      ${(rd.summary||'').length ? `<button class="btn btn-ghost btn-sm"
+        onclick="saveDrawingNote('${id}', this)">Keep summary as note</button>` : ''}
+    </div>
+  </div>`;
+}
+
+async function addDrawingDirective(cardId, idx, btn){
+  const rd = (window._drawingCards||{})[cardId];
+  const text = rd && (rd.directives||[])[idx];
+  if(!text) return;
+  btn.disabled = true; btn.textContent = '…';
+  const d = await fetch('/api/brain', {method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({text})}).then(r => r.json());
+  if(d.error){ btn.disabled = false; btn.textContent = 'Add to brain'; flashSched(d.error, true); return; }
+  btn.classList.remove('btn-primary');
+  btn.textContent = d.directive.kind === 'note' ? '✓ Kept as note' : '✓ Rule';
+  btn.title = d.directive.understood;
+}
+
+async function saveDrawingNote(cardId, btn){
+  const rd = (window._drawingCards||{})[cardId];
+  if(!rd) return;
+  const head = [rd.sheet_number, rd.sheet_title].filter(Boolean).join(' — ');
+  const text = (head ? head + ': ' : '') + (rd.summary || '');
+  btn.disabled = true;
+  const d = await fetch('/api/brain', {method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({text: text.slice(0, 1990)})}).then(r => r.json());
+  btn.textContent = d.error ? 'Failed' : '✓ Noted';
+  if(d.error) btn.disabled = false;
 }
 
 // ═══════════════════════════════════════════════════
