@@ -221,6 +221,17 @@ def _would_create_cycle(project: Project, pred_uid: str, succ_uid: str) -> bool:
     return False
 
 
+# Actions that READ the schedule and report on it. They never mutate anything,
+# so counting one as "an edit applied" is how the tool ends up announcing
+# "Applied 5 edits" after running five reports — and how the agent, reading
+# that same record back, tells the user it wired logic it never wired.
+ADVISORY_ACTIONS = frozenset({"recommend_logic"})
+
+
+def is_advisory(action: str) -> bool:
+    return (action or "").lower().strip() in ADVISORY_ACTIONS
+
+
 def apply_command(project: Project, command: Dict[str, Any]) -> Tuple[bool, str]:
     """
     Apply a single edit command to the project.

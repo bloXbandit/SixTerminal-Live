@@ -32,6 +32,7 @@ from engine.edit_engine import (
     apply_commands,
     check_disambiguation,
     generate_schedule_report,
+    is_advisory,
 )
 from interpreter.llm_interpreter import interpret, create_project, MODELS, DEFAULT_MODEL
 from engine.importer import extract as import_extract, build_project_from_contract, \
@@ -1531,13 +1532,39 @@ def edit():
 
         if chat_message:
             _append_chat("assistant", chat_message)
-        edit_summary = f"Applied {success_count} edit{'s' if success_count != 1 else ''}"
-        if fail_count > 0:
-            edit_summary += f", {fail_count} failed"
+        # A report is not an edit. recommend_logic reads the schedule and hands
+        # back findings — it changes nothing — so counting it as "applied"
+        # produced "Applied 5 edits" after five reports, and the agent reading
+        # that record back told the user it had wired logic it never wired.
+        # Reports are counted separately and named as what they are.
+        checks_run = sum(1 for cmd, ok, _ in applied
+                         if ok and is_advisory(cmd.get("action")))
+        edits_made = success_count - checks_run
+        bits = []
+        if edits_made:
+            bits.append(f"Applied {edits_made} edit{'s' if edits_made != 1 else ''}")
+        if checks_run:
+            bits.append(f"ran {checks_run} check{'s' if checks_run != 1 else ''} "
+                        f"(read-only — nothing changed)")
+        if fail_count:
+            bits.append(f"{fail_count} failed")
+        edit_summary = ", ".join(bits) if bits else "Nothing changed"
+        if not edits_made and checks_run:
+            edit_summary = edit_summary[0].upper() + edit_summary[1:]
+
         outcome_lines = [f"Results for \"{instruction}\":"]
         for cmd, ok, msg in applied:
-            mark = "OK " if ok else "FAILED "
-            outcome_lines.append(f"  {mark}{cmd.get('action', '?')}: {msg}")
+            action = cmd.get("action", "?")
+            if ok and is_advisory(action):
+                mark = "REPORT ONLY (nothing changed) "
+            else:
+                mark = "OK " if ok else "FAILED "
+            outcome_lines.append(f"  {mark}{action}: {msg}")
+        if checks_run and not edits_made:
+            outcome_lines.append(
+                "  NOTE: the schedule was NOT modified by this turn. Do not tell "
+                "the user you wired, tied or changed anything — you read and "
+                "reported. To actually change it, emit add_relation commands.")
         _append_chat("system_result", edit_summary,
                      context="\n".join(outcome_lines))
 
@@ -1547,6 +1574,8 @@ def edit():
             "success":          fail_count == 0,
             "commands_applied": success_count,
             "commands_failed":  fail_count,
+            "edits_made":       edits_made,
+            "checks_run":       checks_run,
             "results":          [{"action": cmd.get("action"), "success": ok, "message": msg} for cmd, ok, msg in applied],
             "commands":         commands,
             "project_summary":  project.summary(),
@@ -1997,16 +2026,44 @@ def brain_image():
         return jsonify({"error": "No drawing attached"}), 400
     f = request.files["file"]
     question = (request.form.get("question") or "").strip()
+    blob = f.read()
+
+    # The same pixels answer two different jobs. "What does this show?" is a
+    # drawing read; "make my dates match this" is a schedule read, and sending
+    # the second through the first is why asking for a status sync used to come
+    # back as a paragraph about equipment.
+    from interpreter import vision as _vision
+    mode = (request.form.get("mode")
+            or _vision.classify_image_intent(question))
+    if mode == "schedule":
+        return _read_schedule_image(sess, blob, f.filename or "", question)
+
     try:
-        from interpreter.vision import read_drawing
-        reading = read_drawing(f.read(), f.filename or "", sess["project"],
-                               question=question,
-                               model_key=_settings["model_key"],
-                               api_key=_settings["api_key"])
+        reading = _vision.read_drawing(blob, f.filename or "", sess["project"],
+                                       question=question,
+                                       model_key=_settings["model_key"],
+                                       api_key=_settings["api_key"])
     except RuntimeError as e:
         return jsonify({"error": str(e)}), 400
     except Exception as e:
         return jsonify({"error": f"Could not read the drawing: {e}"}), 500
+    # Every proposed rule is tested against the schedule BEFORE it is offered.
+    # A sheet says "Installation of utility switches precedes breakers", which
+    # is true of the drawing and dead against the schedule — no activity is
+    # called that. Offering it as a button meant clicking five of them and
+    # getting five "nothing in this schedule is called…" notes. Now the card
+    # says up front which ones bind, and to how many activities.
+    graded = []
+    for text in (reading.get("directives") or []):
+        d = project_brain.ground(sess["project"], project_brain.parse_directive(text))
+        graded.append({
+            "text": text,
+            "binds": d.kind != project_brain.NOTE,
+            "understood": project_brain.describe(d),
+            "matched": [d.matched_after, d.matched_subject],
+        })
+    reading["directives_graded"] = graded
+
     # The read joins the conversation so later questions can refer back to it.
     label = reading.get("sheet_number") or reading.get("sheet_title") or f.filename
     parts = [f"Drawing read from uploaded file '{f.filename}' "
@@ -2030,6 +2087,83 @@ def brain_image():
                  context="\n".join(parts))
     return jsonify({"success": True, "reading": reading, "filename": f.filename,
                     "chat": sess["chat_history"][-2:]})
+
+
+def _read_schedule_image(sess, blob, filename, question):
+    """
+    A screenshot of somebody else's schedule, reconciled against this one.
+
+    Answers both halves of the ask in one pass: the comparison IS the report
+    ("how are we tracking?"), and the same diff is what gets applied if the
+    user wants their schedule to match. Nothing moves here — the reply is a
+    reviewable list, because a misread digit in an actual date is not
+    something to discover afterwards.
+    """
+    from interpreter.vision import read_schedule
+    from engine import sheet_sync
+    try:
+        read = read_schedule(blob, filename, sess["project"], question=question,
+                             model_key=_settings["model_key"],
+                             api_key=_settings["api_key"])
+    except RuntimeError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        return jsonify({"error": f"Could not read that schedule image: {e}"}), 500
+
+    result = sheet_sync.match_rows(sess["project"], read["rows"])
+    result["source_title"] = read.get("source_title")
+    result["source_data_date"] = read.get("data_date")
+    result["notes"] = read.get("notes") or []
+    result["summary"] = sheet_sync.summarize(result)
+
+    lines = [f"Schedule image read from '{filename}'"
+             + (f" — {read['source_title']}" if read.get("source_title") else "") + ".",
+             result["summary"]]
+    if read.get("data_date"):
+        lines.append(f"  Its data date: {read['data_date']}")
+    for m in result["matched"][:40]:
+        if not m["changes"]:
+            continue
+        diffs = "; ".join(f"{c['label']} {c['from'] or '—'} → {c['to']}"
+                          for c in m["changes"])
+        lines.append(f"  {m['activity_id']} ({m['activity_name']}): {diffs}")
+    for u in result["unmatched"][:15]:
+        lines.append(f"  UNMATCHED: {u['row'].get('activity_id') or ''} "
+                     f"{u['row'].get('name') or ''} — {u['why']}")
+    lines.append("NOTHING HAS BEEN CHANGED. The user is looking at this as a "
+                 "reviewable list with Apply buttons. Do not say you updated "
+                 "anything unless a later result says the commands ran.")
+    _append_chat("user", f"[uploaded schedule image: {filename}]"
+                         + (f" — {question}" if question else ""))
+    _append_chat("assistant", result["summary"], context="\n".join(lines))
+
+    return jsonify({"success": True, "type": "schedule_image",
+                    "filename": filename, "question": question, **result})
+
+
+@app.route("/api/sheet/apply", methods=["POST"])
+def sheet_apply():
+    """
+    Apply the differences the user ticked from a schedule image.
+
+    `fields` is the guard that makes "only match the dates and actualization
+    status" mean exactly that: anything outside it is dropped, however much
+    else the screenshot happened to show.
+    """
+    sess = _get_session()
+    if sess is None or sess["project"] is None:
+        return jsonify({"error": "No schedule loaded"}), 400
+    data = request.get_json() or {}
+    matched = data.get("matched")
+    if not matched or not isinstance(matched, list):
+        return jsonify({"error": "Nothing selected to apply"}), 400
+    from engine import sheet_sync
+    cmds = sheet_sync.to_commands(sess["project"], matched, data.get("fields"))
+    if not cmds:
+        return jsonify({"error": "Nothing left to change once those fields "
+                                 "were excluded"}), 400
+    label = data.get("label") or f"Match {len(cmds)} row(s) from a schedule image"
+    return _apply_direct(cmds, label)
 
 
 @app.route("/api/brain/check", methods=["GET"])

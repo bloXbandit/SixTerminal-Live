@@ -17,6 +17,7 @@ back with a plain explanation instead of a guess.
 """
 
 import base64
+import datetime as _dt
 import json
 import os
 import re
@@ -69,25 +70,127 @@ Rules:
 """
 
 
+READ_SCHEDULE_PROMPT = """You are reading a SCHEDULE — a screenshot of a P6 / Excel / Primavera grid, a printed bar chart, or a status report. Not a drawing.
+
+Pull out the activity ROWS exactly as printed. Do not interpret, infer or complete them.
+
+Return ONLY a JSON object, no markdown:
+{
+  "source_title": "what this view is, if a header says — else null",
+  "data_date": "YYYY-MM-DD if a data date / status date is shown, else null",
+  "rows": [
+    {
+      "activity_id": "the id column exactly as printed, or null",
+      "name": "the activity name exactly as printed, or null",
+      "start": "YYYY-MM-DD or null",
+      "finish": "YYYY-MM-DD or null",
+      "actual_start": "YYYY-MM-DD if the start is marked actual, else null",
+      "actual_finish": "YYYY-MM-DD if the finish is marked actual, else null",
+      "percent_complete": 0-100 or null,
+      "status": "Not Started | In Progress | Completed | null"
+    }
+  ],
+  "notes": ["anything that affects how these rows should be read"]
+}
+
+Rules — these matter more than completeness:
+- Transcribe. Never guess a date you cannot read; use null.
+- A date printed with an A suffix, a filled bar, or in an "Actual" column is an ACTUAL date. A date in a Start/Finish column with no such marking is planned. Getting this wrong rewrites someone's history — when the marking is unclear, put the date in start/finish and leave the actual fields null.
+- Infer status only from what is shown: 100% or a complete bar = Completed; an actual start with no actual finish = In Progress; nothing = Not Started. If no progress information is visible at all, use null — do NOT default to Not Started.
+- Convert dates to YYYY-MM-DD. A two-digit year like 26 means 2026. If a date is ambiguous (03/04/26), prefer the format consistent with the other rows and say which you used in notes.
+- Include every activity row you can read. Skip WBS/summary header rows.
+- If the image is not a schedule at all, return rows: [] and say so in notes.
+"""
+
+# Which of the two readings a request wants. Asking "what's on this sheet?" and
+# "make my dates match this" are different jobs on the same pixels, and guessing
+# wrong wastes a model call and confuses the answer.
+_SCHEDULE_WORDS = re.compile(
+    r"(?i)\b(schedule|activit|dates?|actual|actualiz|status|statuse?s|"
+    r"progress|percent|%|complete|completion|update|sync|match|compare|"
+    r"track(?:ing)?|baseline|lookahead|three ?week|3 ?week|bar ?chart|"
+    r"gantt|p6|primavera|xer)\b")
+_DRAWING_WORDS = re.compile(
+    r"(?i)\b(drawing|sheet|detail|riser|one[- ]line|single[- ]line|plan|"
+    r"elevation|section|layout|spec|submittal|diagram|grounding|conduit)\b")
+
+
+def classify_image_intent(question: str) -> str:
+    """
+    'schedule' when the ask is about rows, dates or status; 'drawing' otherwise.
+
+    A bare upload with no question is a drawing — that is the common case, and
+    a wrong schedule read on a drawing returns an empty row list, which is a
+    worse answer than simply reading the sheet.
+    """
+    q = (question or "").strip()
+    if not q:
+        return "drawing"
+    sched = len(_SCHEDULE_WORDS.findall(q))
+    draw = len(_DRAWING_WORDS.findall(q))
+    return "schedule" if sched > draw else "drawing"
+
+
+def _uniq(values, cap):
+    seen, out = set(), []
+    for v in values:
+        k = (v or "").strip()
+        if k and k.lower() not in seen:
+            seen.add(k.lower())
+            out.append(k)
+        if len(out) >= cap:
+            break
+    return out
+
+
 def _job_vocabulary(project) -> str:
-    """The job's own room and folder names, so the reading speaks its language."""
+    """
+    The job's own folder names AND the words its activities are actually
+    called, so a proposed rule is phrased in language the schedule can match.
+
+    Without the activity words the model writes rules in drawing language —
+    "Installation of utility switches precedes breakers" — which is a true
+    statement about the sheet and a dead letter against the schedule: no
+    activity is called that, so the rule binds nothing and the user gets a
+    button that does nothing when clicked.
+    """
     if project is None:
         return ""
-    names: List[str] = []
-    for w in getattr(project, "wbs_nodes", None) or []:
-        n = (w.name or "").strip()
-        if n and len(n) <= 40:
-            names.append(n)
-    seen, out = set(), []
-    for n in names:
-        if n.lower() not in seen:
-            seen.add(n.lower())
-            out.append(n)
-    if not out:
+    folders = _uniq(((w.name or "") for w in getattr(project, "wbs_nodes", None) or []
+                     if len(w.name or "") <= 40), 100)
+    acts = getattr(project, "activities", None) or []
+
+    # The recurring WORK words, most common first — this is the vocabulary a
+    # rule has to be written in to bind to anything.
+    from collections import Counter
+    stop = {"the", "and", "for", "with", "from", "into", "per", "all", "new"}
+    counts = Counter()
+    for a in acts:
+        for w in re.findall(r"[A-Za-z][A-Za-z/&-]{2,}", a.name or ""):
+            lw = w.lower()
+            if lw not in stop:
+                counts[w] += 1
+    common = [w for w, n in counts.most_common(70) if n >= 2]
+    samples = _uniq((a.name for a in acts), 40)
+
+    if not (folders or common or samples):
         return ""
-    return ("\n\nTHIS JOB'S OWN NAMING (rooms and folders from the schedule — "
-            "use these spellings when the sheet shows the same places):\n"
-            + ", ".join(out[:120]))
+    parts = ["\n\nTHIS JOB'S OWN NAMING — a rule only works if its words appear "
+             "in activity names, so phrase every 'directives' entry using words "
+             "from these lists, not words from the drawing:"]
+    if common:
+        parts.append("Words used in activity names: " + ", ".join(common))
+    if samples:
+        parts.append("Example activity names: " + " | ".join(samples))
+    if folders:
+        parts.append("Folders / rooms: " + ", ".join(folders))
+    parts.append(
+        "So write \"Terminations follow Pull Wire in the same room\" (words that "
+        "appear above), NOT \"Installation of utility switches precedes breakers\" "
+        "(drawing language — matches no activity). If the sheet shows sequencing "
+        "you cannot express in these words, put it in facts and leave directives "
+        "empty rather than writing one that cannot bind.")
+    return "\n".join(parts)
 
 
 def _parse_reading(raw: str) -> Dict[str, Any]:
@@ -115,10 +218,75 @@ def read_drawing(file_bytes: bytes, filename: str, project=None,
     plain sentence when it cannot run — no key, wrong provider for a PDF,
     file too big — so the route can hand the reason straight to the user.
     """
+    ext, is_pdf = _check(file_bytes, filename)
+    return _parse_reading(_ask_model(
+        file_bytes, ext, is_pdf, READ_PROMPT + _job_vocabulary(project),
+        "Read this sheet." + (
+            "\n\nThe user asked, about this sheet: " + question.strip()
+            if (question or "").strip() else ""),
+        model_key, api_key))
+
+
+def read_schedule(file_bytes: bytes, filename: str, project=None,
+                  question: str = "", model_key: str = None,
+                  api_key: str = None) -> Dict[str, Any]:
+    """
+    A screenshot of a SCHEDULE in, transcribed rows out.
+
+    This is deliberately a transcription, not an interpretation: the rows come
+    back as printed and every decision about what to do with them — which
+    activity each matches, whether a date is worth changing — is made against
+    the real schedule afterwards, where it can be shown to the user before
+    anything moves.
+    """
+    ext, is_pdf = _check(file_bytes, filename)
+    raw = _ask_model(
+        file_bytes, ext, is_pdf, READ_SCHEDULE_PROMPT,
+        "Transcribe the activity rows in this schedule." + (
+            "\n\nThe user asked: " + question.strip()
+            if (question or "").strip() else ""),
+        model_key, api_key)
+    m = re.search(r"\{.*\}", raw or "", re.S)
+    if not m:
+        raise RuntimeError("The model did not return readable rows for that image.")
+    data = json.loads(m.group(0))
+    rows = []
+    for r in (data.get("rows") or [])[:300]:
+        if not isinstance(r, dict):
+            continue
+        rows.append({
+            "activity_id": (r.get("activity_id") or None),
+            "name": (r.get("name") or None),
+            "start": _iso(r.get("start")),
+            "finish": _iso(r.get("finish")),
+            "actual_start": _iso(r.get("actual_start")),
+            "actual_finish": _iso(r.get("actual_finish")),
+            "percent_complete": r.get("percent_complete"),
+            "status": (r.get("status") or None),
+        })
+    return {"source_title": data.get("source_title"),
+            "data_date": _iso(data.get("data_date")),
+            "rows": rows,
+            "notes": [str(x) for x in (data.get("notes") or [])][:10]}
+
+
+def _iso(v) -> Optional[str]:
+    """Keep only a date we can actually trust; anything else becomes null."""
+    s = str(v or "").strip()[:10]
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", s):
+        return None
+    try:
+        _dt.date.fromisoformat(s)
+    except ValueError:
+        return None
+    return s
+
+
+def _check(file_bytes: bytes, filename: str):
     ext = os.path.splitext(filename or "")[1].lower()
     is_pdf = ext == ".pdf"
     if not is_pdf and ext not in _IMAGE_TYPES:
-        raise RuntimeError(f"'{ext or filename}' is not a readable drawing — "
+        raise RuntimeError(f"'{ext or filename}' is not a readable image — "
                            f"send a PNG/JPG screenshot or a PDF sheet.")
     if is_pdf and len(file_bytes) > _MAX_PDF_BYTES:
         raise RuntimeError("That PDF is over 30MB. Split out the sheets that "
@@ -126,13 +294,14 @@ def read_drawing(file_bytes: bytes, filename: str, project=None,
     if not is_pdf and len(file_bytes) > _MAX_BYTES:
         raise RuntimeError("That image is over 5MB. A tighter snip of the same "
                            "sheet will read better anyway.")
+    return ext, is_pdf
 
+
+def _ask_model(file_bytes, ext, is_pdf, system_prompt, user_text,
+               model_key, api_key) -> str:
+    """One image + one prompt to whichever provider is configured."""
     cfg = MODELS.get(model_key) or MODELS[DEFAULT_MODEL]
     provider = cfg["provider"]
-
-    prompt = READ_PROMPT + _job_vocabulary(project)
-    ask = ("\n\nThe user asked, about this sheet: " + question.strip()
-           if (question or "").strip() else "")
     b64 = base64.standard_b64encode(file_bytes).decode()
 
     if provider == "anthropic":
@@ -142,28 +311,24 @@ def read_drawing(file_bytes: bytes, filename: str, project=None,
                                "the settings panel.")
         if not _ANTHROPIC_AVAILABLE:
             raise RuntimeError("anthropic package not installed.")
-        if is_pdf:
-            block = {"type": "document",
-                     "source": {"type": "base64", "media_type": "application/pdf",
-                                "data": b64}}
-        else:
-            block = {"type": "image",
-                     "source": {"type": "base64",
-                                "media_type": _IMAGE_TYPES[ext], "data": b64}}
+        block = ({"type": "document",
+                  "source": {"type": "base64", "media_type": "application/pdf",
+                             "data": b64}} if is_pdf else
+                 {"type": "image",
+                  "source": {"type": "base64",
+                             "media_type": _IMAGE_TYPES[ext], "data": b64}})
         client = anthropic.Anthropic(api_key=key)
         resp = client.messages.create(
-            model=cfg["model_id"], max_tokens=2048, system=prompt,
+            model=cfg["model_id"], max_tokens=4096, system=system_prompt,
             messages=[{"role": "user", "content": [
-                block, {"type": "text",
-                        "text": "Read this sheet." + ask}]}])
-        raw = resp.content[0].text
-        return _parse_reading(raw)
+                block, {"type": "text", "text": user_text}]}])
+        return resp.content[0].text
 
     if provider == "openai":
         if is_pdf:
-            raise RuntimeError("PDF drawings need the Claude model — switch the "
-                               "model in settings, or send a screenshot of the "
-                               "sheet instead.")
+            raise RuntimeError("PDF pages need the Claude model — switch the "
+                               "model in settings, or send a screenshot "
+                               "instead.")
         key = api_key or os.environ.get("OPENAI_API_KEY", "")
         if not key:
             raise RuntimeError("OpenAI API key not set. Enter your key in the "
@@ -174,13 +339,13 @@ def read_drawing(file_bytes: bytes, filename: str, project=None,
         resp = client.chat.completions.create(
             model=cfg["model_id"],
             messages=[
-                {"role": "system", "content": prompt},
+                {"role": "system", "content": system_prompt},
                 {"role": "user", "content": [
                     {"type": "image_url", "image_url": {
                         "url": f"data:{_IMAGE_TYPES[ext]};base64,{b64}"}},
-                    {"type": "text", "text": "Read this sheet." + ask},
+                    {"type": "text", "text": user_text},
                 ]}],
-            max_completion_tokens=2048)
-        return _parse_reading(resp.choices[0].message.content)
+            max_completion_tokens=4096)
+        return resp.choices[0].message.content
 
     raise RuntimeError(f"Unknown provider '{provider}'.")

@@ -95,7 +95,7 @@ def test_a_file_that_is_not_a_drawing_is_refused():
         read_drawing(b"hello", "notes.txt")
         assert False
     except RuntimeError as e:
-        assert "not a readable drawing" in str(e)
+        assert "not a readable image" in str(e)
 
 
 def test_an_oversize_image_says_snip_tighter():

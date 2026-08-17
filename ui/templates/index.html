@@ -497,6 +497,9 @@
     #attach-btn svg{width:16px;height:16px;fill:var(--text3);}
     #attach-btn:hover svg{fill:var(--accent);}
     .input-hint{font-size:10px;color:var(--text3);margin-top:6px;padding:0 4px;}
+    /* A change that rewrites history reads as one at a glance. */
+    tr.sheet-risky{background:rgba(255,176,32,.08);}
+    tr.sheet-risky td{border-top:1px solid rgba(255,176,32,.25);}
 
     /* Modals */
     .modal-overlay{
@@ -2233,13 +2236,17 @@
 
   </div>
     <div class="input-bar">
+      <!-- An attached sheet WAITS here until you send, so you can say what you
+           want done with it. Sending on attach meant the question had to be
+           typed before the file, which nobody does. -->
+      <div id="attach-chip" style="display:none;"></div>
       <div class="input-wrap">
         <button id="attach-btn" onclick="document.getElementById('drawing-file').click()"
-                title="Attach a drawing — a snip, screenshot or PDF sheet. Anything typed in the box goes with it as your question.">
+                title="Attach a drawing — a snip, screenshot or PDF sheet. It waits until you hit send, so you can type what you want done with it.">
           <svg viewBox="0 0 24 24"><path d="M16.5 6v11.5a4 4 0 01-8 0V5a2.5 2.5 0 015 0v10.5a1 1 0 01-2 0V6H10v9.5a2.5 2.5 0 005 0V5a4 4 0 00-8 0v12.5a5.5 5.5 0 0011 0V6h-1.5z"/></svg>
         </button>
         <input type="file" id="drawing-file" accept="image/png,image/jpeg,image/webp,image/gif,.pdf"
-               style="display:none;" onchange="sendDrawing(this.files[0]); this.value='';">
+               style="display:none;" onchange="stageDrawing(this.files[0]); this.value='';">
         <textarea id="instruction-input" placeholder="Type an edit or just chat…" rows="1"
           onkeydown="handleKey(event)" oninput="autoResize(this)"></textarea>
         <button id="send-btn" onclick="sendInstruction()" disabled title="Send">
@@ -2403,7 +2410,7 @@ function handleChosenFile(file) {
   if (!file) return;
   const ext = (file.name.split('.').pop() || '').toLowerCase();
   if (_IMAGE_EXTS.has(ext)) {
-    sendDrawing(file);
+    stageDrawing(file);          // wait for the user's question, then send
   } else if (ext === 'xlsx' || ext === 'xlsm' || ext === 'xls' || ext === 'pdf') {
     importFile(file);
   } else {
@@ -2434,7 +2441,7 @@ editorPanel.addEventListener('drop', e => {
   if (!f) return;                        // internal grid drag — not ours
   e.preventDefault(); editorPanel.classList.remove('drag-over');
   const ext = (f.name.split('.').pop() || '').toLowerCase();
-  if (_IMAGE_EXTS.has(ext) || ext === 'pdf') sendDrawing(f);
+  if (_IMAGE_EXTS.has(ext) || ext === 'pdf') stageDrawing(f);
   else handleChosenFile(f);
 });
 
@@ -3150,6 +3157,15 @@ async function submitCreateProject() {
 async function sendInstruction() {
   const input = document.getElementById('instruction-input');
   const reply = input.value.trim();
+  // A staged sheet is the message. Send takes it and whatever was typed
+  // alongside it — including nothing, which just means "read this".
+  if (_stagedDrawing) {
+    const file = _stagedDrawing;
+    clearStagedDrawing();
+    input.value = ''; autoResize(input);
+    await sendDrawing(file, reply);
+    return;
+  }
   if (!reply) return;
 
   // If we're in a clarify loop, combine original instruction + user's reply
@@ -3452,9 +3468,16 @@ function handleResult(d) {
 
 function resultCard(data) {
   const overall = data.success ? 'success' : (data.commands_failed > 0 ? 'warning' : 'error');
-  const label = data.success
-    ? `✓ ${data.commands_applied} edit${data.commands_applied!==1?'s':''} applied`
-    : `${data.commands_applied} applied · ${data.commands_failed} failed`;
+  // A report is not an edit. Counting read-only checks as "edits applied" is
+  // what put "✓ 5 edits applied" on screen after five reports that changed
+  // nothing — so they are named separately here too.
+  const edits  = data.edits_made  != null ? data.edits_made  : data.commands_applied;
+  const checks = data.checks_run  || 0;
+  const parts = [];
+  if (edits)  parts.push(`${edits} edit${edits!==1?'s':''} applied`);
+  if (checks) parts.push(`${checks} check${checks!==1?'s':''} run — nothing changed`);
+  if (data.commands_failed) parts.push(`${data.commands_failed} failed`);
+  const label = (data.success ? '✓ ' : '') + (parts.join(' · ') || 'nothing changed');
   let rows = '';
   for (const r of (data.results||[])) {
     rows += `<div class="result-row ${r.success?'ok':'fail'}">
@@ -4967,12 +4990,16 @@ function gotoActivity(id){
 }
 
 // ── Core: send structured commands straight to the engine ──
-async function directEdit(commands, label, brainOverride){
+// `via` lets another route that also returns _apply_direct's response reuse all
+// of this — the undo counters, the drift badge, the in-place row patching.
+// Without it every such route would need its own copy of the refresh logic.
+async function directEdit(commands, label, brainOverride, via){
   const before = allActivityIds();
   try{
-    const d = await fetch('/api/direct', {
+    const d = await fetch(via ? via.url : '/api/direct', {
       method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({commands, label, brain_override: !!brainOverride})
+      body: JSON.stringify(via ? via.body
+                               : {commands, label, brain_override: !!brainOverride})
     }).then(r => r.json());
     if(d.error){ flashSched(d.error, true); return d; }
     // A tie that runs backwards to a rule you stated stops here rather than
@@ -7726,11 +7753,40 @@ async function brainCheck(){
 // click — through the same /api/brain door as anything typed by hand, so it
 // gets grounded against the schedule and reported back as rule or note.
 
-async function sendDrawing(file){
+// ── A sheet waits for its question ───────────────────────────────────────────
+// Uploading used to fire the read immediately, which meant the only way to say
+// anything about a sheet was to type BEFORE picking the file. Now it stages:
+// the chip sits above the input until you send, so "only match my dates to
+// this" arrives WITH the drawing instead of a turn too late.
+let _stagedDrawing = null;
+
+function stageDrawing(file){
   if(!file) return;
-  const input = document.getElementById('instruction-input');
-  const question = input.value.trim();
-  input.value = ''; autoResize(input);
+  _stagedDrawing = file;
+  const chip = document.getElementById('attach-chip');
+  const kb = Math.max(1, Math.round(file.size / 1024));
+  chip.innerHTML = `<span style="display:inline-flex;align-items:center;gap:8px;
+      border:1px solid var(--accent);border-radius:var(--r-md);
+      background:rgba(0,207,255,.08);padding:4px 10px;margin-bottom:6px;font-size:11px;">
+      <span>📎 ${escHtml(file.name)} <span style="color:var(--text3);">· ${kb} KB</span></span>
+      <span style="color:var(--text3);">— say what to do with it, or just send</span>
+      <button class="btn btn-ghost btn-sm" onclick="clearStagedDrawing()">✕</button>
+    </span>`;
+  chip.style.display = 'block';
+  document.getElementById('send-btn').disabled = false;
+  document.getElementById('instruction-input').focus();
+}
+
+function clearStagedDrawing(){
+  _stagedDrawing = null;
+  const chip = document.getElementById('attach-chip');
+  chip.style.display = 'none';
+  chip.innerHTML = '';
+}
+
+async function sendDrawing(file, question){
+  if(!file) return;
+  question = (question || '').trim();
   addMsg('user', escHtml('[uploaded drawing: ' + file.name + ']') + (question ? ' — ' + escHtml(question) : ''));
   addMsg('system', '<span class="spinner"></span><em style="color:var(--text3)">Reading the sheet…</em>', 'pending');
   const fd = new FormData();
@@ -7740,6 +7796,7 @@ async function sendDrawing(file){
     const d = await fetch('/api/brain/image', {method:'POST', body: fd}).then(r => r.json());
     removePending();
     if(d.error){ addMsg('system', errorCard(d.error)); return; }
+    if(d.type === 'schedule_image'){ addMsg('system', scheduleImageCard(d)); return; }
     addMsg('system', drawingCard(d.reading, d.filename));
     // The assistant's read line — the same text a reload restores, so the
     // record of what the sheet said never depends on the ephemeral card.
@@ -7748,16 +7805,115 @@ async function sendDrawing(file){
   }catch(e){ removePending(); addMsg('system', errorCard(e.message)); }
 }
 
+// ── A schedule screenshot, reconciled against ours ───────────────────────────
+// The comparison IS the answer to "how are we tracking?", and the same rows
+// are what gets applied if the answer is "make mine match". Every difference
+// is ticked individually, and the ones that rewrite history — writing an
+// actual, reopening a completed activity — are marked and left UNTICKED, so
+// applying the obvious things never quietly drags one of those along.
+
+const _sheetCards = {};
+
+function scheduleImageCard(d){
+  const id = 'sheet-' + Date.now();
+  _sheetCards[id] = d;
+  const withChanges = (d.matched || []).filter(m => m.changes.length);
+  const rows = withChanges.map((m, mi) => m.changes.map((c, ci) => `
+      <tr class="${c.severity === 'high' ? 'sheet-risky' : ''}">
+        <td><input type="checkbox" class="sheet-cb" data-card="${id}"
+              data-m="${mi}" data-c="${ci}"
+              ${c.severity === 'normal' ? 'checked' : ''}></td>
+        <td><span class="act-id">${escHtml(m.activity_id)}</span>
+            ${m.match === 'close' ? '<span title="matched on a similar name, not an exact one" style="color:var(--amber);">≈</span>' : ''}
+            <br><span style="color:var(--text3);">${escHtml(m.activity_name)}</span></td>
+        <td>${escHtml(c.label)}</td>
+        <td style="color:var(--text3);">${escHtml(String(c.from ?? '—'))}</td>
+        <td><b>${escHtml(String(c.to))}</b></td>
+        <td class="tie-why">${c.note ? '⚠ ' + escHtml(c.note) : ''}</td>
+      </tr>`).join('')).join('');
+
+  return `<div class="disambig-card" id="${id}">
+    <div class="disambig-header">▤ ${escHtml(d.source_title || d.filename || 'Schedule image')}</div>
+    <div class="disambig-subtext">${escHtml(d.summary || '')}
+      ${d.source_data_date ? ' · its data date ' + escHtml(d.source_data_date) : ''}</div>
+    ${(d.notes || []).length ? `<ul style="font-size:11px;color:var(--text3);margin:6px 0 6px 18px;">
+       ${d.notes.map(n => '<li>' + escHtml(n) + '</li>').join('')}</ul>` : ''}
+    ${!withChanges.length ? `<div style="padding:14px;color:var(--green);font-size:11.5px;">
+        Everything that matched already agrees — nothing to change.</div>` : `
+      <div class="look-body"><table class="disambig-table">
+        <thead><tr>
+          <th><input type="checkbox" checked onclick="sheetToggleAll('${id}', this.checked)"></th>
+          <th>Activity</th><th>Field</th><th>Mine</th><th>Theirs</th><th></th>
+        </tr></thead><tbody>${rows}</tbody></table></div>`}
+    ${(d.unmatched || []).length ? `<div style="font-size:11px;color:var(--text3);margin-top:8px;">
+        ${d.unmatched.length} row(s) matched nothing in this schedule:
+        ${d.unmatched.slice(0,6).map(u => escHtml(u.row.activity_id || u.row.name || '?')).join(', ')}
+        ${d.unmatched.length > 6 ? '…' : ''}</div>` : ''}
+    ${withChanges.length ? `<div class="disambig-actions">
+      <span class="disambig-hint">Nothing has changed yet. Rows that would write
+        or overwrite an actual date start unticked — those rewrite history.</span>
+      <button class="btn btn-ghost btn-sm" onclick="document.getElementById('${id}').remove()">Just the report</button>
+      <button class="btn btn-primary btn-sm" onclick="applySheet('${id}', this)">Apply ticked</button>
+    </div>` : ''}
+  </div>`;
+}
+
+function sheetToggleAll(cardId, on){
+  document.querySelectorAll(`.sheet-cb[data-card="${cardId}"]`)
+          .forEach(cb => cb.checked = on);
+}
+
+async function applySheet(cardId, btn){
+  const d = _sheetCards[cardId];
+  if(!d) return;
+  const withChanges = (d.matched || []).filter(m => m.changes.length);
+  // Rebuild from the ticks: only the exact field/row pairs still selected.
+  const picked = [];
+  document.querySelectorAll(`.sheet-cb[data-card="${cardId}"]:checked`).forEach(cb => {
+    const m = withChanges[+cb.dataset.m];
+    const c = m.changes[+cb.dataset.c];
+    let entry = picked.find(p => p.activity_id === m.activity_id);
+    if(!entry){ entry = {activity_id: m.activity_id, changes: []}; picked.push(entry); }
+    entry.changes.push(c);
+  });
+  if(!picked.length){ flashSched('Nothing ticked', true); return; }
+  btn.disabled = true; btn.textContent = 'Applying…';
+  const n = picked.reduce((s, p) => s + p.changes.length, 0);
+  await fetch('/api/checkpoint', {method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({label: `Before matching ${n} field(s) from a schedule image`})});
+  const out = await directEdit(
+    [], `Match ${n} field(s) from ${d.source_title || d.filename}`, false,
+    {url: '/api/sheet/apply', body: {matched: picked,
+      label: `Match ${n} field(s) from ${d.source_title || d.filename}`}});
+  btn.textContent = (out && out.commands_applied) ? '✓ Applied' : 'Failed';
+  if(!out || !out.commands_applied) btn.disabled = false;
+}
+
 function drawingCard(rd, filename){
   const id = 'dwg-' + Date.now();
   const chip = t => `<span style="display:inline-block;border:1px solid var(--line);`
     + `border-radius:10px;padding:1px 8px;margin:2px;font-size:10.5px;color:var(--text2);">`
     + escHtml(t) + '</span>';
-  const dirRow = (t, i) => `<tr>
+  // Each proposed rule was already tested against the schedule. One that binds
+  // nothing is shown greyed with the reason instead of as a button that looks
+  // like it does something and doesn't.
+  const dirRow = (t, i) => {
+    const g = (rd.directives_graded || [])[i] || {binds: true, understood: ''};
+    if (!g.binds) return `<tr style="opacity:.55;">
       <td class="tie-why">${escHtml(t)}</td>
-      <td style="white-space:nowrap;"><button class="btn btn-primary btn-sm"
-        id="${id}-d${i}" onclick="addDrawingDirective('${id}', ${i}, this)">Add to brain</button></td>
+      <td style="white-space:nowrap;font-size:10.5px;color:var(--text3);">
+        won't bind — ${escHtml((g.understood || '').replace(/^Guidance only — /, ''))}
+        <button class="btn btn-ghost btn-sm" style="margin-left:6px;"
+          onclick="addDrawingDirective('${id}', ${i}, this)">Keep as note</button></td>
     </tr>`;
+    const [a, b] = g.matched || [0, 0];
+    return `<tr>
+      <td class="tie-why">${escHtml(t)}
+        <div style="font-size:10.5px;color:var(--text3);">binds ${a} ↔ ${b} activities</div></td>
+      <td style="white-space:nowrap;"><button class="btn btn-primary btn-sm"
+        id="${id}-d${i}" onclick="addDrawingDirective('${id}', ${i}, this)">Add rule</button></td>
+    </tr>`;
+  };
   window._drawingCards = window._drawingCards || {};
   window._drawingCards[id] = rd;
   const head = [rd.sheet_number, rd.sheet_title].filter(Boolean).join(' — ')
