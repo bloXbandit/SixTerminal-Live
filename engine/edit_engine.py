@@ -29,6 +29,8 @@ Supported commands:
   set_progress              — Status a row: not started / in progress / completed
   update_planned_date       — Set a planned start, or a finish (adjusts duration)
   update_udf                — Set a user-defined field (e.g. Number of Electricians)
+  apply_crew_to_name        — Put a crew count on every activity doing that work
+  fill_crew_defaults        — Fill blank crew cells from counts set elsewhere
   bulk_rules                — If/then find-and-change across the schedule or one folder
   bulk_add_activity         — Add the same activity to multiple WBS nodes in one call
   bulk_create_wbs           — Create multiple WBS folders under the same parent in one call
@@ -270,6 +272,10 @@ def apply_command(project: Project, command: Dict[str, Any]) -> Tuple[bool, str]
             return _update_progress(project, command)
         elif action == "update_labor_units":
             return _update_labor_units(project, command)
+        elif action in ("apply_crew_to_name", "set_crew_for_work"):
+            return _apply_crew_to_name(project, command)
+        elif action in ("fill_crew_defaults", "fill_crew"):
+            return _fill_crew_defaults(project, command)
         elif action == "update_udf":
             return _update_udf(project, command)
         elif action in ("bulk_rules", "if_then"):
@@ -602,6 +608,19 @@ def _add_activity(project: Project, cmd: Dict) -> Tuple[bool, str]:
     udfs = cmd.get("udfs")
     if isinstance(udfs, dict):
         new_act.udfs = {str(k): str(v) for k, v in udfs.items() if v not in (None, "")}
+    # A new activity doing work the schedule already knows inherits its crew.
+    # Typing "Install High Steel Area 9" should not mean filling the count in
+    # by hand again when Areas 1-8 all say the same thing.
+    if cmd.get("inherit_crew", True):
+        try:
+            ckey = electricians_field(project)
+            if not new_act.udfs.get(ckey):
+                learned = {d["match"]: d["crew"] for d in crew_defaults(project, ckey)}
+                v = learned.get(_norm_name(name))
+                if v is not None:
+                    new_act.udfs[ckey] = str(v)
+        except Exception:
+            pass        # a convenience must never block adding an activity
     project.activities.append(new_act)
     project.build_lookups()
     return True, f"Added activity '{act_id} — {name}' ({duration_days}d) to WBS '{wbs.name}'"
@@ -1674,6 +1693,191 @@ def electricians_field(project: Project) -> str:
         if any(pat in low for pat in ELECTRICIANS_PATTERNS):
             return t
     return "Number of Electricians"
+
+
+def _norm_name(s: str) -> str:
+    """An activity name reduced to what identifies the WORK, not the location.
+
+    "Install High Steel Area 3" and "Install High Steel Area 7" are the same
+    task in two places and take the same crew, so the trailing area / level /
+    room / phase and any bare numbers come off before matching.
+    """
+    t = (s or "").strip().lower()
+    t = re.sub(r"\((?:[^()]*)\)", " ", t)                      # (97 Pieces)
+    t = re.sub(r"\b(?:area|zone|level|lvl|room|rm|phase|ph|grid(?:\s*line)?|"
+               r"bldg|building|unit|line)\s*[\w.-]{0,8}\b", " ", t)
+    t = re.sub(r"[-–—:,/]+", " ", t)
+    t = re.sub(r"\b\d+(?:\.\d+)?\b", " ", t)
+    return re.sub(r"\s+", " ", t).strip()
+
+
+def crew_defaults(project: Project, field: Optional[str] = None) -> List[Dict[str, Any]]:
+    """
+    The crew count already used for each kind of work, learned from the rows
+    that carry one.
+
+    Keyed by the normalised name, so "Install High Steel Area 3" teaches the
+    default for every other area too. Where a name has been given different
+    counts, the most common wins and `varies` says the schedule disagrees with
+    itself — worth seeing rather than silently averaging.
+    """
+    key = field or electricians_field(project)
+    seen: Dict[str, Dict[str, Any]] = {}
+    for a in project.activities:
+        v = (getattr(a, "udfs", None) or {}).get(key)
+        if v in (None, ""):
+            continue
+        try:
+            num = float(str(v).strip())
+        except (TypeError, ValueError):
+            continue
+        norm = _norm_name(a.name)
+        if not norm:
+            continue
+        e = seen.setdefault(norm, {"name": a.name, "counts": {}, "with_value": 0})
+        e["counts"][num] = e["counts"].get(num, 0) + 1
+        e["with_value"] += 1
+
+    blanks: Dict[str, int] = {}
+    for a in project.activities:
+        if (getattr(a, "udfs", None) or {}).get(key) in (None, ""):
+            n = _norm_name(a.name)
+            if n in seen:
+                blanks[n] = blanks.get(n, 0) + 1
+
+    out = []
+    for norm, e in seen.items():
+        best = max(e["counts"].items(), key=lambda kv: (kv[1], -kv[0]))
+        out.append({
+            "name": e["name"],
+            "match": norm,
+            "crew": int(best[0]) if float(best[0]).is_integer() else best[0],
+            "with_value": e["with_value"],
+            "missing": blanks.get(norm, 0),
+            "varies": len(e["counts"]) > 1,
+        })
+    out.sort(key=lambda r: (-r["missing"], -r["with_value"]))
+    return out
+
+
+def _apply_crew_to_name(project: Project, cmd: Dict) -> Tuple[bool, str]:
+    """
+    Put a crew count on every activity doing the same kind of work.
+
+    Set it once on "Install High Steel Area 3" and this carries it to every
+    other Install High Steel, past and future — which is the only realistic way
+    to fill a column across a few thousand rows.
+
+      activity_id / name : the row (or name) to take the work from
+      value              : the count; omitted, it is read off activity_id
+      match              : "work" (default) ignores area/level/number, so
+                           Area 3 teaches Area 7
+                           "exact" only identical names
+                           "contains" a plain substring
+      only_missing       : default true — never overwrite a count somebody set
+      wbs_uid            : restrict to one branch
+    """
+    key = cmd.get("field") or electricians_field(project)
+    mode = (cmd.get("match") or "work").strip().lower()
+
+    src = None
+    if cmd.get("activity_id") or cmd.get("target_name"):
+        hits = _find_activity(project, cmd.get("activity_id"), cmd.get("target_name"))
+        if not hits:
+            raise EditError(_no_activity(project, cmd.get("activity_id")
+                                         or cmd.get("target_name")))
+        src = hits[0]
+
+    raw = cmd.get("value")
+    if raw in (None, "") and src is not None:
+        raw = (getattr(src, "udfs", None) or {}).get(key)
+    if raw in (None, ""):
+        raise EditError(f"No {key} value to apply — set one on the activity first, "
+                        f"or pass value")
+    try:
+        value = str(int(float(str(raw).strip())))
+    except (TypeError, ValueError):
+        raise EditError(f"{key} needs a number — got {raw!r}")
+
+    needle_raw = cmd.get("name") or (src.name if src else "")
+    if not needle_raw:
+        raise EditError("Nothing to match on — pass activity_id or name")
+    needle = (_norm_name(needle_raw) if mode == "work"
+              else needle_raw.strip().lower())
+    if not needle:
+        raise EditError(f"'{needle_raw}' has nothing left to match on once the "
+                        f"area and numbers are removed — try match='exact'")
+
+    scope = None
+    if cmd.get("wbs_uid") or cmd.get("wbs_name") or cmd.get("wbs_code"):
+        w = _find_wbs(project, cmd.get("wbs_code"), cmd.get("wbs_name"), cmd.get("wbs_uid"))
+        if not w:
+            raise EditError("Scope " + _no_wbs(project, cmd.get("wbs_name")
+                                               or cmd.get("wbs_uid")))
+        scope = {n.uid for n in project.wbs_nodes}
+        keep, stack = {w.uid}, [w.uid]
+        kids = {}
+        for n in project.wbs_nodes:
+            kids.setdefault(n.parent_uid, []).append(n.uid)
+        while stack:
+            for k in kids.get(stack.pop(), []):
+                if k not in keep:
+                    keep.add(k)
+                    stack.append(k)
+        scope = keep
+
+    only_missing = cmd.get("only_missing", True)
+    changed, skipped = 0, 0
+    for a in project.activities:
+        if scope is not None and a.wbs_uid not in scope:
+            continue
+        hay = _norm_name(a.name) if mode == "work" else (a.name or "").strip().lower()
+        hit = (needle in hay) if mode == "contains" else (hay == needle)
+        if not hit:
+            continue
+        cur = (getattr(a, "udfs", None) or {}).get(key)
+        if cur not in (None, "") and only_missing:
+            skipped += 1
+            continue
+        if str(cur) == value:
+            continue
+        _update_udf(project, {"activity_id": a.activity_id, "field": key, "value": value})
+        changed += 1
+
+    if not changed and not skipped:
+        raise EditError(f"Nothing matches '{needle_raw}' — no activity does that work")
+    msg = f"{key} = {value} on {changed} activit{'y' if changed == 1 else 'ies'} " \
+          f"doing '{needle_raw.strip()}'"
+    if skipped:
+        msg += f" ({skipped} already had a number, left alone)"
+    return True, msg
+
+
+def _fill_crew_defaults(project: Project, cmd: Dict) -> Tuple[bool, str]:
+    """
+    Fill every blank crew cell from what the schedule already says elsewhere.
+
+    Only blanks, and only from a name that has been given a count somewhere —
+    nothing is invented, and nothing already filled in is touched.
+    """
+    key = cmd.get("field") or electricians_field(project)
+    table = {d["match"]: d["crew"] for d in crew_defaults(project, key)}
+    if not table:
+        raise EditError(f"No {key} values to learn from yet — set a few first")
+    changed = 0
+    for a in project.activities:
+        if (getattr(a, "udfs", None) or {}).get(key) not in (None, ""):
+            continue
+        v = table.get(_norm_name(a.name))
+        if v is None:
+            continue
+        _update_udf(project, {"activity_id": a.activity_id, "field": key,
+                              "value": str(v)})
+        changed += 1
+    blank = sum(1 for a in project.activities
+                if (getattr(a, "udfs", None) or {}).get(key) in (None, ""))
+    return True, (f"Filled {key} on {changed} activit{'y' if changed == 1 else 'ies'} "
+                  f"from {len(table)} learned default(s); {blank} still blank")
 
 
 # ── Find-and-change rules ────────────────────────────────────────────────────

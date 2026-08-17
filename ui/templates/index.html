@@ -1110,6 +1110,24 @@
     .lc-val{width:44px;text-align:right;font-family:var(--mono);font-weight:700;}
     .lc-acts{width:56px;text-align:right;font-family:var(--mono);color:var(--text3);font-size:9.5px;}
 
+    /* Crew defaults — what the schedule already says each kind of work takes */
+    .cd-wrap{border:1px solid var(--border);border-radius:var(--r-md);
+             margin-bottom:10px;overflow:hidden;}
+    .cd-head{display:flex;align-items:center;justify-content:space-between;gap:8px;
+             padding:7px 10px;background:var(--surface2);font-size:11px;
+             border-bottom:1px solid var(--border);}
+    .cd-list{max-height:130px;overflow-y:auto;}
+    .cd-row{display:flex;align-items:center;gap:8px;padding:3px 10px;font-size:10.5px;}
+    .cd-name{flex:1;color:var(--text2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+    .cd-crew{font-family:var(--mono);font-weight:700;min-width:26px;text-align:right;}
+    .cd-miss{width:64px;text-align:right;color:var(--orange);font-size:9.5px;}
+    .cd-varies{font-size:9px;color:var(--text3);border:1px solid var(--border2);
+               border-radius:3px;padding:0 3px;}
+    .cd-foot{padding:5px 10px;font-size:10px;color:var(--text3);
+             border-top:1px solid var(--border);}
+    .cd-empty{border:1px dashed var(--border2);border-radius:var(--r-md);
+              padding:10px 12px;margin-bottom:10px;font-size:11px;color:var(--text3);}
+
     /* Lookahead */
     .look-body{max-height:52vh;overflow-y:auto;}
     .look-head{font-size:11.5px;color:var(--text2);margin-bottom:8px;}
@@ -1553,6 +1571,7 @@
           <input type="checkbox" id="load-past" onchange="runLoading()"> include past weeks</label>
       </div>
       <div id="load-summary" class="load-summary"></div>
+      <div id="load-defaults"></div>
       <div id="load-chart" class="load-chart"></div>
     </div>
     <div class="modal-foot">
@@ -4040,6 +4059,38 @@ function finishRender(data){
     if(!(data.wbs_sections || []).some(w => w.uid === uid)) selectedWbs.delete(uid);
   });
   refreshWbsSelection();
+}
+
+/** The crew number on a row, or '' — used to offer "set this on all of them". */
+function elecOf(actId){
+  const rec = actDataById(actId);
+  return rec ? ((rec.udfs || {})[elecField()] ?? '') : '';
+}
+
+/**
+ * An activity name reduced to the WORK, mirroring _norm_name on the server so
+ * the menu label says what the command will actually match.
+ */
+function shortWork(actId){
+  const rec = actDataById(actId);
+  const raw = rec ? (rec.name || '') : '';
+  const t = raw.toLowerCase()
+    .replace(/\([^()]*\)/g, ' ')
+    .replace(/\b(?:area|zone|level|lvl|room|rm|phase|ph|grid(?:\s*line)?|bldg|building|unit|line)\s*[\w.-]{0,8}\b/g, ' ')
+    .replace(/[-–—:,/]+/g, ' ')
+    .replace(/\b\d+(?:\.\d+)?\b/g, ' ')
+    .replace(/\s+/g, ' ').trim();
+  const out = t || raw;
+  return out.length > 34 ? out.slice(0, 34) + '…' : out;
+}
+
+/** Carry this row's crew count to every activity doing the same work. */
+async function applyCrewToName(actId){
+  const n = elecOf(actId);
+  if(n === ''){ flashSched('Set a crew number on this row first', true); return; }
+  await directEdit([{action:'apply_crew_to_name', activity_id:actId,
+                     only_missing:true}],
+                   `${n} on all "${shortWork(actId)}"`);
 }
 
 /** Title of the UDF the Electricians column edits, as the server resolved it. */
@@ -6668,6 +6719,8 @@ function onSchedContextMenu(e){
     ...(clipCount ? [[`${pasteIcon} ${pasteVerb} ${clipCount} row${clipCount === 1 ? '' : 's'} into this folder`,
                       () => pasteIntoWbs(tr.dataset.wbs)]] : []),
     ['---'],
+    ...(elecOf(actId) ? [[`👷 Set ${elecOf(actId)} ${elecField().toLowerCase().includes('elect') ? 'electricians' : 'crew'} on all "${shortWork(actId)}"`,
+                          () => applyCrewToName(actId)]] : []),
     ['▶ Mark started…',  () => { const c = findCell(actId, 'status'); if(c) beginCellEdit(c); }],
     [`✔ Mark ${selectedIds.size > 1 ? selectedIds.size + ' complete' : 'complete'}`,
                                     () => bulkStatus('completed')],
@@ -7504,6 +7557,8 @@ async function runLoading(){
     <div class="ls-tile ${d.spike_ratio >= 3 ? 'ls-warn' : ''}"><b>${d.spike_ratio ?? '—'}×</b><span>peak vs median</span></div>
     <div class="ls-tile"><b>${escHtml(d.busiest_week ? d.busiest_week.week : '—')}</b><span>busiest week</span></div>`;
 
+  renderCrewDefaults();
+
   // Only weeks with work, and a bar scaled to the worst one.
   const rows = d.weeks.filter(w => w.peak_crew > 0);
   const max = Math.max(1, ...rows.map(w => w.peak_crew));
@@ -7520,6 +7575,43 @@ async function runLoading(){
           <span class="lc-acts">${w.activities} act</span>
         </div>`;
       }).join('');
+}
+
+/**
+ * What the schedule already says each kind of work takes, and how many rows
+ * are still blank that it could answer. Names are matched on the WORK, so
+ * "Install High Steel Area 3" fills in every other area too.
+ */
+async function renderCrewDefaults(){
+  const el = document.getElementById('load-defaults');
+  const d = await fetch('/api/crew/defaults').then(r => r.json()).catch(() => null);
+  if(!d || d.error || !d.defaults.length){
+    el.innerHTML = !d || d.error ? '' : `<div class="cd-empty">
+      No crew numbers set yet. Type one into the Electricians column on a row,
+      then right-click it to put the same number on every activity doing that work.</div>`;
+    return;
+  }
+  const fillable = d.defaults.reduce((s, r) => s + r.missing, 0);
+  el.innerHTML = `<div class="cd-wrap">
+    <div class="cd-head">
+      <b>Learned from ${d.filled} row${d.filled === 1 ? '' : 's'}</b>
+      ${fillable ? `<button class="btn btn-primary btn-sm" onclick="fillCrewDefaults()">
+        Fill ${fillable} blank${fillable === 1 ? '' : 's'}</button>` : ''}
+    </div>
+    <div class="cd-list">${d.defaults.slice(0, 12).map(r => `
+      <div class="cd-row">
+        <span class="cd-name">${escHtml(r.name)}</span>
+        <span class="cd-crew">${r.crew}</span>
+        <span class="cd-miss">${r.missing ? r.missing + ' blank' : ''}</span>
+        ${r.varies ? '<span class="cd-varies" title="This work has been given different counts">varies</span>' : ''}
+      </div>`).join('')}</div>
+    ${d.blank ? `<div class="cd-foot">${d.blank} activities still have no number.</div>` : ''}
+  </div>`;
+}
+
+async function fillCrewDefaults(){
+  await directEdit([{action:'fill_crew_defaults'}], 'Fill crew from learned defaults');
+  runLoading();
 }
 
 function openLookaheadModal(){

@@ -1669,6 +1669,22 @@ def advise_wire():
     return jsonify(out)
 
 
+@app.route("/api/crew/defaults", methods=["GET"])
+def crew_defaults_view():
+    """What crew count the schedule already uses for each kind of work."""
+    sess = _get_session()
+    if sess is None or sess["project"] is None:
+        return jsonify({"error": "No schedule loaded"}), 400
+    from engine.edit_engine import crew_defaults, electricians_field
+    project = sess["project"]
+    key = electricians_field(project)
+    rows = crew_defaults(project, key)
+    filled = sum(1 for a in project.activities
+                 if (getattr(a, "udfs", None) or {}).get(key) not in (None, ""))
+    blank = len(project.activities) - filled
+    return jsonify({"field": key, "defaults": rows, "filled": filled, "blank": blank})
+
+
 @app.route("/api/loading", methods=["GET"])
 def crew_loading():
     """Crew demand per week — the curve that shows which weeks cannot be staffed."""
