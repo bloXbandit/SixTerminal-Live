@@ -543,6 +543,7 @@ class _Ctx:
         self._area: Dict[str, frozenset] = {}
         self._chain: Dict[str, List[str]] = {}
         self._trade: Dict[str, Optional[int]] = {}
+        self._where: Dict[str, str] = {}
         has_pred, has_succ = _open_ended(project)
         self.has_succ = has_succ
         # What the user has said about how THIS job is built. Empty for every
@@ -571,6 +572,13 @@ class _Ctx:
         if a.uid not in self._trade:
             self._trade[a.uid] = _trade_rank(a.name)
         return self._trade[a.uid]
+
+    def where(self, a: Activity) -> str:
+        """Folder path minus the root, for judging directives — the room is
+        usually in the folder, not the activity name."""
+        if a.uid not in self._where:
+            self._where[a.uid] = _brain.where_of(self.project, a)
+        return self._where[a.uid]
 
 
 def score_tie(ctx: _Ctx, pred: Activity, succ: Activity,
@@ -699,7 +707,8 @@ def score_tie(ctx: _Ctx, pred: Activity, succ: Activity,
     # to quietly bury the tie. A rule the tie runs backwards against returns
     # zero: it is never proposed, at any date fit.
     if ctx.directives:
-        sup, vio = _brain.verdicts(ctx.directives, pred.name, succ.name)
+        sup, vio = _brain.verdicts(ctx.directives, pred.name, succ.name,
+                                   ctx.where(pred), ctx.where(succ))
         if vio:
             return 0.0, why + [f"contradicts what you said: {vio[0].text}"]
         if sup:

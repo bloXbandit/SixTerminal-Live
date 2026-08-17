@@ -1762,7 +1762,9 @@ def _brain_conflicts(project, commands: list) -> list:
         if len(preds) != 1 or len(succs) != 1:
             continue          # ambiguous — the disambiguation pass owns that
         p, s = preds[0], succs[0]
-        _, vio = project_brain.verdicts(directives, p.name, s.name)
+        _, vio = project_brain.verdicts(directives, p.name, s.name,
+                                        project_brain.where_of(project, p),
+                                        project_brain.where_of(project, s))
         for d in vio:
             out.append({
                 "command_index": i,

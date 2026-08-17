@@ -71,6 +71,7 @@ class Directive:
     after: str = ""                 # the thing that comes first (ORDER)
     family: str = ""                # "ER", "MV" … (SEQUENCE)
     same_area: bool = False         # ORDER only applies within one room/area
+    same_phase: bool = False        # ORDER only applies within one phase
     enabled: bool = True
     created_at: str = ""
     matched_subject: int = 0        # activities the later side names
@@ -107,6 +108,13 @@ _SAME_AREA_RE = re.compile(
     r"(?i)\b(?:in|within|for)\s+the\s+same\s+(?:room|area|zone|space|lineup|unit)\b"
     r"|\bsame[- ]room\b|\bper\s+room\b|\bwithin\s+each\b")
 
+# "in the same phase", "per phase", "phase by phase" — a different scope from a
+# room: phases are huge, but on a phased job every commissioning rule is meant
+# per phase ("L4 follows L3 in the same phase"), not across the whole schedule.
+_SAME_PHASE_RE = re.compile(
+    r"(?i)\b(?:in|within|for)\s+the\s+same\s+phase\b|\bsame[- ]phase\b"
+    r"|\bper\s+phase\b|\bwithin\s+each\s+phase\b|\bphase\s+by\s+phase\b")
+
 
 def _clean(s: str) -> str:
     """Strip the filler off a phrase so it matches activity names sensibly."""
@@ -132,15 +140,18 @@ def parse_directive(text: str) -> Directive:
 
     body = re.sub(r"(?i)^\s*(?:please\s+|note[:,]?\s+|remember[:,]?\s+)", "", raw)
     body = body.rstrip(".")
-    same_area = bool(_SAME_AREA_RE.search(body))
-    # the same-area qualifier is not part of either side of the ordering
-    stripped = _SAME_AREA_RE.sub(" ", body)
+    same_phase = bool(_SAME_PHASE_RE.search(body))
+    stripped = _SAME_PHASE_RE.sub(" ", body)
+    same_area = bool(_SAME_AREA_RE.search(stripped))
+    # the scope qualifiers are not part of either side of the ordering
+    stripped = _SAME_AREA_RE.sub(" ", stripped).strip()
 
     m = _AFTER_RE.match(stripped) or _BEFORE_RE.match(stripped)
     if m:
         subj, aft = _clean(m.group("subj")), _clean(m.group("after"))
         if subj and aft and subj.lower() != aft.lower():
-            d.kind, d.subject, d.after, d.same_area = ORDER, subj, aft, same_area
+            d.kind, d.subject, d.after = ORDER, subj, aft
+            d.same_area, d.same_phase = same_area, same_phase
             return d
 
     m = _SEQ_RE.search(body)
@@ -174,19 +185,23 @@ def ground(project, d: Directive) -> Directive:
                 f"nothing in this schedule is called '{missing}', so there is "
                 f"nothing to enforce — kept as guidance")
     elif d.kind == SEQUENCE:
-        d.matched_subject = sum(1 for a in acts
-                                if family_index(d.family, a.name) is not None)
+        d.matched_subject = sum(
+            1 for a in acts
+            if family_index(d.family, a.name) is not None
+            or family_index(d.family, where_of(project, a)) is not None)
         if d.matched_subject < 2:
             d.kind, d.note_reason = NOTE, (
-                f"only {d.matched_subject} activity names carry a '{d.family}' "
-                f"number, so there is no sequence to enforce — kept as guidance")
+                f"only {d.matched_subject} activities sit in a numbered "
+                f"'{d.family}' room, so there is no sequence to enforce — "
+                f"kept as guidance")
     return d
 
 
 def describe(d: Directive) -> str:
     """One line saying what was understood — shown back before anything uses it."""
     if d.kind == ORDER:
-        where = " (within the same area)" if d.same_area else ""
+        where = ((" (within the same area)" if d.same_area else "")
+                 + (" (within the same phase)" if d.same_phase else ""))
         seen = (f" — {d.matched_after} ↔ {d.matched_subject} activities"
                 if d.matched_after or d.matched_subject else "")
         return f"'{d.subject}' must come after '{d.after}'{where}{seen}"
@@ -207,8 +222,11 @@ def _norm(s: str) -> str:
 
 @lru_cache(maxsize=4096)
 def _phrase_words(phrase: str) -> Tuple[str, ...]:
+    # Digits survive the length filter: "Level 3 Commissioning" and "Level 4
+    # Commissioning" differ ONLY in the digit, and dropping it would make the
+    # two phrases identical — a rule about L4 silently matching L3 milestones.
     return tuple(w for w in _norm(phrase).split()
-                 if w not in _STOP and len(w) > 1)
+                 if w not in _STOP and (len(w) > 1 or w.isdigit()))
 
 
 def phrase_matches(phrase: str, name: str) -> bool:
@@ -223,7 +241,11 @@ def phrase_matches(phrase: str, name: str) -> bool:
     if not words:
         return False
     hay = _norm(name)
-    return all(w in hay for w in words)
+    toks = set(hay.split())
+    # A digit must stand alone — "4" as a substring would find "PH4" or "400A"
+    # and quietly widen the rule. A word may match as a prefix, so
+    # "termination" still finds "Terminations".
+    return all((w in toks) if w.isdigit() else (w in hay) for w in words)
 
 
 _FAMILY_NUM_RE_CACHE: Dict[str, Any] = {}
@@ -260,7 +282,8 @@ def _locus(name: str) -> frozenset:
     out = set(_area_tags(name or ""))
     for m in _ROOM_RE.finditer(name or ""):
         word = m.group(1).lower()
-        if word in _STOP or word in ("ph", "phase", "l", "lvl", "level"):
+        # "P1"/"PH2" are phases, not rooms — _AREA_RE already reads those.
+        if word in _STOP or word in ("p", "ph", "phase", "l", "lvl", "level"):
             continue
         out.add(f"{word}{int(m.group(2))}")
     return frozenset(out)
@@ -283,30 +306,73 @@ def _place(name: str) -> frozenset:
     return frozenset(t for t in _locus(name) if not t.startswith("ph"))
 
 
-def directive_verdict(d: Directive, pred_name: str, succ_name: str) -> Optional[str]:
+def _phases(name: str) -> frozenset:
+    return frozenset(t for t in _locus(name) if t.startswith("ph"))
+
+
+def where_of(project, act) -> str:
+    """
+    The activity's folder path, minus the root node.
+
+    On this kind of job the room is IN the path, not the name: "Pull Wire"
+    says nothing, "Phase 1 (Build-Out) / MV Rooms / MV 105" says everything.
+    The root comes off because it is the project's own code ("25-1539-INT-1"),
+    which reads as a room number and would hand every activity on the job the
+    same false shared place.
+    """
+    from .logic_advisor import wbs_path
+    path = wbs_path(project, act)
+    return path.split(" / ", 1)[1] if " / " in path else ""
+
+
+def directive_verdict(d: Directive, pred_name: str, succ_name: str,
+                      pred_where: str = "", succ_where: str = "") -> Optional[str]:
     """
     What this directive says about pred -> succ.
 
       "supports"   the directive asks for exactly this
       "violates"   the directive forbids it (it is the reverse)
       None         the directive has nothing to say about this pair
+
+    pred_where / succ_where are the WBS paths. The WORK is matched on the name
+    alone, but the PLACE — room, phase — is read from name and path together,
+    because "Terminations" under "MV 105" carries its room in the folder.
     """
     if not d.enabled:
         return None
+    p_here = f"{pred_name} {pred_where}"
+    s_here = f"{succ_name} {succ_where}"
 
     if d.kind == ORDER:
         if phrase_matches(d.after, pred_name) and phrase_matches(d.subject, succ_name):
+            if d.same_phase:
+                pf, sf = _phases(p_here), _phases(s_here)
+                if not (pf and sf and (pf & sf)):
+                    return None            # different phases, or phase unknown
             if d.same_area:
-                pp, sp = _place(pred_name), _place(succ_name)
+                pp, sp = _place(p_here), _place(s_here)
                 if pp and sp and not (pp & sp):
                     return None            # different rooms — rule does not apply
             return "supports"
         if phrase_matches(d.after, succ_name) and phrase_matches(d.subject, pred_name):
+            if d.same_phase:
+                pf, sf = _phases(p_here), _phases(s_here)
+                if pf and sf and not (pf & sf):
+                    return None            # reversed, but in different phases
+            if d.same_area:
+                pp, sp = _place(p_here), _place(s_here)
+                if pp and sp and not (pp & sp):
+                    return None
             return "violates"
         return None
 
     if d.kind == SEQUENCE:
-        i, j = family_index(d.family, pred_name), family_index(d.family, succ_name)
+        i = family_index(d.family, pred_name)
+        j = family_index(d.family, succ_name)
+        if i is None:
+            i = family_index(d.family, pred_where)
+        if j is None:
+            j = family_index(d.family, succ_where)
         if i is None or j is None:
             return None
         # "ER rooms run sequential" means room N's pull is followed by room
@@ -325,12 +391,13 @@ def directive_verdict(d: Directive, pred_name: str, succ_name: str) -> Optional[
     return None
 
 
-def verdicts(directives: List[Directive], pred_name: str,
-             succ_name: str) -> Tuple[List[Directive], List[Directive]]:
+def verdicts(directives: List[Directive], pred_name: str, succ_name: str,
+             pred_where: str = "", succ_where: str = ""
+             ) -> Tuple[List[Directive], List[Directive]]:
     """(supporting, violating) directives for one candidate tie."""
     sup, vio = [], []
     for d in directives:
-        v = directive_verdict(d, pred_name, succ_name)
+        v = directive_verdict(d, pred_name, succ_name, pred_where, succ_where)
         if v == "supports":
             sup.append(d)
         elif v == "violates":
@@ -357,6 +424,12 @@ def check(project, directives: List[Directive], limit: int = 200) -> Dict[str, A
 
     by_uid = {a.uid: a for a in project.activities}
     out, checked = [], 0
+    _wcache: Dict[str, str] = {}
+
+    def wo(a):
+        if a.uid not in _wcache:
+            _wcache[a.uid] = where_of(project, a)
+        return _wcache[a.uid]
 
     for r in project.relations:
         p, s = by_uid.get(r.predecessor_uid), by_uid.get(r.successor_uid)
@@ -364,7 +437,7 @@ def check(project, directives: List[Directive], limit: int = 200) -> Dict[str, A
             continue
         checked += 1
         for d in rules:
-            if directive_verdict(d, p.name, s.name) == "violates":
+            if directive_verdict(d, p.name, s.name, wo(p), wo(s)) == "violates":
                 out.append({
                     "kind": "relationship",
                     "directive": d.text, "directive_id": d.id,
@@ -395,9 +468,14 @@ def check(project, directives: List[Directive], limit: int = 200) -> Dict[str, A
             # exists in identifiable places, each row is judged against its OWN
             # place. Only when nothing shares a place — one energisation, one
             # substation — does the rule apply across the whole schedule.
-            here = _place(late.name)
-            same_place = [f for f in firsts if here and (_place(f.name) & here)]
+            here = _place(f"{late.name} {wo(late)}")
+            same_place = [f for f in firsts
+                          if here and (_place(f"{f.name} {wo(f)}") & here)]
             pool = same_place or ([] if d.same_area and here else firsts)
+            if d.same_phase:
+                lf = _phases(f"{late.name} {wo(late)}")
+                pool = [f for f in pool
+                        if lf and (_phases(f"{f.name} {wo(f)}") & lf)]
             for first in pool:
                 if first.uid == late.uid:
                     continue

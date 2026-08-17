@@ -97,6 +97,88 @@ def test_a_sentence_naming_the_same_thing_twice_is_not_a_rule():
     assert pb.parse_directive("terminations after terminations").kind == pb.NOTE
 
 
+# ── the digit is the whole difference ─────────────────────────────────────────
+
+def test_the_digit_is_kept_because_it_is_the_whole_difference():
+    """
+    "Level 3 Commissioning" and "Level 4 Commissioning" differ only in the
+    digit. Dropping short words would make the two phrases identical, and a
+    rule about L4 would silently match L3 milestones.
+    """
+    assert pb.phrase_matches("Level 3 Commissioning", "Level 3 Commissioning Start (PH1)")
+    assert not pb.phrase_matches("Level 4 Commissioning", "Level 3 Commissioning Start (PH1)")
+
+
+def test_a_digit_matches_a_whole_number_not_part_of_one():
+    assert not pb.phrase_matches("Level 4 Commissioning", "Level 40 Commissioning Suite")
+    assert not pb.phrase_matches("Panel 4", "Panel 400A Installation")
+
+
+# ── phase scoping ─────────────────────────────────────────────────────────────
+
+def test_in_the_same_phase_is_understood():
+    d = _d("Level 4 commissioning follows Level 3 commissioning in the same phase")
+    assert d.kind == pb.ORDER and d.same_phase is True
+    assert "same phase" in pb.describe(d)
+
+
+def test_a_phase_rule_supports_within_and_ignores_across():
+    d = _d("Level 4 commissioning follows Level 3 commissioning in the same phase")
+    assert pb.directive_verdict(d, "Level 3 Commissioning Finish (PH1)",
+                                "Level 4 Commissioning Start (PH1)") == "supports"
+    assert pb.directive_verdict(d, "Level 3 Commissioning Finish (PH1)",
+                                "Level 4 Commissioning Start (PH2)") is None
+
+
+def test_a_phase_rule_still_catches_the_backwards_tie_in_its_phase():
+    d = _d("Level 4 commissioning follows Level 3 commissioning in the same phase")
+    assert pb.directive_verdict(d, "Level 4 Commissioning Start (PH2)",
+                                "Level 3 Commissioning Finish (PH2)") == "violates"
+
+
+def test_the_phase_can_come_from_the_folder_not_the_name():
+    d = _d("QA/QC follows terminations in the same phase")
+    assert pb.directive_verdict(d, "Terminations", "QA/QC Inspections",
+                                "Phase 1 (Build-Out) / MV Rooms",
+                                "Phase 1 (Build-Out) / MV Rooms") == "supports"
+    assert pb.directive_verdict(d, "Terminations", "QA/QC Inspections",
+                                "Phase 1 (Build-Out) / MV Rooms",
+                                "Phase 2 (Build-Out) / MV Rooms") is None
+
+
+# ── the room lives in the folder ──────────────────────────────────────────────
+
+def test_a_same_room_rule_reads_the_room_off_the_folder():
+    """On this job "Pull Wire" says nothing — "MV Rooms / MV 105" says it all."""
+    d = _d("QA/QC follows terminations in the same room")
+    assert pb.directive_verdict(d, "Terminations", "QA/QC Inspections",
+                                "P1 / MV Rooms / MV 105",
+                                "P1 / MV Rooms / MV 105") == "supports"
+    assert pb.directive_verdict(d, "Terminations", "QA/QC Inspections",
+                                "P1 / MV Rooms / MV 105",
+                                "P1 / MV Rooms / MV 106") is None
+
+
+def test_a_sequence_family_reads_its_number_off_the_folder():
+    d = _d("MV rooms run sequential")
+    assert pb.directive_verdict(d, "Pull Wire", "Pull Wire",
+                                "P1 / MV Rooms / MV 105",
+                                "P1 / MV Rooms / MV 106") == "supports"
+    assert pb.directive_verdict(d, "Pull Wire", "Pull Wire",
+                                "P1 / MV Rooms / MV 106",
+                                "P1 / MV Rooms / MV 105") == "violates"
+
+
+def test_grounding_a_sequence_counts_the_folders_too():
+    p = _proj()
+    p.wbs_nodes += [WBSNode(uid="m5", name="MV 105", code="M5", parent_uid="w"),
+                    WBSNode(uid="m6", name="MV 106", code="M6", parent_uid="w")]
+    _act(p, "a1", "Pull Wire", "2026-02-02", "2026-02-06", wbs="m5")
+    _act(p, "a2", "Pull Wire", "2026-02-09", "2026-02-13", wbs="m6")
+    d = pb.ground(p, pb.parse_directive("MV rooms run sequential"))
+    assert d.kind == pb.SEQUENCE and d.matched_subject == 2
+
+
 # ── a rule has to name work that actually exists ──────────────────────────────
 
 def test_a_rule_shaped_sentence_about_nothing_in_the_schedule_stays_guidance():
