@@ -1090,6 +1090,15 @@
     }
     .ctx-item:hover{background:var(--accent-glow);color:var(--accent);}
     body.edit-on .link-chip{cursor:pointer;}
+    /* Statusing popup — state plus the actual dates that define it */
+    .status-pop{display:flex;flex-direction:column;gap:7px;min-width:330px;}
+    .status-pop .sp-row{display:flex;gap:8px;align-items:flex-end;}
+    .status-pop label{
+      display:flex;flex-direction:column;gap:3px;font-size:9.5px;
+      letter-spacing:.05em;text-transform:uppercase;color:var(--text3);
+    }
+    .status-pop #sp-state{flex:1;}
+    .status-pop .sp-hint{font-size:10px;color:var(--text3);align-self:center;}
     .constraint-pop select,.constraint-pop input{
       background:var(--panel2,#0d1117);color:var(--text);
       border:1px solid var(--border2);border-radius:4px;font-size:11px;padding:3px 6px;outline:none;
@@ -1963,6 +1972,9 @@
         <span class="sched-sep"></span>
         <button class="mini-btn" onclick="bulkClearConstraints()" title="Remove all constraints from selected rows">📌✕ Clear constraints</button>
         <button class="mini-btn" onclick="openAppendNamePopup(event,{wbsScope:false})" title="Add text to the end (or start) of the selected activities' names — the existing name is kept">✎+ Add text to names</button>
+        <span class="sched-sep"></span>
+        <button class="mini-btn" onclick="bulkStatus('completed')" title="Mark the selected rows complete — actual start and finish from their forecast dates">✔ Complete</button>
+        <button class="mini-btn" onclick="bulkStatus('not started')" title="Clear the actuals on the selected rows and hand them back to the scheduler">↺ Reopen</button>
         <span class="sched-sep"></span>
         <button class="mini-btn" onclick="bulkCopy()" title="Copy the selected rows with their data and the logic between them">Copy</button>
         <button class="mini-btn" onclick="bulkCut()" title="Cut the selected rows — pasting moves them, keeping their IDs, dates and all their logic">✂ Cut</button>
@@ -3961,7 +3973,9 @@ function renderActivityRow(a, wbsUid, hidden) {
       <td class="sched-date col-latefinish">${fmtDate(a.late_finish)}</td>
       <td class="sched-links">${predChips || (isEditMode ? '' : '<span style="color:var(--text3)">—</span>')}${predAdd}</td>
       <td class="sched-links">${succChips || (isEditMode ? '' : '<span style="color:var(--text3)">—</span>')}${succAdd}</td>
-      <td class="col-status"><span class="sched-status ${stCls}">${escHtml(a.status)}</span></td>
+      <td class="col-status editable" data-actid="${escAttr(aid)}" data-edit="status"
+          data-val="${escAttr(a.status)}"
+          title="Double-click to status this activity"><span class="sched-status ${stCls}">${escHtml(a.status)}</span></td>
       <td class="col-pct editable" data-actid="${escAttr(aid)}" data-edit="pct"
           data-val="${a.percent_complete || 0}"
           style="text-align:right;font-family:var(--mono);font-size:10px;"
@@ -4872,6 +4886,10 @@ function beginCellEdit(td){
   // Activity type is a fixed list → dropdown.
   if(field === 'type'){ beginSelectEdit(td, actId); return; }
 
+  // Status is not a value you type — it is defined by which actual dates
+  // exist, so it gets a picker that collects them.
+  if(field === 'status'){ openStatusEditor(td, actId); return; }
+
   let orig;
   if(field === 'duration' || field === 'pct' || field === 'blu' || field === 'elec') orig = td.dataset.val;
   else if(field === 'id')  orig = actId;
@@ -5281,6 +5299,106 @@ const CONSTRAINT_TYPES = [
   'Finish On', 'Finish On Or Before', 'Finish On Or After',
   'Must Start On', 'Must Finish On',
 ];
+
+// ── Statusing ──────────────────────────────────────────────────────────────
+// P6 defines status by which ACTUAL dates exist, so this collects them rather
+// than letting a status be typed: In Progress needs an actual start and no
+// actual finish — the state a running activity sits in all week — and
+// Completed needs both. Picking a state fills the dates in from what the row
+// already forecasts, so the common case is two clicks.
+
+function openStatusEditor(td, actId){
+  closeStatusEditor();
+  const rec = actDataById(actId) || {};
+  const cur = (rec.status || 'Not Started');
+  const today = new Date().toISOString().slice(0, 10);
+  const ps = (rec.planned_start || '').slice(0, 10);
+  const pf = (rec.planned_finish || '').slice(0, 10);
+  const aS = (rec.actual_start || '').slice(0, 10) || (ps && ps < today ? ps : today);
+  const aF = (rec.actual_finish || '').slice(0, 10) || pf || aS;
+
+  const pop = document.createElement('div');
+  pop.id = 'status-pop';
+  pop.className = 'constraint-pop status-pop';
+  pop.innerHTML = `
+    <div class="sp-row">
+      <select id="sp-state">
+        <option value="not started"${cur==='Not Started'?' selected':''}>Not Started</option>
+        <option value="in progress"${cur==='In Progress'?' selected':''}>In Progress — started, not finished</option>
+        <option value="completed"${cur==='Completed'?' selected':''}>Completed</option>
+      </select>
+    </div>
+    <div class="sp-row" id="sp-dates">
+      <label id="sp-as-lbl">Actual start
+        <input id="sp-as" type="text" class="mono" value="${escAttr(fmtDate(aS))}"
+               placeholder="dd-mmm-yy"></label>
+      <label id="sp-af-lbl">Actual finish
+        <input id="sp-af" type="text" class="mono" value="${escAttr(fmtDate(aF))}"
+               placeholder="dd-mmm-yy"></label>
+    </div>
+    <div class="sp-row">
+      <button class="mini-btn ok" id="sp-ok">Apply</button>
+      <span class="sp-hint" id="sp-hint"></span>
+    </div>`;
+  document.body.appendChild(pop);
+  const r = td.getBoundingClientRect();
+  pop.style.top  = (window.scrollY + r.bottom + 4) + 'px';
+  pop.style.left = (window.scrollX + Math.max(8, Math.min(r.left - 120, window.innerWidth - 380))) + 'px';
+
+  const state = pop.querySelector('#sp-state');
+  const sync = () => {
+    const v = state.value;
+    pop.querySelector('#sp-as-lbl').style.display = v === 'not started' ? 'none' : '';
+    pop.querySelector('#sp-af-lbl').style.display = v === 'completed' ? '' : 'none';
+    pop.querySelector('#sp-hint').textContent =
+      v === 'not started' ? 'Clears both actuals — back to a forecast'
+      : v === 'in progress' ? 'The finish stays a forecast'
+      : 'Both dates become actuals';
+  };
+  state.addEventListener('change', sync);
+  sync();
+
+  const apply = () => {
+    const v = state.value;
+    const cmd = {action:'set_progress', activity_id:actId, status:v};
+    if(v !== 'not started'){
+      const s = parseDateInput(pop.querySelector('#sp-as').value);
+      if(!s){ flashSched('Actual start is not a date I can read', true); return; }
+      cmd.actual_start = s;
+    }
+    if(v === 'completed'){
+      const f = parseDateInput(pop.querySelector('#sp-af').value);
+      if(!f){ flashSched('Actual finish is not a date I can read', true); return; }
+      cmd.actual_finish = f;
+    }
+    closeStatusEditor();
+    directEdit([cmd], `${actId} → ${v}`);
+  };
+  pop.querySelector('#sp-ok').addEventListener('click', apply);
+  pop.addEventListener('keydown', ev => {
+    if(ev.key === 'Enter'){ ev.preventDefault(); apply(); }
+    else if(ev.key === 'Escape'){ closeStatusEditor(); }
+  });
+  setTimeout(() => document.addEventListener('mousedown', outsideStatusClose), 0);
+}
+function outsideStatusClose(e){
+  const p = document.getElementById('status-pop');
+  if(p && !p.contains(e.target)) closeStatusEditor();
+}
+function closeStatusEditor(){
+  const p = document.getElementById('status-pop');
+  if(p) p.remove();
+  document.removeEventListener('mousedown', outsideStatusClose);
+}
+
+/** Status every selected row in one command — the weekly update. */
+function bulkStatus(state){
+  const ids = [...selectedIds];
+  if(!ids.length){ flashSched('Select some rows first', true); return; }
+  const cmds = ids.map(id => ({action:'set_progress', activity_id:id, status:state}));
+  clearSelection();
+  directEdit(cmds, `${ids.length} activit${ids.length===1?'y':'ies'} → ${state}`);
+}
 
 function openConstraintEditor(td, actId){
   closeConstraintEditor();
@@ -6397,6 +6515,11 @@ function onSchedContextMenu(e){
     ['✂ Cut selected',  () => bulkCut()],
     ...(clipCount ? [[`${pasteIcon} ${pasteVerb} ${clipCount} row${clipCount === 1 ? '' : 's'} into this folder`,
                       () => pasteIntoWbs(tr.dataset.wbs)]] : []),
+    ['---'],
+    ['▶ Mark started…',  () => { const c = findCell(actId, 'status'); if(c) beginCellEdit(c); }],
+    [`✔ Mark ${selectedIds.size > 1 ? selectedIds.size + ' complete' : 'complete'}`,
+                                    () => bulkStatus('completed')],
+    ['↺ Reopen (clear actuals)',    () => bulkStatus('not started')],
     ['---'],
     ['⛓ Link selected in sequence', () => bulkLinkSequence()],
     ['⇊ Fill duration down',        () => bulkFillDown()],

@@ -13,7 +13,8 @@ Supported actions (must match edit_engine.py):
   move_activity_wbs, move_activities,
   copy_activities, set_data_date,
   bulk_rename, bulk_update_duration,
-  set_constraint, clear_constraint, set_actual_date, update_planned_date,
+  set_constraint, clear_constraint, set_actual_date, set_progress,
+  update_planned_date,
   recommend_logic, update_udf, bulk_rules,
   update_labor_units, bulk_clear_constraints, bulk_append_name
 
@@ -517,6 +518,19 @@ add_wbs_for_each:
 
 move_activity_wbs:
   {"action": "move_activity_wbs", "activity_id": "A1040", "wbs_name": "Finishes"}
+
+set_progress:
+  Status an activity — the weekly update. P6 defines status by which ACTUAL
+  dates exist, so use this rather than setting a date and a status separately.
+    not started  clears both actuals, back to a forecast
+    in progress  an actual START, finish still forecast (a running activity)
+    completed    both actuals, 100%
+  Dates default to the row's own forecast, so "mark X started" needs no date.
+  {"action": "set_progress", "activity_id": "A1040", "status": "in progress"}
+  {"action": "set_progress", "activity_id": "A1040", "status": "in progress",
+   "actual_start": "2026-03-02"}
+  {"action": "set_progress", "activity_id": "A1040", "status": "completed",
+   "actual_start": "2026-03-02", "actual_finish": "2026-03-06"}
 
 move_activities:
   Move a whole set of activities into one folder in a single command — the

@@ -26,6 +26,7 @@ Supported commands:
   set_constraint            — Set a date constraint on an activity
   clear_constraint          — Remove a date constraint from an activity
   set_actual_date           — Move (or clear) an actual start/finish date
+  set_progress              — Status a row: not started / in progress / completed
   update_planned_date       — Set a planned start, or a finish (adjusts duration)
   update_udf                — Set a user-defined field (e.g. Number of Electricians)
   bulk_rules                — If/then find-and-change across the schedule or one folder
@@ -137,9 +138,15 @@ def _no_activity(project: Project, needle) -> str:
     back the real neighbours turns a dead end into the answer.
     """
     cands = [(a.activity_id, a.name) for a in project.activities]
-    return (f"Activity '{needle}' not found in this schedule."
-            + (_suggest(needle, cands) or
-               " Use an activity_id exactly as it appears in the schedule context."))
+    hint = _suggest(needle, cands)
+    if not hint and cands:
+        # Nothing scored close enough, but handing back NO real id is what
+        # sends an agent looking for another guess. A few genuine ones give it
+        # something to check the shape against.
+        shown = "; ".join(f"{i} — {n}" for i, n in cands[:3])
+        hint = (f" Real activity IDs in this schedule look like: {shown}."
+                f" Use one exactly as it appears.")
+    return f"Activity '{needle}' not found in this schedule.{hint}"
 
 
 def _no_wbs(project: Project, needle) -> str:
@@ -275,6 +282,8 @@ def apply_command(project: Project, command: Dict[str, Any]) -> Tuple[bool, str]
             return _bulk_rename(project, command)
         elif action == "bulk_update_duration":
             return _bulk_update_duration(project, command)
+        elif action in ("set_progress", "set_status"):
+            return _set_progress(project, command)
         elif action == "set_actual_date":
             return _set_actual_date(project, command)
         elif action == "update_planned_date":
@@ -1488,6 +1497,110 @@ def _update_planned_date(project: Project, cmd: Dict) -> Tuple[bool, str]:
     a.planned_finish = date[:10]
     note = _carry_constraint(a, "finish", new_d, old_finish) if carry else ""
     return True, f"'{a.name}' finish → {date[:10]} (duration now {days}d){note}"
+
+
+_STATUS_ALIASES = {
+    "not started": "Not Started", "notstarted": "Not Started", "ns": "Not Started",
+    "new": "Not Started", "reopen": "Not Started", "unstart": "Not Started",
+    "in progress": "In Progress", "inprogress": "In Progress", "started": "In Progress",
+    "start": "In Progress", "wip": "In Progress", "active": "In Progress",
+    "completed": "Completed", "complete": "Completed", "done": "Completed",
+    "finished": "Completed", "finish": "Completed",
+}
+
+
+def _set_progress(project: Project, cmd: Dict) -> Tuple[bool, str]:
+    """
+    Status an activity the way P6 does — the weekly update, in one command.
+
+    P6 defines status by which actual dates exist, so setting one without the
+    other leaves a row that contradicts itself. The three states and what each
+    one means:
+
+      Not Started  no actuals at all, 0% and the full duration remaining
+      In Progress  an actual START and no actual finish; the finish is still a
+                   forecast, which is the state a running activity is in all
+                   week and the one that was hardest to reach before
+      Completed    both actuals, 100%, nothing remaining
+
+    Dates default to what the row already forecasts, so "mark this started" is
+    one click and "started on Tuesday" is the same command with a date:
+
+      status           not started | in progress | completed
+      actual_start     defaults to the planned start (or the data date if the
+                       planned start is in the future — you cannot have started
+                       work that has not been scheduled yet)
+      actual_finish    completed only; defaults to the planned finish
+      percent_complete optional; in progress defaults to 50 if not already set
+
+    Moving one date on its own stays with set_actual_date.
+    """
+    import datetime as _d
+
+    matches = _find_activity(project, cmd.get("activity_id"), cmd.get("target_name"))
+    if not matches:
+        raise EditError(_no_activity(project, cmd.get("activity_id") or cmd.get("target_name")))
+    if len(matches) > 1 and not cmd.get("apply_to_all"):
+        raise EditError(f"Found {len(matches)} activities. Use activity_id, "
+                        f"or set apply_to_all=true.")
+
+    raw = str(cmd.get("status", "")).strip().lower()
+    status = _STATUS_ALIASES.get(raw)
+    if not status:
+        raise EditError("status must be 'not started', 'in progress' or 'completed' "
+                        f"— got {cmd.get('status')!r}")
+
+    def _iso(v):
+        if not v:
+            return None
+        try:
+            return _d.date.fromisoformat(str(v)[:10]).isoformat()
+        except ValueError:
+            raise EditError(f"Not a valid date: {v}")
+
+    a_start = _iso(cmd.get("actual_start"))
+    a_finish = _iso(cmd.get("actual_finish"))
+    today = _iso(project.data_date) or _d.date.today().isoformat()
+
+    done = []
+    for a in matches:
+        if status == "Not Started":
+            a.actual_start = a.actual_finish = None
+            a.percent_complete = 0.0
+            a.remaining_duration = a.planned_duration
+            a.status = "Not Started"
+        elif status == "In Progress":
+            # A start that has not happened yet is not an actual. Fall back to
+            # the data date so "mark started" on future work still means today.
+            start = a_start or a.actual_start or str(a.planned_start or "")[:10] or today
+            a.actual_start = min(start, today) if start > today else start
+            a.actual_finish = None
+            pct = cmd.get("percent_complete")
+            if pct is None:
+                pct = a.percent_complete if 0 < (a.percent_complete or 0) < 100 else 50.0
+            a.percent_complete = max(0.0, min(99.0, float(pct)))
+            a.remaining_duration = a.planned_duration * (1 - a.percent_complete / 100.0)
+            a.status = "In Progress"
+        else:
+            a.actual_start = (a_start or a.actual_start
+                              or str(a.planned_start or "")[:10] or today)
+            a.actual_finish = (a_finish or a.actual_finish
+                               or str(a.planned_finish or "")[:10] or a.actual_start)
+            if a.actual_finish < a.actual_start:
+                raise EditError(f"'{a.name}': actual finish {a.actual_finish} is before "
+                                f"the actual start {a.actual_start}")
+            a.percent_complete = 100.0
+            a.remaining_duration = 0.0
+            a.status = "Completed"
+        done.append(a.activity_id)
+
+    where = (f"{done[0]}" if len(done) == 1 else f"{len(done)} activities")
+    detail = ""
+    if status == "In Progress":
+        detail = f" (actual start {matches[0].actual_start})"
+    elif status == "Completed":
+        detail = f" ({matches[0].actual_start} → {matches[0].actual_finish})"
+    return True, f"{where} → {status}{detail}"
 
 
 def _set_actual_date(project: Project, cmd: Dict) -> Tuple[bool, str]:
