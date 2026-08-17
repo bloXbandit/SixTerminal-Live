@@ -867,6 +867,14 @@ def find_activity_in(project: Project, text: str) -> List[Activity]:
         hit = by_id.get(m.group(1).lower())
         if hit:
             return [hit]
+    # The regex knows the shapes ids usually take (MDC1.PH1.CO.CL.4340, A00042).
+    # A schedule is free to number its rows any way it likes, so also take any
+    # bare word that IS an id verbatim. Requiring an exact match against a real
+    # row means this can widen what is recognised but never invent anything.
+    for word in re.split(r"[\s,;:()\[\]?!]+", text or ""):
+        hit = by_id.get(word.strip(".").lower())
+        if hit:
+            return [hit]
     for m in _QUOTED_RE.finditer(text or ""):
         needle = m.group(1).strip().lower()
         exact = [a for a in project.activities if a.name.strip().lower() == needle]

@@ -281,9 +281,13 @@ def _append_chat(role: str, text: str, context: str = None):
     sess = _get_session()
     if sess is not None:
         entry = {"role": role, "text": text}
-        if context:
+        if context and context != text:
             entry["context"] = context
         sess["chat_history"].append(entry)
+        # Only the recent tail is ever shown to the model, but an all-day
+        # session should not hoard every word it ever exchanged in memory.
+        if len(sess["chat_history"]) > 200:
+            del sess["chat_history"][:-200]
 
 def _snapshot_project(project):
     """
@@ -1403,7 +1407,10 @@ def edit():
                 instruction,
                 project_summary=llm_ctx,
                 edit_history=sess["edit_history"],
-                chat_history=sess["chat_history"],
+                # This turn's own instruction is already the prompt — replaying
+                # it as the last conversation line makes the user look like they
+                # said it twice.
+                chat_history=sess["chat_history"][:-1],
                 model_key=_settings["model_key"],
                 api_key=_settings["api_key"],
             )
@@ -1466,7 +1473,7 @@ def edit():
                     retry_instruction,
                     project_summary=project.llm_context() + _brain_for(project).context_block(),
                     edit_history=[],
-                    chat_history=sess["chat_history"],
+                    chat_history=sess["chat_history"][:-1],
                     model_key=_settings["model_key"],
                     api_key=_settings["api_key"],
                 )
@@ -2957,8 +2964,16 @@ def _schedule_view_inner():
 
 @app.route("/api/messages", methods=["GET"])
 def get_messages():
+    """
+    The conversation as the USER saw it, for restoring the panel after a
+    refresh. The model-only `context` on a turn is deliberately not sent —
+    the browser renders `text`, so shipping the fuller record would be both
+    wasted bytes and a copy of the agent's working notes on the client.
+    """
     sess = _get_session()
-    return jsonify({"messages": sess["chat_history"] if sess else []})
+    msgs = sess["chat_history"] if sess else []
+    return jsonify({"messages": [{"role": m.get("role"), "text": m.get("text", "")}
+                                 for m in msgs]})
 
 
 @app.route("/api/clear", methods=["POST"])
