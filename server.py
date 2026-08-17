@@ -366,8 +366,15 @@ def checkpoints():
         _push_undo(f"Before restoring '{hit['label']}'")
         sess["project"] = _snapshot_project(hit["project"])
         sess["redo_stack"].clear()
-        sess["edit_history"].append(f"Restored checkpoint '{hit['label']}'")
+        sess["edit_history"].append({
+            "instruction": f"[direct] Restored checkpoint '{hit['label']}'",
+            "commands":    [],
+            "results":     [{"action": "restore_checkpoint", "success": True,
+                             "message": f"Schedule rolled back to '{hit['label']}'"}],
+        })
         _mark_dirty(_active_id[0])
+        _append_chat("system_result",
+                     f"Restored checkpoint '{hit['label']}' — schedule rolled back to that snapshot")
         p = sess["project"]
         return jsonify({"success": True, "restored": hit["label"],
                         "activity_count": len(p.activities),
@@ -432,6 +439,10 @@ def _persist(pid):
             # What the user told the agent about this job rides with the
             # schedule — losing it on a restart would mean re-teaching it.
             "brain": brain.to_json() if brain and brain.directives else None,
+            # The conversation too — the agent reasons from it now, and a
+            # restart that kept the schedule but dropped the record would
+            # leave it unable to answer for what it already did.
+            "chat": sess["chat_history"][-80:],
         })
     except Exception as e:
         return False, f"serialize failed: {e}"
@@ -514,6 +525,10 @@ def _restore_from_cloud():
         meta = it.get("meta") or {}
         sess = _make_session(pid, meta.get("source_name") or f"{pid}.xml")
         sess["project"] = project
+        saved_chat = meta.get("chat")
+        if isinstance(saved_chat, list):
+            sess["chat_history"] = [m for m in saved_chat
+                                    if isinstance(m, dict) and "role" in m and "text" in m]
         _projects[pid] = sess
         # Restore what was said about this job. Keyed on the P6 project id, so
         # two stored revisions of the same job land on the same brain rather
@@ -1555,6 +1570,7 @@ def undo():
     sess["project"] = snapshot
     project = snapshot
     _mark_dirty(_active_id[0])
+    _append_chat("system_result", f"Undid: {label} — schedule rolled back")
     return jsonify({"success": True, "undone_label": label, "undo_count": len(stack),
                     "redo_count": len(sess["redo_stack"]), "project_name": project.name,
                     "activity_count": len(project.activities), "wbs_count": len(project.wbs_nodes),
@@ -1574,6 +1590,7 @@ def redo():
     sess["last_undone"] = None
     sess["project"] = snapshot
     project = snapshot
+    _append_chat("system_result", f"Redid: {label}")
     return jsonify({"success": True, "redone_label": label, "undo_count": len(sess["undo_stack"]),
                     "redo_count": len(stack), "project_name": project.name,
                     "activity_count": len(project.activities), "wbs_count": len(project.wbs_nodes),

@@ -767,6 +767,9 @@ def _build_session_history(edit_history: Optional[list]) -> str:
         "current state and don't repeat or undo them unless asked.)",
     ]
     for i, entry in enumerate(recent, max(1, len(edit_history) - 9)):
+        if not isinstance(entry, dict):
+            lines.append(f"[{i}] {entry}")
+            continue
         instruction = entry.get("instruction", "")
         results = entry.get("results", [])
         summary = " | ".join(
@@ -796,8 +799,8 @@ def _build_conversation(chat_history: Optional[list]) -> str:
                "system_result": "System"}.get(role, role)
         body = entry.get("context") or entry.get("text", "")
         body = body.strip()
-        if len(body) > 1200:
-            body = body[:1200] + " …"
+        if len(body) > 2400:
+            body = body[:2400] + " …"
         lines.append(f"{who}: {body}")
     lines.append("---")
     return "\n".join(lines)
