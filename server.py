@@ -45,6 +45,7 @@ from engine.logic_advisor import (milestone_report, milestone_drivers,
                                   area_digest, area_report, procurement_report,
                                   sequence_recommendations)
 from engine import logic_advisor as _advisor
+from engine import project_brain
 
 TEMPLATE_DIR = str(ROOT / "ui" / "templates")
 STATIC_DIR   = str(ROOT / "ui" / "static")
@@ -221,6 +222,41 @@ def _get_session() -> dict:
     return _projects.get(_active_id[0]) if _active_id[0] else None
 
 
+# ── Per-JOB knowledge (survives re-upload) ────────────────────────────────────
+#
+# Sessions are keyed by filename, so test6.xml and test6_edited.xml are two
+# separate projects — which is right for schedules, and wrong for what the user
+# has TOLD the agent about the job. That knowledge belongs to the job, not to
+# the file: re-export from P6 tomorrow and it must still be there.
+#
+# So brains are keyed on P6's own project id, which stays put through every
+# re-export and rename. Two revisions of the same job share one brain; two
+# different jobs never see each other's, whatever they are called.
+_brains: dict = {}      # project_key -> Brain
+
+
+def _brain_for(project) -> "project_brain.Brain":
+    key = project_brain.project_key(project)
+    b = _brains.get(key)
+    if b is None:
+        b = project_brain.Brain(key)
+        _brains[key] = b
+    return b
+
+
+def _active_brain():
+    """The brain for whatever is open, or None if nothing is."""
+    sess = _get_session()
+    if not sess or not sess.get("project"):
+        return None
+    return _brain_for(sess["project"])
+
+
+def _active_directives() -> list:
+    b = _active_brain()
+    return b.directives if b else []
+
+
 def _unique_pid(stem: str) -> str:
     if stem not in _projects:
         return stem
@@ -377,10 +413,14 @@ def _persist(pid):
         return False, "no project"
     try:
         xml = _project_to_xml_bytes(sess["project"])
+        brain = _brains.get(project_brain.project_key(sess["project"]))
         return cloud_store.save(pid, xml, {
             "source_name": sess.get("source_name"),
             "project_name": sess["project"].name,
             "activity_count": len(sess["project"].activities),
+            # What the user told the agent about this job rides with the
+            # schedule — losing it on a restart would mean re-teaching it.
+            "brain": brain.to_json() if brain and brain.directives else None,
         })
     except Exception as e:
         return False, f"serialize failed: {e}"
@@ -464,6 +504,15 @@ def _restore_from_cloud():
         sess = _make_session(pid, meta.get("source_name") or f"{pid}.xml")
         sess["project"] = project
         _projects[pid] = sess
+        # Restore what was said about this job. Keyed on the P6 project id, so
+        # two stored revisions of the same job land on the same brain rather
+        # than one overwriting the other — first one wins, and re-saving keeps
+        # it, because they carry the same directives.
+        raw_brain = meta.get("brain")
+        if raw_brain:
+            key = project_brain.project_key(project)
+            if key not in _brains:
+                _brains[key] = project_brain.Brain.from_json(raw_brain)
         if _active_id[0] is None:
             _active_id[0] = pid
 
@@ -1243,7 +1292,8 @@ def edit():
     if force_commands is None and _advisor.tie_question(instruction):
         matches = _advisor.find_activity_in(project, instruction)
         if len(matches) == 1:
-            opts = _advisor.tie_options(project, matches[0])
+            opts = _advisor.tie_options(project, matches[0],
+                                        directives=_active_directives())
             if opts["predecessors"] or opts["successors"]:
                 _append_chat("assistant",
                              f"Options for {opts['activity_id']} — {opts['name']}")
@@ -1254,7 +1304,7 @@ def edit():
         if force_commands is not None:
             commands = force_commands
         else:
-            llm_ctx = project.llm_context()
+            llm_ctx = project.llm_context() + _brain_for(project).context_block()
             if sess.get("last_undone"):
                 llm_ctx += f"\n\nRECENT UNDO: The user just undid: \"{sess['last_undone']}\". If asked to redo, you know exactly what was done."
             commands, raw_llm = interpret(
@@ -1311,7 +1361,7 @@ def edit():
                 )
                 commands2, raw_llm2 = interpret(
                     retry_instruction,
-                    project_summary=project.llm_context(),
+                    project_summary=project.llm_context() + _brain_for(project).context_block(),
                     edit_history=[],
                     model_key=_settings["model_key"],
                     api_key=_settings["api_key"],
@@ -1335,6 +1385,17 @@ def edit():
                 msg = chat_message or "..."
                 _append_chat("assistant", msg)
                 return jsonify({"type": "chat", "message": msg, "raw_llm": raw_llm})
+
+        # A tie that runs backwards to something the user stated about this job
+        # is stopped and reported — not silently made, and not silently
+        # refused. They get the contradiction and a "do it anyway" button,
+        # because sometimes the rule has an exception and only they know it.
+        if not data.get("brain_override"):
+            conflicts = _brain_conflicts(project, edit_commands)
+            if conflicts:
+                return jsonify({"type": "brain_conflict", "instruction": instruction,
+                                "commands": edit_commands, "conflicts": conflicts,
+                                "raw_llm": raw_llm})
 
         _push_undo(instruction)
         results = apply_commands(project, edit_commands)
@@ -1443,6 +1504,14 @@ def direct_edit():
     label = (data.get("label") or "Direct edit").strip()
     if not commands or not isinstance(commands, list):
         return jsonify({"error": "commands (a non-empty list) is required"}), 400
+    # A tie drawn by hand in the grid gets the same check as one the agent
+    # proposes — a rule you stated should not depend on which door the edit
+    # came through.
+    if not data.get("brain_override"):
+        conflicts = _brain_conflicts(sess["project"], commands)
+        if conflicts:
+            return jsonify({"type": "brain_conflict", "commands": commands,
+                            "label": label, "conflicts": conflicts})
     return _apply_direct(commands, label)
 
 
@@ -1551,7 +1620,8 @@ def advise_milestones():
     except (TypeError, ValueError):
         limit = 3
     try:
-        return jsonify(milestone_report(sess["project"], limit_per_milestone=limit))
+        return jsonify(milestone_report(sess["project"], limit_per_milestone=limit,
+                                        directives=_active_directives()))
     except Exception as e:
         return jsonify({"error": f"Logic advice failed: {e}",
                         "trace": traceback.format_exc()}), 500
@@ -1664,8 +1734,129 @@ def advise_wire():
     node = next((w for w in sess["project"].wbs_nodes if w.uid == uid), None)
     if node is None:
         return jsonify({"error": "That folder is not in this schedule"}), 404
-    out = wire_folder(sess["project"], uid, min_confidence=floor)
+    out = wire_folder(sess["project"], uid, min_confidence=floor,
+                      directives=_active_directives())
     out["wbs_name"] = node.name
+    return jsonify(out)
+
+
+# ── The project brain ─────────────────────────────────────────────────────────
+
+def _brain_conflicts(project, commands: list) -> list:
+    """
+    Ties in this batch that run backwards to a rule the user stated.
+
+    Only relationship creation is checked. Everything else — renames, dates,
+    durations — is the user's business and no rule here claims otherwise.
+    """
+    directives = _brain_for(project).rules
+    if not directives:
+        return []
+    from engine.edit_engine import _find_activity
+    out = []
+    for i, cmd in enumerate(commands or []):
+        if cmd.get("action") != "add_relation":
+            continue
+        preds = _find_activity(project, cmd.get("predecessor_id"), cmd.get("predecessor_name"))
+        succs = _find_activity(project, cmd.get("successor_id"), cmd.get("successor_name"))
+        if len(preds) != 1 or len(succs) != 1:
+            continue          # ambiguous — the disambiguation pass owns that
+        p, s = preds[0], succs[0]
+        _, vio = project_brain.verdicts(directives, p.name, s.name)
+        for d in vio:
+            out.append({
+                "command_index": i,
+                "directive": d.text,
+                "directive_id": d.id,
+                "understood": project_brain.describe(d),
+                "predecessor_id": p.activity_id, "predecessor_name": p.name,
+                "successor_id": s.activity_id, "successor_name": s.name,
+                "why": (f"This would make '{p.name}' drive '{s.name}', which is the "
+                        f"opposite of what you told me: {project_brain.describe(d)}"),
+            })
+    return out
+
+
+def _brain_payload(brain) -> dict:
+    return {
+        "key": brain.key,
+        "directives": [dict(d.to_json(), understood=project_brain.describe(d))
+                       for d in brain.directives],
+        "rule_count": len(brain.rules),
+        "note_count": len(brain.notes),
+    }
+
+
+@app.route("/api/brain", methods=["GET"])
+def brain_list():
+    """What has been said about the job that is open."""
+    brain = _active_brain()
+    if brain is None:
+        return jsonify({"error": "No schedule loaded"}), 400
+    return jsonify(_brain_payload(brain))
+
+
+@app.route("/api/brain", methods=["POST"])
+def brain_add():
+    """
+    Teach it one thing, in plain language.
+
+    The reply always says what was UNDERSTOOD, not just that it was saved —
+    a rule enforced across thousands of activities has to be confirmed before
+    it is trusted, and a sentence that only became a note should say so.
+    """
+    brain = _active_brain()
+    if brain is None:
+        return jsonify({"error": "No schedule loaded"}), 400
+    data = request.get_json() or {}
+    text = (data.get("text") or "").strip()
+    if not text:
+        return jsonify({"error": "Say something for it to learn"}), 400
+    if len(text) > 2000:
+        return jsonify({"error": "Keep it under 2000 characters — one thought at a time"}), 400
+    d = brain.add(text, _get_session()["project"])
+    _mark_dirty(_active_id[0])
+    return jsonify({"success": True,
+                    "directive": dict(d.to_json(), understood=project_brain.describe(d)),
+                    **_brain_payload(brain)})
+
+
+@app.route("/api/brain/<did>", methods=["DELETE"])
+def brain_delete(did):
+    brain = _active_brain()
+    if brain is None:
+        return jsonify({"error": "No schedule loaded"}), 400
+    if not brain.remove(did):
+        return jsonify({"error": "Not found"}), 404
+    _mark_dirty(_active_id[0])
+    return jsonify({"success": True, **_brain_payload(brain)})
+
+
+@app.route("/api/brain/<did>/toggle", methods=["POST"])
+def brain_toggle(did):
+    brain = _active_brain()
+    if brain is None:
+        return jsonify({"error": "No schedule loaded"}), 400
+    data = request.get_json() or {}
+    d = brain.toggle(did, data.get("enabled"))
+    if d is None:
+        return jsonify({"error": "Not found"}), 404
+    _mark_dirty(_active_id[0])
+    return jsonify({"success": True, "enabled": d.enabled, **_brain_payload(brain)})
+
+
+@app.route("/api/brain/check", methods=["GET"])
+def brain_check():
+    """Where the schedule as it stands breaks what was said about it."""
+    sess = _get_session()
+    if sess is None or sess["project"] is None:
+        return jsonify({"error": "No schedule loaded"}), 400
+    brain = _brain_for(sess["project"])
+    try:
+        limit = max(1, min(500, int(request.args.get("limit", 200))))
+    except (TypeError, ValueError):
+        limit = 200
+    out = project_brain.check(sess["project"], brain.directives, limit=limit)
     return jsonify(out)
 
 

@@ -1533,6 +1533,39 @@
   </div>
 </div>
 
+<!-- Project brain — how THIS job is being built -->
+<div class="modal-overlay" id="brain-modal" onclick="closeModal('brain-modal',event)">
+  <div class="modal" style="max-width:860px;">
+    <div class="modal-head"><h2><span class="mh-icon">◉</span> How this job is built</h2></div>
+    <div class="modal-body">
+      <div style="font-size:11.5px;color:var(--text2);margin-bottom:12px;">
+        Tell it in plain language and it applies to this project only — nothing
+        learnt here shows up on the next job. Anything it can check becomes a
+        <b>rule</b>: it ranks ties higher, and a tie running the other way is
+        stopped and shown to you first. Anything else is kept as a <b>note</b>
+        the agent reads.
+      </div>
+      <div style="display:flex;gap:8px;margin-bottom:6px;">
+        <input id="brain-text" type="text" style="flex:1;"
+               placeholder="e.g. QA/QC follows terminations in the same room"
+               onkeydown="if(event.key==='Enter')brainAdd()">
+        <button class="btn btn-primary btn-sm" onclick="brainAdd()">Teach it</button>
+      </div>
+      <div style="font-size:11px;color:var(--text3);margin-bottom:12px;">
+        It understands “X after Y”, “Y before X”, “X follows Y in the same room”
+        and “ER rooms run sequential”. Everything else is kept word for word.
+      </div>
+      <div id="brain-list"></div>
+      <div id="brain-check" style="margin-top:12px;"></div>
+    </div>
+    <div class="modal-foot">
+      <span id="brain-count" style="font-size:11px;color:var(--text3);margin-right:auto;"></span>
+      <button class="btn btn-ghost" onclick="brainCheck()">Check the schedule</button>
+      <button class="btn btn-primary" onclick="closeModal('brain-modal')">Done</button>
+    </div>
+  </div>
+</div>
+
 <!-- Checkpoints — a restore point you name -->
 <div class="modal-overlay" id="cp-modal" onclick="closeModal('cp-modal',event)">
   <div class="modal" style="max-width:680px;">
@@ -1976,6 +2009,10 @@
             <button class="tb-item" onclick="tbDo(openWireModal)">
               <span class="tb-item-ico">⛓</span> Wire a folder…
               <span class="tb-item-hint">propose every tie in an area, accept what fits</span></button>
+            <div class="tb-pop-sep"></div>
+            <button class="tb-item" onclick="tbDo(openBrainModal)">
+              <span class="tb-item-ico">◉</span> How this job is built…
+              <span class="tb-item-hint">tell it your sequencing rules for this project</span></button>
             <div class="tb-pop-sep"></div>
             <button class="tb-item" onclick="tbDo(openCheckpointModal)">
               <span class="tb-item-ico">⚑</span> Checkpoints…
@@ -3095,6 +3132,7 @@ async function sendInstruction() {
     else if (d.type === 'clarify')        { handleClarify(d); }
     else if (d.type === 'disambiguation') { addMsg('system', disambigCard(d)); }
     else if (d.type === 'tie_options')    { addMsg('system', tieOptionsCard(d)); }
+    else if (d.type === 'brain_conflict') { addMsg('system', brainConflictCard(d)); }
     else                                  { handleResult(d); }
   } catch(e) { removePending(); addMsg('system', errorCard(e.message)); }
   setSendDisabled(false);
@@ -3185,6 +3223,66 @@ async function applyTie(cardId, kind, idx, btn){
   btn.textContent = applied ? '✓ Added' : 'Failed';
   btn.classList.toggle('btn-primary', false);
   if(!applied) btn.disabled = false;
+}
+
+// ═══════════════════════════════════════════════════
+//  Stopped: this contradicts a rule you set
+// ═══════════════════════════════════════════════════
+// Report and stop, with the override in reach. Applying a tie that runs
+// backwards to a stated rule is sometimes right — the rule has an exception,
+// or the rule was written loosely — but it should never happen without the
+// contradiction being on screen first.
+
+const _brainCards = {};
+
+function brainConflictText(d){
+  const c = (d.conflicts || [])[0] || {};
+  return 'This contradicts a rule you set for this project.\n\n'
+    + '  You said: ' + (c.directive || '') + '\n'
+    + '  This tie: ' + (c.predecessor_id || '') + ' → ' + (c.successor_id || '') + '\n\n'
+    + (c.why || '') + '\n\nMake it anyway?';
+}
+
+function brainConflictCard(d){
+  const id = 'brain-' + Date.now();
+  _brainCards[id] = d;
+  const rows = (d.conflicts || []).map(c => `<tr>
+      <td>${escHtml(c.directive)}</td>
+      <td><span class="act-id">${escHtml(c.predecessor_id)}</span> →
+          <span class="act-id">${escHtml(c.successor_id)}</span></td>
+      <td class="tie-why">${escHtml(c.why)}</td>
+    </tr>`).join('');
+  return `<div class="disambig-card" id="${id}">
+    <div class="disambig-header">◉ Stopped — this contradicts what you told me</div>
+    <div class="disambig-subtext">Nothing has been changed.</div>
+    <table class="disambig-table">
+      <thead><tr><th>You said</th><th>The tie</th><th>Why it clashes</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+    <div class="disambig-actions">
+      <span class="disambig-hint">If the rule has an exception here, override it —
+        the rule itself stays on.</span>
+      <button class="btn btn-ghost btn-sm" onclick="document.getElementById('${id}').remove()">Leave it</button>
+      <button class="btn btn-primary btn-sm" onclick="brainOverride('${id}',this)">Do it anyway</button>
+    </div>
+  </div>`;
+}
+
+async function brainOverride(cardId, btn){
+  const d = _brainCards[cardId];
+  if(!d) return;
+  btn.disabled = true; btn.textContent = 'Applying…';
+  try{
+    const r = await fetch('/api/edit', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({instruction: d.instruction, force_commands: d.commands,
+                            brain_override: true})
+    }).then(x => x.json());
+    document.getElementById(cardId)?.remove();
+    if(r.error) addMsg('system', errorCard(r.error));
+    else        handleResult(r);
+  }catch(e){ btn.disabled = false; btn.textContent = 'Do it anyway';
+             addMsg('system', errorCard(e.message)); }
 }
 
 // ═══════════════════════════════════════════════════
@@ -4824,14 +4922,22 @@ function gotoActivity(id){
 }
 
 // ── Core: send structured commands straight to the engine ──
-async function directEdit(commands, label){
+async function directEdit(commands, label, brainOverride){
   const before = allActivityIds();
   try{
     const d = await fetch('/api/direct', {
       method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({commands, label})
+      body: JSON.stringify({commands, label, brain_override: !!brainOverride})
     }).then(r => r.json());
     if(d.error){ flashSched(d.error, true); return d; }
+    // A tie that runs backwards to a rule you stated stops here rather than
+    // going in quietly. You still get to make it — the rule may have an
+    // exception only you know about — but not without seeing which one it is.
+    if(d.type === 'brain_conflict'){
+      if(confirm(brainConflictText(d))) return directEdit(commands, label, true);
+      flashSched('Left alone — it contradicts a rule you set', true);
+      return d;
+    }
     undoCount = d.undo_count; redoCount = d.redo_count; editCount = d.edit_count;
     const ei = document.getElementById('info-edits'); if(ei) ei.textContent = editCount;
     if(d.activity_count != null) document.getElementById('info-acts').textContent = d.activity_count;
@@ -7456,6 +7562,114 @@ async function applyWire(){
   closeModal('wire-modal');
   btn.textContent = 'Apply selected';
   await directEdit(cmds, `Wire ${cmds.length} tie${cmds.length===1?'':'s'}`);
+}
+
+// ═══════════════════════════════════════════════════
+//  Project brain — how THIS job is being built
+// ═══════════════════════════════════════════════════
+// Everything the ranker knows otherwise is inferred from names and dates. This
+// is not: the user states it. So what was UNDERSTOOD is always shown back next
+// to what was typed — a rule enforced over thousands of activities has to be
+// verifiable at a glance, and a sentence that only became a note has to say so
+// rather than looking like it is being enforced.
+
+function openBrainModal(){
+  if(!lastSchedData){ flashSched('Load a schedule first', true); return; }
+  document.getElementById('brain-text').value = '';
+  document.getElementById('brain-check').innerHTML = '';
+  brainRefresh();
+  openModal('brain-modal');
+  setTimeout(() => document.getElementById('brain-text').focus(), 60);
+}
+
+function brainRender(d){
+  const list = document.getElementById('brain-list');
+  const ds = d.directives || [];
+  document.getElementById('brain-count').textContent = ds.length
+    ? `${d.rule_count} rule${d.rule_count===1?'':'s'} · ${d.note_count} note${d.note_count===1?'':'s'}`
+    : '';
+  if(!ds.length){
+    list.innerHTML = '<div style="padding:18px;color:var(--text3);font-size:11.5px;">'
+      + 'Nothing yet. The ranking runs on dates, names, area and trade order alone '
+      + 'until you tell it something.</div>';
+    return;
+  }
+  list.innerHTML = `<table class="disambig-table">
+    <thead><tr><th>You said</th><th>What it does</th><th>On</th><th></th></tr></thead>
+    <tbody>${ds.map(x => `<tr style="${x.enabled?'':'opacity:.45;'}">
+      <td>${escHtml(x.text)}</td>
+      <td class="tie-why">${x.kind === 'note'
+          ? '<span style="color:var(--text3);">note — guidance only</span>'
+          : '<b>rule</b> — ' + escHtml(x.understood)}</td>
+      <td><input type="checkbox" ${x.enabled?'checked':''}
+            onclick="brainToggle('${x.id}', this.checked)"></td>
+      <td><button class="btn btn-ghost btn-sm"
+            onclick="brainDelete('${x.id}')">Remove</button></td>
+    </tr>`).join('')}</tbody></table>`;
+}
+
+async function brainRefresh(){
+  const d = await fetch('/api/brain').then(r => r.json());
+  if(!d.error) brainRender(d);
+}
+
+async function brainAdd(){
+  const box = document.getElementById('brain-text');
+  const text = box.value.trim();
+  if(!text) return;
+  const d = await fetch('/api/brain', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({text})
+  }).then(r => r.json());
+  if(d.error){ flashSched(d.error, true); return; }
+  box.value = '';
+  brainRender(d);
+  flashSched((d.directive.kind === 'note' ? '' : 'Rule added: ') + d.directive.understood,
+             false);
+}
+
+async function brainToggle(id, on){
+  const d = await fetch(`/api/brain/${id}/toggle`, {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({enabled: on})
+  }).then(r => r.json());
+  if(!d.error) brainRender(d);
+}
+
+async function brainDelete(id){
+  const d = await fetch(`/api/brain/${id}`, {method:'DELETE'}).then(r => r.json());
+  if(!d.error) brainRender(d);
+}
+
+async function brainCheck(){
+  const box = document.getElementById('brain-check');
+  box.innerHTML = '<div style="padding:14px;color:var(--text3);"><span class="spinner"></span> Reading the schedule…</div>';
+  const d = await fetch('/api/brain/check').then(r => r.json());
+  if(d.error){ box.innerHTML = `<div style="color:var(--red);padding:12px;">${escHtml(d.error)}</div>`; return; }
+  if(!d.rules){
+    box.innerHTML = '<div style="padding:12px;color:var(--text3);font-size:11.5px;">'
+      + 'Nothing to check — notes are guidance, not rules.</div>';
+    return;
+  }
+  const v = d.violations || [];
+  if(!v.length){
+    box.innerHTML = `<div style="padding:12px;color:var(--green);font-size:11.5px;">`
+      + `Clean — nothing in the schedule breaks ${d.rules} rule${d.rules===1?'':'s'}.</div>`;
+    return;
+  }
+  box.innerHTML = `<div style="font-size:11.5px;color:var(--text2);margin-bottom:6px;">
+      ${v.length}${d.truncated?'+':''} place${v.length===1?'':'s'} where the schedule
+      disagrees with what you said. Nothing has been changed.</div>
+    <div class="look-body"><table class="disambig-table">
+      <thead><tr><th>Kind</th><th>First</th><th>Then</th><th>Why</th></tr></thead>
+      <tbody>${v.map(r => `<tr>
+        <td>${r.kind === 'dates' ? 'dates' : 'logic'}</td>
+        <td><span class="act-id">${escHtml(r.predecessor_id)}</span><br>
+            <span style="color:var(--text3);">${escHtml(r.predecessor_name)}</span></td>
+        <td><span class="act-id">${escHtml(r.successor_id)}</span><br>
+            <span style="color:var(--text3);">${escHtml(r.successor_name)}</span></td>
+        <td class="tie-why">${escHtml(r.why)}</td>
+      </tr>`).join('')}</tbody></table></div>`;
 }
 
 // ═══════════════════════════════════════════════════
