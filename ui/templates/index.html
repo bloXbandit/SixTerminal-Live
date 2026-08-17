@@ -2319,11 +2319,7 @@ async function checkExistingSession() {
       document.getElementById('info-edits').textContent = editCount;
       updateUndoBtn();
     }
-    for (const m of (msgs.messages || [])) {
-      if (m.role === 'user')               addMsg('user',      escHtml(m.text));
-      else if (m.role === 'assistant')     addMsg('assistant', escHtml(m.text));
-      else if (m.role === 'system_result') addMsg('system',    escHtml(m.text));
-    }
+    renderServerChat(msgs.messages);
     if (s.loaded) loadSchedule();
   } catch(e) {}
 }
@@ -2428,10 +2424,19 @@ async function uploadFile(file) {
     // Clear messages — each project gets its own fresh chat
     clearMessages();
     onProjectLoaded(d);
-    addMsg('system',
-      `<strong>${d.project_name}</strong> loaded — ${d.activity_count} activities &middot; ${d.wbs_count} WBS &middot; ${d.relation_count} relations &middot; Data date: ${d.data_date||'N/A'}`
-    );
+    renderServerChat(d.chat);
   } catch(e) { document.getElementById('upload-loading')?.remove(); addMsg('system', errorCard(e.message)); }
+}
+
+// Render chat entries exactly as the server recorded them — the live view
+// then matches what a reload restores, so nothing appears or changes shape
+// between sessions.
+function renderServerChat(entries) {
+  for (const m of (entries || [])) {
+    if (m.role === 'user')               addMsg('user',      escHtml(m.text));
+    else if (m.role === 'assistant')     addMsg('assistant', escHtml(m.text));
+    else if (m.role === 'system_result') addMsg('system',    escHtml(m.text));
+  }
 }
 
 // ═══════════════════════════════════════════════════
@@ -2864,17 +2869,14 @@ async function commitImport() {
     btn.disabled = false; btn.textContent = 'Load as active schedule';
     if (d.error) { addMsg('system', errorCard(d.error)); return; }
     closeModal('import-modal');
-    clearMessages();
+    // A replace starts a new project with its own fresh chat; a merge keeps
+    // the conversation going and just appends what the import recorded.
+    if (mode !== 'merge') clearMessages();
     onProjectLoaded(d);
-    let msg = `<strong>${escHtml(d.project_name)}</strong> imported — ${d.activity_count} activities · ${d.wbs_count} WBS · ${d.relation_count} relations.`;
+    renderServerChat(d.chat);
     if (d.logic_status === 'absent') {
-      msg += ` <em>No logic in the source — ask me to "tie up the open ends" and I'll propose predecessor/successor links.</em>`;
+      addMsg('system', `<em>No logic in the source — ask me to "tie up the open ends" and I'll propose predecessor/successor links.</em>`);
     }
-    const mr = d.merge_report;
-    if (mr && (mr.skipped_duplicate || mr.replaced)) {
-      msg += ` <em>${mr.replaced ? mr.replaced + ' replaced, ' : ''}${mr.skipped_duplicate ? mr.skipped_duplicate + ' skipped as duplicate.' : ''}</em>`;
-    }
-    addMsg('system', msg);
     switchTab('schedule');
     loadSchedule();
   } catch(e) {
@@ -3048,6 +3050,7 @@ async function commitPastedRows() {
     btn.disabled = false; btn.textContent = 'Add to schedule';
     if (d.error) { pasteError(d.error); return; }
     closeModal('paste-modal');
+    renderServerChat(d.chat);
     const mr = d.merge_report;
     let msg;
     if (mr && (mr.skipped_duplicate || mr.replaced)) {
@@ -7638,6 +7641,7 @@ async function brainAdd(){
   if(d.error){ flashSched(d.error, true); return; }
   box.value = '';
   brainRender(d);
+  renderServerChat(d.chat);
   flashSched((d.directive.kind === 'note' ? '' : 'Rule added: ') + d.directive.understood,
              false);
 }
@@ -7699,7 +7703,7 @@ async function sendDrawing(file){
   const input = document.getElementById('instruction-input');
   const question = input.value.trim();
   input.value = ''; autoResize(input);
-  addMsg('user', '📎 ' + escHtml(file.name) + (question ? ' — ' + escHtml(question) : ''));
+  addMsg('user', escHtml('[uploaded drawing: ' + file.name + ']') + (question ? ' — ' + escHtml(question) : ''));
   addMsg('system', '<span class="spinner"></span><em style="color:var(--text3)">Reading the sheet…</em>', 'pending');
   const fd = new FormData();
   fd.append('file', file);
@@ -7709,6 +7713,10 @@ async function sendDrawing(file){
     removePending();
     if(d.error){ addMsg('system', errorCard(d.error)); return; }
     addMsg('system', drawingCard(d.reading, d.filename));
+    // The assistant's read line — the same text a reload restores, so the
+    // record of what the sheet said never depends on the ephemeral card.
+    const readLine = (d.chat || []).find(m => m.role === 'assistant');
+    if(readLine) addMsg('assistant', escHtml(readLine.text));
   }catch(e){ removePending(); addMsg('system', errorCard(e.message)); }
 }
 
@@ -7757,6 +7765,7 @@ async function addDrawingDirective(cardId, idx, btn){
     headers:{'Content-Type':'application/json'},
     body: JSON.stringify({text})}).then(r => r.json());
   if(d.error){ btn.disabled = false; btn.textContent = 'Add to brain'; flashSched(d.error, true); return; }
+  renderServerChat(d.chat);
   btn.classList.remove('btn-primary');
   btn.textContent = d.directive.kind === 'note' ? '✓ Kept as note' : '✓ Rule';
   btn.title = d.directive.understood;
@@ -7772,6 +7781,7 @@ async function saveDrawingNote(cardId, btn){
     headers:{'Content-Type':'application/json'},
     body: JSON.stringify({text: text.slice(0, 1990)})}).then(r => r.json());
   btn.textContent = d.error ? 'Failed' : '✓ Noted';
+  if(!d.error) renderServerChat(d.chat);
   if(d.error) btn.disabled = false;
 }
 

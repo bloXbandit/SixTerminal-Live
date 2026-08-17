@@ -268,10 +268,21 @@ def _unique_pid(stem: str) -> str:
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-def _append_chat(role: str, text: str):
+def _append_chat(role: str, text: str, context: str = None):
+    """
+    Record one turn of the conversation.
+
+    ``text`` is what the user sees in the chat panel. ``context`` is the
+    fuller version handed to the model on later turns — ids, outcomes,
+    readings — the facts the agent needs to reason accurately about what
+    just happened without cluttering the UI.
+    """
     sess = _get_session()
     if sess is not None:
-        sess["chat_history"].append({"role": role, "text": text})
+        entry = {"role": role, "text": text}
+        if context:
+            entry["context"] = context
+        sess["chat_history"].append(entry)
 
 def _snapshot_project(project):
     """
@@ -593,6 +604,11 @@ def upload_file():
         _projects[pid]      = sess
         _active_id[0]       = pid
         _mark_dirty(pid)
+        _append_chat("user", f"[uploaded schedule: {filename}]")
+        _append_chat("assistant",
+                     f"Loaded {project.name} — {len(project.activities)} activities, "
+                     f"{len(project.wbs_nodes)} folders, {len(project.relations)} ties"
+                     + (f", data date {str(project.data_date)[:10]}." if project.data_date else "."))
 
         return jsonify({
             "success":        True,
@@ -603,6 +619,7 @@ def upload_file():
             "wbs_count":      len(project.wbs_nodes),
             "relation_count": len(project.relations),
             "data_date":      project.data_date,
+            "chat":           sess["chat_history"],
             "projects":       [_project_list_item(k) for k in _projects],
         })
     except Exception as e:
@@ -862,6 +879,8 @@ def import_commit_route():
         contract.setdefault("meta", {})["project_name"] = name
 
     try:
+        chat_mark = len(_get_session()["chat_history"]) if _get_session() else 0
+        new_chat = []
         project = build_project_from_contract(contract)
         if mode == "merge" and _get_session() and _get_session()["project"]:
             # append imported WBS + activities into the current active project
@@ -917,6 +936,17 @@ def import_commit_route():
                 pass
             project = base
             pid = _active_id[0]
+            src_name = contract["meta"].get("source_name", "pasted rows")
+            added = merge_report.get("added", 0) if merge_report else 0
+            skipped = merge_report.get("skipped_duplicate", 0) if merge_report else 0
+            replaced = merge_report.get("replaced", 0) if merge_report else 0
+            _append_chat("user", f"[imported rows from {src_name} into this schedule]")
+            detail = (f"Import merged into '{base.name}': {added} activities added"
+                      + (f", {skipped} skipped as duplicates" if skipped else "")
+                      + (f", {replaced} replaced existing rows" if replaced else "")
+                      + ". These are already in the schedule.")
+            _append_chat("assistant", detail)
+            new_chat = _get_session()["chat_history"][chat_mark:]
         else:
             merge_report = None
             pid = _unique_pid(project.id or Path(str(name or "import")).stem or "import")
@@ -924,6 +954,12 @@ def import_commit_route():
             sess["project"] = project
             _projects[pid] = sess
             _active_id[0] = pid
+            _append_chat("user",
+                         f"[imported schedule from {contract['meta'].get('source_name', 'file')}]")
+            _append_chat("assistant",
+                         f"Loaded {project.name} — {len(project.activities)} activities, "
+                         f"{len(project.wbs_nodes)} folders, {len(project.relations)} ties.")
+            new_chat = _get_session()["chat_history"]
         _mark_dirty(pid)
 
         return jsonify({
@@ -933,6 +969,7 @@ def import_commit_route():
             "logic_status": contract["meta"].get("logic_status", "absent"),
             "summary": project.summary(),
             "merge_report": merge_report,
+            "chat": new_chat,
             "projects": [_project_list_item(k) for k in _projects],
         })
     except Exception as e:
@@ -1295,14 +1332,48 @@ def edit():
             opts = _advisor.tie_options(project, matches[0],
                                         directives=_active_directives())
             if opts["predecessors"] or opts["successors"]:
+                lines = [f"Tie options offered for {opts['activity_id']} — {opts['name']}:"]
+                n = 0
+                for o in opts["predecessors"]:
+                    n += 1
+                    lines.append(
+                        f"  Option {n} (predecessor): add_relation "
+                        f"{o['predecessor_id']} '{o['predecessor_name']}' -> "
+                        f"{o['successor_id']} '{o['successor_name']}' "
+                        f"[{o.get('confidence', 0):.0%} confident — {o.get('rationale', '')}]")
+                for o in opts["successors"]:
+                    n += 1
+                    lines.append(
+                        f"  Option {n} (successor): add_relation "
+                        f"{o['predecessor_id']} '{o['predecessor_name']}' -> "
+                        f"{o['successor_id']} '{o['successor_name']}' "
+                        f"[{o.get('confidence', 0):.0%} confident — {o.get('rationale', '')}]")
+                lines.append("If the user picks one by number or description, "
+                             "issue that add_relation command directly.")
                 _append_chat("assistant",
-                             f"Options for {opts['activity_id']} — {opts['name']}")
+                             f"Options for {opts['activity_id']} — {opts['name']}",
+                             context="\n".join(lines))
                 return jsonify({"type": "tie_options", "instruction": instruction,
                                 **opts})
 
     try:
         if force_commands is not None:
             commands = force_commands
+            # Resolving a question the agent asked is a turn of the
+            # conversation too — the picked ids (or the decision to override
+            # a rule) belong in the record, or later turns can't see what
+            # was decided.
+            if data.get("brain_override"):
+                _append_chat("user", f"[chose to override the rule: {instruction}]")
+            else:
+                picked = []
+                for c in commands:
+                    for k in ("activity_id", "predecessor_id", "successor_id"):
+                        if c.get(k):
+                            picked.append(str(c[k]))
+                tag = ", ".join(dict.fromkeys(picked))[:200]
+                _append_chat("user",
+                             f"[picked: {tag}]" if tag else f"[confirmed: {instruction}]")
         else:
             llm_ctx = project.llm_context() + _brain_for(project).context_block()
             if sess.get("last_undone"):
@@ -1311,6 +1382,7 @@ def edit():
                 instruction,
                 project_summary=llm_ctx,
                 edit_history=sess["edit_history"],
+                chat_history=sess["chat_history"],
                 model_key=_settings["model_key"],
                 api_key=_settings["api_key"],
             )
@@ -1319,10 +1391,20 @@ def edit():
                 return jsonify({"success": False, "error": commands[0].get("message", "Could not interpret instruction"), "raw_llm": raw_llm})
 
             if commands and commands[0].get("action") == "clarify":
-                return jsonify({"type": "clarify", "question": commands[0].get("question", "Could you provide more details?"), "instruction": instruction, "raw_llm": raw_llm})
+                question = commands[0].get("question", "Could you provide more details?")
+                _append_chat("assistant", question)
+                return jsonify({"type": "clarify", "question": question, "instruction": instruction, "raw_llm": raw_llm})
 
             ambig = check_disambiguation(project, commands)
             if ambig is not None:
+                match_lines = [f"Asked the user to pick which '{ambig['search_term']}' "
+                               f"they meant for {ambig['field']}:"]
+                for m in ambig["matches"]:
+                    match_lines.append(f"  - {m.get('activity_id', '?')}: "
+                                       f"{m.get('name', '')} [{m.get('wbs_path', '')}]")
+                _append_chat("assistant",
+                             f"Which '{ambig['search_term']}'? {len(ambig['matches'])} matches",
+                             context="\n".join(match_lines))
                 return jsonify({"type": "disambiguation", "instruction": instruction, "commands": commands,
                                 "command_index": ambig["command_index"], "field": ambig["field"],
                                 "search_term": ambig["search_term"], "matches": ambig["matches"], "raw_llm": raw_llm})
@@ -1363,6 +1445,7 @@ def edit():
                     retry_instruction,
                     project_summary=project.llm_context() + _brain_for(project).context_block(),
                     edit_history=[],
+                    chat_history=sess["chat_history"],
                     model_key=_settings["model_key"],
                     api_key=_settings["api_key"],
                 )
@@ -1393,6 +1476,16 @@ def edit():
         if not data.get("brain_override"):
             conflicts = _brain_conflicts(project, edit_commands)
             if conflicts:
+                stop_lines = ["Edit HELD — not applied. It contradicts what the "
+                              "user said about this job:"]
+                for c in conflicts:
+                    stop_lines.append(
+                        f"  - {c['predecessor_id']} -> {c['successor_id']}: {c['why']}")
+                stop_lines.append("The user was shown a 'do it anyway' option. "
+                                  "Nothing changed in the schedule yet.")
+                _append_chat("assistant",
+                             f"Held — contradicts a rule: {conflicts[0]['directive']}",
+                             context="\n".join(stop_lines))
                 return jsonify({"type": "brain_conflict", "instruction": instruction,
                                 "commands": edit_commands, "conflicts": conflicts,
                                 "raw_llm": raw_llm})
@@ -1421,7 +1514,12 @@ def edit():
         edit_summary = f"Applied {success_count} edit{'s' if success_count != 1 else ''}"
         if fail_count > 0:
             edit_summary += f", {fail_count} failed"
-        _append_chat("system_result", edit_summary)
+        outcome_lines = [f"Results for \"{instruction}\":"]
+        for cmd, ok, msg in applied:
+            mark = "OK " if ok else "FAILED "
+            outcome_lines.append(f"  {mark}{cmd.get('action', '?')}: {msg}")
+        _append_chat("system_result", edit_summary,
+                     context="\n".join(outcome_lines))
 
         return jsonify({
             "type":             "result",
@@ -1510,6 +1608,14 @@ def direct_edit():
     if not data.get("brain_override"):
         conflicts = _brain_conflicts(sess["project"], commands)
         if conflicts:
+            stop_lines = ["A manual grid edit was HELD — it contradicts what the "
+                          "user said about this job:"]
+            for c in conflicts:
+                stop_lines.append(
+                    f"  - {c['predecessor_id']} -> {c['successor_id']}: {c['why']}")
+            _append_chat("assistant",
+                         f"Held a manual edit — contradicts: {conflicts[0]['directive']}",
+                         context="\n".join(stop_lines))
             return jsonify({"type": "brain_conflict", "commands": commands,
                             "label": label, "conflicts": conflicts})
     return _apply_direct(commands, label)
@@ -1818,8 +1924,12 @@ def brain_add():
         return jsonify({"error": "Keep it under 2000 characters — one thought at a time"}), 400
     d = brain.add(text, _get_session()["project"])
     _mark_dirty(_active_id[0])
+    understood = project_brain.describe(d)
+    _append_chat("user", f"[taught: {text}]")
+    _append_chat("assistant", f"Understood — {understood}")
     return jsonify({"success": True,
-                    "directive": dict(d.to_json(), understood=project_brain.describe(d)),
+                    "directive": dict(d.to_json(), understood=understood),
+                    "chat": _get_session()["chat_history"][-2:],
                     **_brain_payload(brain)})
 
 
@@ -1877,10 +1987,27 @@ def brain_image():
         return jsonify({"error": f"Could not read the drawing: {e}"}), 500
     # The read joins the conversation so later questions can refer back to it.
     label = reading.get("sheet_number") or reading.get("sheet_title") or f.filename
+    parts = [f"Drawing read from uploaded file '{f.filename}' "
+             f"(sheet {label}, discipline: {reading.get('discipline', 'other')}):"]
+    if reading.get("summary"):
+        parts.append(f"  Summary: {reading['summary']}")
+    if reading.get("rooms"):
+        parts.append(f"  Rooms/areas: {', '.join(reading['rooms'])}")
+    if reading.get("equipment"):
+        parts.append(f"  Equipment: {', '.join(reading['equipment'])}")
+    if reading.get("facts"):
+        parts.append("  Facts bearing on sequence:")
+        parts.extend(f"    - {x}" for x in reading["facts"])
+    if reading.get("directives"):
+        parts.append("  Suggested rules (proposed to user, NOT yet confirmed "
+                     "unless they appear in the project brain):")
+        parts.extend(f"    - {x}" for x in reading["directives"])
     _append_chat("user", f"[uploaded drawing: {f.filename}]"
                          + (f" — {question}" if question else ""))
-    _append_chat("assistant", f"Read sheet {label}: {reading.get('summary', '')}")
-    return jsonify({"success": True, "reading": reading, "filename": f.filename})
+    _append_chat("assistant", f"Read sheet {label}: {reading.get('summary', '')}",
+                 context="\n".join(parts))
+    return jsonify({"success": True, "reading": reading, "filename": f.filename,
+                    "chat": sess["chat_history"][-2:]})
 
 
 @app.route("/api/brain/check", methods=["GET"])

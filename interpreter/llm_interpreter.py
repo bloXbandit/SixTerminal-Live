@@ -437,6 +437,7 @@ VOICE RULES:
 - Keep it tight - one or two sentences unless the user asks for explanation.
 - If a DCMA concern applies, mention it briefly in your message. Don't block the edit.
 - Use session history to resolve "the activity I just added" or "that relation we set".
+- Use CONVERSATION SO FAR to resolve references to earlier turns: "the sheet I uploaded", "the second option", "what you found". Only cite an upload, reading, or rule if it actually appears there — if it doesn't, say you don't have it and ask them to share it again. Never invent contents of a document.
 - When explaining a logic tie decision, state what you connected and WHY it makes sense — not what you avoided. Explain the reasoning forward ("Envelope flows into Interiors, so I tied it to X"), never backward ("I didn't connect to Closeout because..."). Confident, not defensive.
 
 OTHER RULES:
@@ -777,12 +778,38 @@ def _build_session_history(edit_history: Optional[list]) -> str:
     return "\n".join(lines)
 
 
+def _build_conversation(chat_history: Optional[list]) -> str:
+    """
+    Recent conversation turns — what the user said and what the agent said
+    back, including the factual detail behind terse UI messages (drawing
+    readings, tie options offered, per-command edit outcomes, conflict
+    stops). This is how the agent answers "what did the sheet say?" or
+    "apply the second one" truthfully instead of guessing.
+    """
+    if not chat_history:
+        return ""
+    recent = chat_history[-16:]
+    lines = ["\n\n---\nCONVERSATION SO FAR (most recent last):"]
+    for entry in recent:
+        role = entry.get("role", "?")
+        who = {"user": "User", "assistant": "You",
+               "system_result": "System"}.get(role, role)
+        body = entry.get("context") or entry.get("text", "")
+        body = body.strip()
+        if len(body) > 1200:
+            body = body[:1200] + " …"
+        lines.append(f"{who}: {body}")
+    lines.append("---")
+    return "\n".join(lines)
+
+
 def interpret(
     instruction: str,
     project_summary: Optional[str] = None,
     edit_history: Optional[list] = None,
     model_key: str = DEFAULT_MODEL,
     api_key: Optional[str] = None,
+    chat_history: Optional[list] = None,
 ) -> Tuple[List[Dict[str, Any]], str]:
     """
     Translate a natural language instruction into a list of edit commands.
@@ -805,6 +832,8 @@ def interpret(
         user_message += _build_context_summary(project_summary)
     if edit_history:
         user_message += _build_session_history(edit_history)
+    if chat_history:
+        user_message += _build_conversation(chat_history)
 
     # Resolve model config
     model_cfg = MODELS.get(model_key)
