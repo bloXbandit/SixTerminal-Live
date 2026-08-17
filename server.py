@@ -1574,6 +1574,58 @@ def advise_apply():
     return _apply_direct(cmds, data.get("label") or f"Apply {len(recs)} logic recommendation(s)")
 
 
+@app.route("/api/loading", methods=["GET"])
+def crew_loading():
+    """Crew demand per week — the curve that shows which weeks cannot be staffed."""
+    sess = _get_session()
+    if sess is None or sess["project"] is None:
+        return jsonify({"error": "No schedule loaded"}), 400
+    from engine.loading import crew_load
+    scope = request.args.get("wbs_uid") or None
+    return jsonify(crew_load(sess["project"], scope_uid=scope,
+                             include_completed=request.args.get("completed") == "1",
+                             include_past=request.args.get("past") == "1"))
+
+
+@app.route("/api/lookahead", methods=["GET"])
+def lookahead_view():
+    """The next N weeks of work, grouped by WBS. ?format=csv for the field copy."""
+    sess = _get_session()
+    if sess is None or sess["project"] is None:
+        return jsonify({"error": "No schedule loaded"}), 400
+    from engine.loading import lookahead
+    try:
+        weeks = max(1, min(26, int(request.args.get("weeks", 3))))
+    except (TypeError, ValueError):
+        weeks = 3
+    data = lookahead(sess["project"], weeks=weeks,
+                     start=request.args.get("start") or None,
+                     scope_uid=request.args.get("wbs_uid") or None,
+                     include_completed=request.args.get("completed") == "1")
+    if request.args.get("format") != "csv":
+        return jsonify(data)
+
+    import csv as _csv
+    import io as _io
+    buf = _io.StringIO()
+    w = _csv.writer(buf)
+    w.writerow(["WBS", "Activity ID", "Activity Name", "Start", "Finish",
+                "Duration (d)", "Status", data.get("crew_field") or "Crew",
+                "Critical", "In window"])
+    for g in data["groups"]:
+        for a in g["activities"]:
+            w.writerow([g["wbs_path"], a["activity_id"], a["name"], a["start"],
+                        a["finish"], a["duration_days"], a["status"],
+                        "" if a["crew"] is None else a["crew"],
+                        "Y" if a["critical"] else "",
+                        "" if a["starts_in_window"] else "carried in"])
+    stem = Path(sess.get("source_name", "schedule")).stem
+    resp = app.response_class(buf.getvalue(), mimetype="text/csv")
+    resp.headers["Content-Disposition"] = (
+        f'attachment; filename="{stem}_{weeks}wk_lookahead_{data["from"]}.csv"')
+    return resp
+
+
 @app.route("/api/report", methods=["GET"])
 def schedule_report():
     sess = _get_session()
