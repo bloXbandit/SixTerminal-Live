@@ -185,6 +185,10 @@
     #drop-zone:hover,#drop-zone.drag-over{
       border-color:var(--accent2);background:var(--accent-glow2);
     }
+    #panel-editor.drag-over{
+      outline:2px dashed var(--accent2);outline-offset:-6px;
+      background:var(--accent-glow2);
+    }
     .dz-icon{font-size:18px;margin-bottom:5px;opacity:.5;}
     .dz-label{font-size:11px;color:var(--text2);line-height:1.5;}
     .dz-label strong{color:var(--text);display:block;margin-bottom:2px;}
@@ -2392,11 +2396,15 @@ const dropZone = document.getElementById('drop-zone');
 const fileInput = document.getElementById('file-input');
 dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('drag-over'); });
 dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag-over'));
-// Route by type: XER/XML load directly; Excel/PDF go through the import preview
+// Route by type: XER/XML load directly; Excel/PDF go through the import
+// preview; a screenshot or photo is a drawing — it goes to the reader.
+const _IMAGE_EXTS = new Set(['png', 'jpg', 'jpeg', 'webp', 'gif']);
 function handleChosenFile(file) {
   if (!file) return;
   const ext = (file.name.split('.').pop() || '').toLowerCase();
-  if (ext === 'xlsx' || ext === 'xlsm' || ext === 'xls' || ext === 'pdf') {
+  if (_IMAGE_EXTS.has(ext)) {
+    sendDrawing(file);
+  } else if (ext === 'xlsx' || ext === 'xlsm' || ext === 'xls' || ext === 'pdf') {
     importFile(file);
   } else {
     uploadFile(file);
@@ -2407,6 +2415,28 @@ dropZone.addEventListener('drop', e => {
   if (e.dataTransfer.files[0]) handleChosenFile(e.dataTransfer.files[0]);
 });
 fileInput.addEventListener('change', () => { if (fileInput.files[0]) handleChosenFile(fileInput.files[0]); });
+
+// The chat itself takes drops: a snip or PDF sheet lands in the conversation
+// as a drawing read (with whatever is typed as the question); a schedule file
+// dropped here loads the same as the sidebar zone. Only file drags count —
+// the schedule grid's internal row drags carry no files and pass through.
+const editorPanel = document.getElementById('panel-editor');
+editorPanel.addEventListener('dragover', e => {
+  if (![...(e.dataTransfer.types || [])].includes('Files')) return;
+  e.preventDefault(); editorPanel.classList.add('drag-over');
+});
+editorPanel.addEventListener('dragleave', e => {
+  if (e.relatedTarget && editorPanel.contains(e.relatedTarget)) return;
+  editorPanel.classList.remove('drag-over');
+});
+editorPanel.addEventListener('drop', e => {
+  const f = e.dataTransfer.files && e.dataTransfer.files[0];
+  if (!f) return;                        // internal grid drag — not ours
+  e.preventDefault(); editorPanel.classList.remove('drag-over');
+  const ext = (f.name.split('.').pop() || '').toLowerCase();
+  if (_IMAGE_EXTS.has(ext) || ext === 'pdf') sendDrawing(f);
+  else handleChosenFile(f);
+});
 
 async function uploadFile(file) {
   const fd = new FormData();
@@ -3108,9 +3138,7 @@ async function submitCreateProject() {
     closeModal('create-modal');
     clearMessages();
     onProjectLoaded(d);
-    addMsg('system',
-      `<strong>${d.project_name}</strong> created — ${d.activity_count} activities &middot; ${d.wbs_count} WBS nodes &middot; ${d.relation_count} relations`
-    );
+    renderServerChat(d.chat);
     document.getElementById('create-description').value = '';
   } catch(e) { setStatus(st, e.message, 'err'); }
   btn.disabled = false;

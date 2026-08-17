@@ -965,6 +965,11 @@ def import_commit_route():
         else:
             merge_report = None
             pid = _unique_pid(project.id or Path(str(name or "import")).stem or "import")
+            if project.id == "IMPORT":
+                # No identity fell out of the contract — without this every
+                # unnamed import shares one brain, and a rule taught on one
+                # job would surface on every other.
+                project.id = pid
             sess = _make_session(pid, contract["meta"].get("source_name", f"{pid}.xlsx"))
             sess["project"] = project
             _projects[pid] = sess
@@ -2127,15 +2132,24 @@ def create_new_project():
     try:
         project, raw_llm = create_project(description, model_key=_settings["model_key"], api_key=_settings["api_key"])
         pid = _unique_pid(project.id or "project")
+        if project.id in ("NEW", ""):
+            # No identity from the model — without this every unnamed
+            # generated schedule would share one brain.
+            project.id = pid
         sess = _make_session(pid, f"{pid}.xml")
         sess["project"] = project
         _projects[pid]  = sess
         _active_id[0]   = pid
+        _append_chat("user", f"[create a schedule: {description[:200]}]")
+        _append_chat("assistant",
+                     f"Built {project.name} from scratch — {len(project.activities)} activities, "
+                     f"{len(project.wbs_nodes)} folders, {len(project.relations)} ties.")
         return jsonify({
             "success": True, "project_id": pid, "project_name": project.name,
             "activity_count": len(project.activities), "wbs_count": len(project.wbs_nodes),
             "relation_count": len(project.relations), "data_date": project.data_date,
             "summary": project.summary(), "raw_llm": raw_llm,
+            "chat": sess["chat_history"],
             "projects": [_project_list_item(k) for k in _projects],
         })
     except Exception as e:
