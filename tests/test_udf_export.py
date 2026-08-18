@@ -26,7 +26,8 @@ import tempfile
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from engine.xml_writer import write_p6_xml, _udf_declarations
+from engine.xml_writer import (write_p6_xml, _udf_declarations,
+                               normalize_udf_type, _VALID_UDF_TYPES)
 from engine.schedule_model import (Project, Activity, WBSNode, Calendar, UDFType)
 
 
@@ -191,3 +192,78 @@ def test_the_declaration_list_is_stable_across_calls():
     p = _proj([UDFType(uid="813", title="COMMENTS", data_type="Text")])
     _act(p, "a1", "A1000", {"COMMENTS": "x", "Number of Electricians": "6"})
     assert _udf_declarations(p) == _udf_declarations(p)
+
+
+# ── P6's internal type codes are not XML DataTypes ───────────────────────────
+# Reported twice from real imports:
+#   "Invalid UDF data type when importing Activity 101962"
+#   "Invalid UDF data type when importing Activity 101953"
+# The file declared <DataType>FT_TEXT</DataType> — P6's INTERNAL code, which
+# arrives via an XER round trip or the API. The first fix mapped only the
+# FT_STATIC_TYPE_* spellings and let anything else through untouched, so a
+# plain FT_TEXT sailed out again and failed the same way. It is a whitelist
+# now: an unrecognised code costs that field its type, never the whole import.
+
+def test_the_internal_code_that_broke_the_import_is_translated():
+    assert normalize_udf_type("FT_TEXT") == "Text"
+
+
+def test_every_internal_code_maps_to_something_p6_accepts():
+    for code in ("FT_TEXT", "FT_INT", "FT_FLOAT", "FT_MONEY", "FT_END_DATE",
+                 "FT_START_DATE", "FT_STATIC_TYPE", "FT_STATIC_TYPE_TEXT",
+                 "FT_STATIC_TYPE_DOUBLE", "FT_STATIC_TYPE_INT",
+                 "FT_STATIC_TYPE_DATE"):
+        assert normalize_udf_type(code) in _VALID_UDF_TYPES, code
+
+
+def test_a_code_nobody_has_thought_of_yet_still_exports():
+    """The whole point of a whitelist — the next unknown must not fail again."""
+    for junk in ("FT_SOMETHING_NEW", "wibble", "", None, "12345"):
+        assert normalize_udf_type(junk) in _VALID_UDF_TYPES
+
+
+def test_a_type_that_is_already_valid_is_left_alone():
+    for good in _VALID_UDF_TYPES:
+        assert normalize_udf_type(good) == good
+
+
+def test_casing_differences_are_tolerated_not_discarded():
+    assert normalize_udf_type("text") == "Text"
+    assert normalize_udf_type("INTEGER") == "Integer"
+
+
+def test_an_internal_code_never_reaches_the_exported_file():
+    p = _proj([UDFType(uid="901", title="Number of Electricians",
+                       data_type="FT_TEXT")])
+    _act(p, "a1", "A1000", {"Number of Electricians": "6"})
+    xml = _xml(p)
+    assert "FT_TEXT" not in xml
+    for dt in re.findall(r"<DataType>(.*?)</DataType>", xml):
+        assert dt in _VALID_UDF_TYPES, dt
+
+
+def test_the_value_still_points_at_a_declared_type_after_translating():
+    p = _proj([UDFType(uid="901", title="Number of Electricians",
+                       data_type="FT_TEXT")])
+    _act(p, "a1", "A1000", {"Number of Electricians": "6"})
+    xml = _xml(p)
+    declared = set(re.findall(r"<UDFType>.*?<ObjectId>(.*?)</ObjectId>.*?</UDFType>",
+                              xml, re.S))
+    for ref in set(re.findall(r"<TypeObjectId>(.*?)</TypeObjectId>", xml)):
+        assert ref in declared, f"value references undeclared type {ref}"
+
+
+def test_reading_a_file_normalises_the_type_in_memory():
+    """So nothing downstream has to remember to translate it."""
+    import tempfile as _tf
+    from engine.xml_reader import load_xml
+    p = _proj([UDFType(uid="901", title="Number of Electricians",
+                       data_type="FT_TEXT")])
+    _act(p, "a1", "A1000", {"Number of Electricians": "6"})
+    fh = _tf.NamedTemporaryFile(suffix=".xml", delete=False)
+    fh.close()
+    write_p6_xml(p, fh.name)
+    back = load_xml(fh.name)
+    os.unlink(fh.name)
+    for t in back.udf_types:
+        assert t.data_type in _VALID_UDF_TYPES, (t.title, t.data_type)

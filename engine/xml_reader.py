@@ -11,6 +11,7 @@ root-level enterprise objects plus WBS/Activity/Relationship blocks inside Proje
 import xml.etree.ElementTree as ET
 from typing import Optional, Dict, Iterable, List
 from .schedule_model import Project, WBSNode, Activity, Relation, Calendar, UDFType
+from .xml_writer import normalize_udf_type
 
 _XSI_NS = "http://www.w3.org/2001/XMLSchema-instance"
 _XSI_NIL = f"{{{_XSI_NS}}}nil"
@@ -227,10 +228,15 @@ def load_xml(path: str) -> Project:
         if not oid or not title:
             continue
         udf_titles[oid] = title
+        # A file can arrive carrying P6's internal type codes (FT_TEXT and
+        # friends) rather than XML DataTypes — from an XER round trip, the API,
+        # or a tool that passed them through. Normalising on the way IN means
+        # the model only ever holds a type P6 will accept, so nothing
+        # downstream has to remember to translate it.
         udf_defs.append(UDFType(
             uid=oid, title=title,
             subject_area=_text(u, "SubjectArea") or "Activity",
-            data_type=_text(u, "DataType") or "Text"))
+            data_type=normalize_udf_type(_text(u, "DataType"))))
 
     project = Project(
         uid=proj_uid,

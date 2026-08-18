@@ -754,6 +754,51 @@ _UDF_OID_START = 900
 # the activity with an invalid-UDF-data-type error.
 _COMMENTS_OID = "813"
 
+# The only values P6 accepts in <DataType> on a UDFType. Anything else is
+# rejected outright — "Invalid UDF data type when importing Activity NNNNN".
+_VALID_UDF_TYPES = ("Text", "Integer", "Double", "Cost", "Date",
+                    "StartDate", "FinishDate", "Indicator")
+
+# P6's INTERNAL type codes, which show up in files that came from XER, from the
+# API, or from a tool that passed them through. They are not XML DataTypes and
+# must be translated before export.
+_P6_TYPE_CODES = {
+    "FT_TEXT": "Text",
+    "FT_INT": "Integer",
+    "FT_FLOAT": "Double",
+    "FT_MONEY": "Cost",
+    "FT_END_DATE": "FinishDate",
+    "FT_START_DATE": "StartDate",
+    "FT_STATIC_TYPE": "Indicator",
+    "FT_STATIC_TYPE_TEXT": "Text",
+    "FT_STATIC_TYPE_DOUBLE": "Double",
+    "FT_STATIC_TYPE_INT": "Integer",
+    "FT_STATIC_TYPE_DATE": "Date",
+}
+
+
+def normalize_udf_type(raw: str) -> str:
+    """
+    A DataType P6 will actually accept.
+
+    This is a WHITELIST rather than a list of known-bad values on purpose. The
+    first version mapped the FT_STATIC_TYPE_* spellings and let everything else
+    through untouched, so a file carrying plain FT_TEXT exported FT_TEXT and P6
+    rejected the import — the same failure the mapping was written to prevent,
+    reached by a code that had not been thought of. Falling back to Text means
+    an unrecognised code costs the field's type and never the whole import.
+    """
+    s = (raw or "").strip()
+    if s in _VALID_UDF_TYPES:
+        return s
+    mapped = _P6_TYPE_CODES.get(s.upper())
+    if mapped:
+        return mapped
+    for valid in _VALID_UDF_TYPES:          # tolerate casing differences
+        if valid.lower() == s.lower():
+            return valid
+    return "Text"
+
 
 def _udf_declarations(project) -> List[Tuple[str, str, str]]:
     """
@@ -782,11 +827,7 @@ def _udf_declarations(project) -> List[Tuple[str, str, str]]:
     declared = {}
     for u in (getattr(project, "udf_types", None) or []):
         if u.title:
-            dt = (u.data_type or "").strip()
-            declared[u.title] = {
-                "FT_STATIC_TYPE_TEXT": "Text", "FT_STATIC_TYPE_DOUBLE": "Double",
-                "FT_STATIC_TYPE_INT": "Integer", "FT_STATIC_TYPE_DATE": "Date",
-            }.get(dt, dt or "Text")
+            declared[u.title] = normalize_udf_type(u.data_type)
 
     out: List[Tuple[str, str, str]] = []
     next_oid = _UDF_OID_START
@@ -836,7 +877,10 @@ def _section_udf_type(root: ET.Element, project=None):
         decls = [("COMMENTS", _COMMENTS_OID, "Text")] + decls
     for title, oid, dt in decls:
         t = _sub(root, "UDFType")
-        _sub(t, "DataType",     dt)
+        # Normalised once more at the point of writing: this is the last line
+        # before the bytes hit the file, and an invalid value here fails the
+        # user's whole import rather than one field.
+        _sub(t, "DataType",     normalize_udf_type(dt))
         _sub(t, "IsSecureCode", "0")
         _sub(t, "ObjectId",     oid)
         _sub(t, "SubjectArea",  "Activity")
