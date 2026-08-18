@@ -34,7 +34,8 @@ from engine.edit_engine import (
     generate_schedule_report,
     is_advisory,
 )
-from interpreter.llm_interpreter import interpret, create_project, MODELS, DEFAULT_MODEL
+from interpreter.llm_interpreter import (interpret, create_project, MODELS,
+                                        DEFAULT_MODEL, resolve_model)
 from engine.importer import extract as import_extract, build_project_from_contract, \
     _pdf_page_count, _read_pdf_pages, _rows_to_contract, _text_layer_present, \
     open_pdf_handle, _read_pdf_pages_from_handle, _text_layer_from_handle
@@ -1351,6 +1352,17 @@ def edit():
     # user clicks. Nothing can be invented on this path, and it costs no round
     # trip. Only a QUESTION of that shape takes it — "link A to B" is an
     # instruction and goes to the interpreter as usual.
+    # A schedule image was just read and the user is saying yes to it. This is
+    # answered from the diff already computed, not by asking a model to
+    # reconstruct it — the rows, the ids and the exact values are all sitting
+    # in the session, and re-deriving them through prose is how "yes" turned
+    # into an offer to help instead of an edit.
+    if force_commands is None and sess.get("pending_sheet") \
+            and _is_apply_yes(instruction):
+        done = _apply_pending_sheet(sess, instruction)
+        if done is not None:
+            return done
+
     if force_commands is None and _advisor.tie_question(instruction):
         matches = _advisor.find_activity_in(project, instruction)
         if len(matches) == 1:
@@ -2150,10 +2162,81 @@ def _read_schedule_image(sess, blob, filename, question):
     _append_chat("user", f"[uploaded schedule image: {filename}]"
                          + (f" — {question}" if question else ""))
     _append_chat("assistant", result["summary"], context="\n".join(lines))
-
+    # Held so that "yes, do it" in the next breath actually does it. Without
+    # this the only way to apply was the button, and a user who answered in
+    # words got a polite offer to help instead of the edit they asked for.
+    sess["pending_sheet"] = result
     return jsonify({"success": True, "type": "schedule_image",
                     "filename": filename, "question": question, **result})
 
+
+# "yes", "do it", "make it match" — an answer, not a new instruction.
+_YES_LEAD = re.compile(
+    r"(?i)^\s*(yes|yep|yeah|yup|ok|okay|sure|do it|go ahead|go|proceed|"
+    r"apply(?:\s+(?:it|them|those))?|make it match|match (?:them|it)|"
+    r"update (?:them|it)|do that|please do|confirm(?:ed)?)\b[\s,.!–—-]*")
+# What may follow the affirmation and still leave it an affirmation: words
+# about applying, and words reaching for the actual dates. Anything else means
+# the user said something substantive and it belongs to the model.
+_YES_TAIL = re.compile(
+    r"(?i)^(?:and|also|please|too|as well|now|then|go|do it|apply|"
+    r"includ\w*|with|the|all|of|it|everything|actuals?|dates?|"
+    r"status(?:es)?|changes?|rows?|them|those)?[\s,.!–—-]*$")
+
+
+def _is_apply_yes(text: str) -> bool:
+    """A bare yes, optionally reaching for the actuals — nothing more."""
+    m = _YES_LEAD.match(text or "")
+    if not m:
+        return False
+    rest = (text or "")[m.end():]
+    while rest.strip():
+        piece = _YES_TAIL.match(rest)
+        if piece:
+            return True
+        word, _, rest2 = rest.strip().partition(" ")
+        if not _YES_TAIL.match(word + " "):
+            return False
+        rest = rest2
+    return True
+# The same, but explicitly reaching for the rows that rewrite history.
+_APPLY_ALL = re.compile(
+    r"(?i)\b(?:includ\w*|with|and|plus)\s+(?:the\s+)?actuals?\b"
+    r"|\bactuals?\s+too\b|\ball\s+of\s+it\b|\beverything\b")
+
+
+def _apply_pending_sheet(sess, instruction):
+    """
+    Apply the schedule-image diff the user is saying yes to.
+
+    Only the ordinary fields go in by default. A change that writes or
+    overwrites an actual date is left out unless the user reaches for it in
+    words, because "yes" answers the question that was asked — which was about
+    dates — and not one about rewriting recorded history.
+    """
+    from engine import sheet_sync
+    pending = sess.get("pending_sheet")
+    matched = [m for m in (pending or {}).get("matched", []) if m.get("changes")]
+    if not matched:
+        return None
+    include_risky = bool(_APPLY_ALL.search(instruction or ""))
+    picked, skipped = [], 0
+    for m in matched:
+        keep = [c for c in m["changes"]
+                if include_risky or c.get("severity") == "normal"]
+        skipped += len(m["changes"]) - len(keep)
+        if keep:
+            picked.append({"activity_id": m["activity_id"], "changes": keep})
+    if not picked:
+        return None
+    cmds = sheet_sync.to_commands(sess["project"], picked)
+    if not cmds:
+        return None
+    sess["pending_sheet"] = None
+    label = f"Match {len(cmds)} field(s) from {pending.get('source_title') or 'a schedule image'}"
+    if skipped:
+        label += f" ({skipped} actual-date change(s) left out)"
+    return _apply_direct(cmds, label)
 
 @app.route("/api/sheet/apply", methods=["POST"])
 def sheet_apply():
@@ -2348,24 +2431,77 @@ def status():
 
 @app.route("/api/settings", methods=["GET"])
 def get_settings():
-    model_cfg = MODELS.get(_settings["model_key"], {})
+    model_cfg = resolve_model(_settings["model_key"])
     return jsonify({"model_key": _settings["model_key"], "model_label": model_cfg.get("label", _settings["model_key"]),
                     "api_key_set": bool(_settings["api_key"]),
                     "available_models": [{"key": k, "label": v["label"], "provider": v["provider"]} for k, v in MODELS.items()]})
+
+
+@app.route("/api/version", methods=["GET"])
+def app_version():
+    """
+    Which build is actually running.
+
+    Twice now a fix has been reported as not working when the deploy simply
+    had not happened yet. A visible commit beats guessing: compare it to the
+    one you expect, and the question answers itself in a second.
+    """
+    sha = (os.environ.get("RENDER_GIT_COMMIT")
+           or os.environ.get("SOURCE_VERSION") or "")
+    if not sha:
+        try:
+            import subprocess
+            sha = subprocess.run(["git", "rev-parse", "HEAD"], cwd=str(ROOT),
+                                 capture_output=True, text=True,
+                                 timeout=5).stdout.strip()
+        except Exception:
+            sha = ""
+    return jsonify({"commit": sha[:7] or "unknown", "full": sha or None})
+
+
+@app.route("/api/models/available", methods=["GET"])
+def available_models():
+    """
+    Every model the configured key can actually see.
+
+    Asked rather than hard-coded: new models ship faster than this file
+    changes, and a user with a key for one should not have to wait for a
+    release to use it. Nothing is guessed — the list comes from the provider.
+    """
+    key = _settings.get("api_key") or os.environ.get("OPENAI_API_KEY", "")
+    if not key:
+        return jsonify({"error": "Enter an OpenAI key first — the list comes "
+                                 "from your account, not from us."}), 400
+    try:
+        from openai import OpenAI
+        ids = sorted(m.id for m in OpenAI(api_key=key).models.list().data)
+    except Exception as e:
+        return jsonify({"error": f"Could not list models: {e}"}), 400
+    # Chat-capable families only; embeddings and audio models are noise here.
+    chat = [i for i in ids
+            if (i.startswith("gpt") or i.startswith("o"))
+            and not any(x in i for x in ("embedding", "tts", "whisper",
+                                         "audio", "realtime", "image",
+                                         "moderation", "transcribe"))]
+    return jsonify({"models": chat, "count": len(chat)})
 
 
 @app.route("/api/settings", methods=["POST"])
 def update_settings():
     data = request.get_json() or {}
     if "model_key" in data:
-        key = data["model_key"]
-        if key not in MODELS:
-            return jsonify({"error": f"Unknown model '{key}'."}), 400
+        key = (data["model_key"] or "").strip()
+        if not key:
+            return jsonify({"error": "Pick a model."}), 400
+        # A model id that is not one of the named presets is passed through to
+        # its provider. Rejecting it here would mean every new model needs a
+        # code change before it can be used; a wrong id costs one clear API
+        # error naming the model, which is the cheaper failure.
         _settings["model_key"] = key
     if "api_key" in data:
         val = data["api_key"].strip() if data["api_key"] else ""
         _settings["api_key"] = val if val else None
-    model_cfg = MODELS.get(_settings["model_key"], {})
+    model_cfg = resolve_model(_settings["model_key"])
     return jsonify({"success": True, "model_key": _settings["model_key"],
                     "model_label": model_cfg.get("label", _settings["model_key"]), "api_key_set": bool(_settings["api_key"])})
 

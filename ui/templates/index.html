@@ -1399,12 +1399,23 @@
     <div class="modal-body">
       <div class="form-group">
         <label>AI Model</label>
-        <select id="model-select">
-          <option value="claude">Claude Sonnet (Anthropic) — Recommended</option>
+        <select id="model-select" onchange="onModelPicked()">
+          <option value="claude">Claude Sonnet (Anthropic)</option>
           <option value="gpt-4.1-mini">GPT-4.1 Mini (OpenAI)</option>
           <option value="gpt-4.1-nano">GPT-4.1 Nano (OpenAI)</option>
+          <option value="__custom__">Other — type the model id…</option>
         </select>
-        <div class="hint">GPT-5.4 Mini recommended for most use cases.</div>
+        <!-- The list above is a convenience, not a whitelist. New models ship
+             faster than this page changes, so any id can be typed, and the
+             button asks your own key which ones it can actually see. -->
+        <input type="text" id="model-custom" placeholder="e.g. gpt-5.2"
+               style="display:none;margin-top:6px;" autocomplete="off"
+               oninput="document.getElementById('model-select').value='__custom__'">
+        <div class="hint" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+          <button class="btn btn-ghost btn-sm" type="button" onclick="listMyModels()">
+            List models my key can use</button>
+          <span id="model-list-status"></span>
+        </div>
       </div>
       <div class="form-group">
         <label>API Key</label>
@@ -1412,6 +1423,9 @@
         <div class="hint">Stored in memory only — never saved to disk. Leave blank to use <code>OPENAI_API_KEY</code> / <code>ANTHROPIC_API_KEY</code> env var.</div>
       </div>
       <div id="settings-status" class="modal-status"></div>
+      <!-- So "is my fix deployed?" is a glance, not a guess. -->
+      <div class="hint" style="margin-top:10px;">Running build:
+        <code id="build-sha">…</code></div>
     </div>
     <div class="modal-foot">
       <button class="btn btn-ghost" onclick="closeModal('settings-modal')">Cancel</button>
@@ -2328,10 +2342,21 @@ async function initSettings() {
   try {
     const d = await fetch('/api/settings').then(r => r.json());
     updateModelIndicator(d.model_key, d.api_key_set);
-    document.getElementById('model-select').value = d.model_key;
+    const sel = document.getElementById('model-select');
+    sel.value = d.model_key;
+    // A saved id that is not one of the presets still has to show as chosen.
+    if(sel.value !== d.model_key){
+      sel.value = '__custom__';
+      document.getElementById('model-custom').value = d.model_key;
+    }
+    onModelPicked();
   } catch(e) {}
 }
 initSettings();
+fetch('/api/version').then(r => r.json()).then(v => {
+  const el = document.getElementById('build-sha');
+  if(el) el.textContent = v.commit || 'unknown';
+}).catch(() => {});
 
 // Restore project state + chat history after a browser refresh
 async function checkExistingSession() {
@@ -2410,8 +2435,42 @@ function updateModelIndicator(key, keySet) {
 // ═══════════════════════════════════════════════════
 //  Settings
 // ═══════════════════════════════════════════════════
+function onModelPicked(){
+  const sel = document.getElementById('model-select');
+  const box = document.getElementById('model-custom');
+  box.style.display = sel.value === '__custom__' ? 'block' : 'none';
+  if(sel.value === '__custom__') box.focus();
+}
+
+/** Ask the user's own key which models it can reach — nothing is guessed. */
+async function listMyModels(){
+  const st = document.getElementById('model-list-status');
+  st.textContent = 'asking your key…';
+  // Save the key first if one was just typed, so the lookup can use it.
+  const typed = document.getElementById('api-key-input').value.trim();
+  if(typed){
+    await fetch('/api/settings', {method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({api_key: typed})});
+  }
+  const d = await fetch('/api/models/available').then(r => r.json());
+  if(d.error){ st.textContent = d.error; return; }
+  const sel = document.getElementById('model-select');
+  const keep = sel.value;
+  [...sel.querySelectorAll('option[data-live]')].forEach(o => o.remove());
+  for(const id of d.models){
+    const o = document.createElement('option');
+    o.value = id; o.textContent = id; o.dataset.live = '1';
+    sel.insertBefore(o, sel.querySelector('option[value="__custom__"]'));
+  }
+  sel.value = keep;
+  st.textContent = `${d.count} available — pick one above`;
+}
+
 async function saveSettings() {
-  const modelKey = document.getElementById('model-select').value;
+  const sel = document.getElementById('model-select');
+  const modelKey = sel.value === '__custom__'
+    ? document.getElementById('model-custom').value.trim()
+    : sel.value;
   const apiKey = document.getElementById('api-key-input').value.trim();
   const st = document.getElementById('settings-status');
   try {

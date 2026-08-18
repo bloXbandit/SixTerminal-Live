@@ -62,6 +62,37 @@ MODELS = {
 DEFAULT_MODEL = "claude"
 
 
+def provider_for(model_id: str) -> str:
+    """Which API a raw model id belongs to, judged by its name."""
+    m = (model_id or "").strip().lower()
+    if m.startswith("claude"):
+        return "anthropic"
+    return "openai"          # gpt-*, o*, and anything else OpenAI-compatible
+
+
+def resolve_model(model_key: str) -> Dict[str, str]:
+    """
+    A provider and a model id for whatever the user picked.
+
+    The named entries in MODELS are conveniences, not a whitelist. New models
+    ship faster than this file changes, and a user with a key for one should
+    not have to wait for a release to use it — so an id that is not in MODELS
+    is passed through to its provider as-is. Getting it wrong costs one clear
+    API error naming the model; hard-coding a list costs every model that
+    comes out next.
+    """
+    cfg = MODELS.get(model_key)
+    if cfg:
+        return cfg
+    for v in MODELS.values():                       # a bare provider name
+        if v["provider"] == model_key:
+            return v
+    raw = (model_key or "").strip()
+    if raw:
+        return {"provider": provider_for(raw), "model_id": raw, "label": raw}
+    return MODELS[DEFAULT_MODEL]
+
+
 SYSTEM_PROMPT = """You are a senior Primavera P6 scheduler and construction project controls expert embedded in Six Terminal Live - a professional schedule editing tool.
 
 IDENTITY & EXPERTISE:
@@ -876,17 +907,7 @@ def interpret(
     if chat_history:
         user_message += _build_conversation(chat_history)
 
-    # Resolve model config
-    model_cfg = MODELS.get(model_key)
-    if model_cfg is None:
-        # Try matching by provider name
-        for k, v in MODELS.items():
-            if v["provider"] == model_key:
-                model_cfg = v
-                break
-    if model_cfg is None:
-        model_cfg = MODELS[DEFAULT_MODEL]
-
+    model_cfg = resolve_model(model_key)
     provider = model_cfg["provider"]
     model_id = model_cfg["model_id"]
 
@@ -915,15 +936,36 @@ def interpret(
         if not _OPENAI_AVAILABLE:
             raise RuntimeError("openai package not installed. Run: pip install openai")
         client = OpenAI(api_key=resolved_key)
-        response = client.chat.completions.create(
-            model=model_id,
-            messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": user_message},
-            ],
-            max_completion_tokens=2048,
-        )
-        raw_response = response.choices[0].message.content
+        msgs = [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": user_message},
+        ]
+        # Ask for guaranteed-parseable JSON. A model that wraps its commands in
+        # prose is the single biggest reason an edit never reaches the
+        # schedule, and JSON mode removes the possibility rather than coping
+        # with it. It requires the word "json" in the prompt, which the system
+        # prompt has in abundance, and it needs an OBJECT at the top level —
+        # hence the wrapper, which _parse_commands already unwraps.
+        raw_response = None
+        try:
+            response = client.chat.completions.create(
+                model=model_id, messages=msgs + [{
+                    "role": "system",
+                    "content": 'Reply with a JSON object of the form '
+                               '{"commands": [ ...the command objects... ]}. '
+                               'No prose outside it.'}],
+                max_completion_tokens=4096,
+                response_format={"type": "json_object"},
+            )
+            raw_response = response.choices[0].message.content
+        except Exception:
+            # Older or non-chat models reject response_format; the tolerant
+            # parser handles their prose-wrapped output.
+            raw_response = None
+        if raw_response is None:
+            response = client.chat.completions.create(
+                model=model_id, messages=msgs, max_completion_tokens=4096)
+            raw_response = response.choices[0].message.content
         return _parse_commands(raw_response), raw_response
 
     raise RuntimeError(f"Unknown provider '{provider}' for model '{model_key}'.")
@@ -1007,7 +1049,7 @@ def create_project(
     import uuid
     from datetime import date
 
-    model_cfg = MODELS.get(model_key) or MODELS[DEFAULT_MODEL]
+    model_cfg = resolve_model(model_key)
     provider = model_cfg["provider"]
     model_id = model_cfg["model_id"]
 
@@ -1146,22 +1188,104 @@ def create_project(
     return project, raw
 
 
+def _json_spans(text: str):
+    """
+    Every balanced [...] or {...} in the text, outermost first.
+
+    Scanning for balance rather than regex-matching is the point. A greedy
+    `\\[.*\\]` reaches from the first bracket to the LAST one anywhere in the
+    reply, so a model that emits perfect commands and then adds "see [DCMA 4]"
+    produces a span that cannot parse — and the commands are lost.
+    """
+    opens = {"[": "]", "{": "}"}
+    i, n = 0, len(text)
+    while i < n:
+        ch = text[i]
+        if ch not in opens:
+            i += 1
+            continue
+        depth, j, in_str, esc = 0, i, False, False
+        while j < n:
+            c = text[j]
+            if in_str:
+                if esc:
+                    esc = False
+                elif c == "\\":
+                    esc = True
+                elif c == '"':
+                    in_str = False
+            elif c == '"':
+                in_str = True
+            elif c in "[{":
+                depth += 1
+            elif c in "]}":
+                depth -= 1
+                if depth == 0:
+                    yield text[i:j + 1]
+                    break
+            j += 1
+        i = (j + 1) if j < n else n
+
+
+def _loads(chunk: str):
+    """Parse, forgiving the trailing comma models routinely leave behind."""
+    try:
+        return json.loads(chunk)
+    except json.JSONDecodeError:
+        pass
+    try:
+        return json.loads(re.sub(r",\s*([\]}])", r"\1", chunk))
+    except json.JSONDecodeError:
+        return None
+
+
+def _as_commands(value) -> Optional[List[Dict[str, Any]]]:
+    """Anything that is really a list of command objects, in any wrapping."""
+    if isinstance(value, dict):
+        # A single command returned bare, or wrapped as {"commands": [...]}.
+        for key in ("commands", "actions", "edits"):
+            inner = value.get(key)
+            if isinstance(inner, list):
+                return _as_commands(inner)
+        return [value] if value.get("action") else None
+    if isinstance(value, list):
+        cmds = [v for v in value if isinstance(v, dict) and v.get("action")]
+        return cmds or None
+    return None
+
+
 def _parse_commands(raw: str) -> List[Dict[str, Any]]:
     """
-    Extract JSON array from LLM response.
-    Falls back to wrapping plain-text replies as a chat action so
-    conversational responses always surface in the UI.
+    Pull the edit commands out of whatever the model actually sent.
+
+    Models wrap commands in prose, add a note after them, return one command
+    as a bare object instead of a list, or leave a trailing comma. Every one
+    of those used to fail the parse and fall through to "treat the whole reply
+    as chat" — so the user saw a chatty answer and no edits, and the agent,
+    told afterwards that nothing was applied, could only agree. Losing an edit
+    silently is far worse than showing a message twice, so anything that
+    genuinely is a command list is recovered.
     """
-    cleaned = re.sub(r"```(?:json)?\s*", "", raw).strip()
+    cleaned = re.sub(r"```(?:json)?\s*", "", raw or "").strip()
     cleaned = re.sub(r"```\s*$", "", cleaned).strip()
 
-    match = re.search(r"\[.*\]", cleaned, re.DOTALL)
-    if match:
-        try:
-            return json.loads(match.group(0))
-        except json.JSONDecodeError:
-            pass
+    direct = _as_commands(_loads(cleaned))
+    if direct:
+        return direct
 
-    # No valid JSON array — treat the whole response as a chat message
-    text = cleaned.strip() or raw.strip()
+    # Prefer a span that carries real edits over one that is only chat: a
+    # reply of "[chat] … [add_relation]" must not stop at the chat.
+    fallback = None
+    for span in _json_spans(cleaned):
+        cmds = _as_commands(_loads(span))
+        if not cmds:
+            continue
+        if any(c.get("action") not in ("chat", "clarify") for c in cmds):
+            return cmds
+        fallback = fallback or cmds
+    if fallback:
+        return fallback
+
+    # Nothing parseable — the reply really was prose.
+    text = cleaned or (raw or "").strip()
     return [{"action": "chat", "message": text}]

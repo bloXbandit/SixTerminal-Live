@@ -35,7 +35,7 @@ try:
 except ImportError:
     _OPENAI_AVAILABLE = False
 
-from .llm_interpreter import MODELS, DEFAULT_MODEL
+from .llm_interpreter import MODELS, DEFAULT_MODEL, resolve_model
 
 _IMAGE_TYPES = {
     ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
@@ -309,7 +309,7 @@ def _check(file_bytes: bytes, filename: str):
 def _ask_model(file_bytes, ext, is_pdf, system_prompt, user_text,
                model_key, api_key) -> str:
     """One image + one prompt to whichever provider is configured."""
-    cfg = MODELS.get(model_key) or MODELS[DEFAULT_MODEL]
+    cfg = resolve_model(model_key)
     provider = cfg["provider"]
     b64 = base64.standard_b64encode(file_bytes).decode()
 
