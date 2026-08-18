@@ -2040,8 +2040,15 @@ def brain_image():
     # the second through the first is why asking for a status sync used to come
     # back as a paragraph about equipment.
     from interpreter import vision as _vision
+    # An upload with nothing typed is judged against what was said just before
+    # it — people state the ask, then go and find the file.
+    said_before = ""
+    for turn in reversed(sess.get("chat_history") or []):
+        if turn.get("role") == "user" and not str(turn.get("text", "")).startswith("["):
+            said_before = turn.get("text", "")
+            break
     mode = (request.form.get("mode")
-            or _vision.classify_image_intent(question))
+            or _vision.classify_image_intent(question, said_before))
     if mode == "schedule":
         return _read_schedule_image(sess, blob, f.filename or "", question)
 

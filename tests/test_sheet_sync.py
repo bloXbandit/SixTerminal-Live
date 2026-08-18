@@ -365,3 +365,59 @@ def test_no_actual_is_written_when_only_the_safe_fields_are_taken():
     a = p.get_activity(activity_id="A1")
     assert a.planned_finish == "2026-02-27"
     assert not a.actual_start and a.status == "Not Started"
+
+
+# ── the ask can come one turn before the file ─────────────────────────────────
+# From a live session: the user said "I want the activities and actuals to match
+# the entries in the screenshot", then uploaded with nothing typed. Judged on
+# its own silence the upload read as a drawing, and answered a question nobody
+# had asked. What was said just before is the fallback.
+
+def test_a_bare_upload_follows_what_was_just_asked_for():
+    assert classify_image_intent(
+        "", "i want you to match the activities and actuals to reflect the "
+            "dates and status of the screenshot") == "schedule"
+
+
+def test_a_bare_upload_after_drawing_talk_is_still_a_drawing():
+    assert classify_image_intent("", "what does this riser diagram show") == "drawing"
+
+
+def test_typed_words_outrank_the_previous_turn():
+    """The box is the live instruction; the earlier turn is only a fallback."""
+    assert classify_image_intent("what does this riser diagram show",
+                                 "match my dates to the screenshot") == "drawing"
+
+
+def test_silence_on_both_is_still_a_drawing():
+    assert classify_image_intent("", "") == "drawing"
+    assert classify_image_intent("", None) == "drawing"
+
+
+def test_the_route_uses_the_previous_turn_when_nothing_is_typed(monkeypatch):
+    c = _client()
+    import interpreter.vision as vz
+    monkeypatch.setattr(vz, "read_schedule", lambda *a, **k: dict(_READ))
+    monkeypatch.setattr(vz, "read_drawing",
+                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("read as drawing")))
+    server._append_chat("user", "match the activities and actuals to the "
+                                "dates and status in the screenshot")
+    body = c.post("/api/brain/image",
+                  data={"file": (io.BytesIO(b"png"), "shot.png")},
+                  content_type="multipart/form-data").get_json()
+    assert body["type"] == "schedule_image"
+
+
+def test_an_earlier_upload_marker_is_not_mistaken_for_the_ask(monkeypatch):
+    """"[uploaded drawing: x.png]" is bookkeeping, not something the user said."""
+    c = _client()
+    import interpreter.vision as vz
+    monkeypatch.setattr(vz, "read_schedule", lambda *a, **k: dict(_READ))
+    monkeypatch.setattr(vz, "read_drawing",
+                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("read as drawing")))
+    server._append_chat("user", "match the actuals to the screenshot dates")
+    server._append_chat("user", "[uploaded drawing: earlier.png]")
+    body = c.post("/api/brain/image",
+                  data={"file": (io.BytesIO(b"png"), "shot.png")},
+                  content_type="multipart/form-data").get_json()
+    assert body["type"] == "schedule_image"

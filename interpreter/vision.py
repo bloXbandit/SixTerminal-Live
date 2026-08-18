@@ -115,17 +115,26 @@ _DRAWING_WORDS = re.compile(
     r"elevation|section|layout|spec|submittal|diagram|grounding|conduit)\b")
 
 
-def classify_image_intent(question: str) -> str:
+def classify_image_intent(question: str, recent: Optional[str] = None) -> str:
     """
     'schedule' when the ask is about rows, dates or status; 'drawing' otherwise.
 
-    A bare upload with no question is a drawing — that is the common case, and
-    a wrong schedule read on a drawing returns an empty row list, which is a
+    `recent` is what the user said just before uploading. People say what they
+    want and THEN go find the file: "I want the activities and actuals to match
+    the entries in the screenshot" … then a bare upload. Judging that upload on
+    its own silence reads it as a drawing and answers a question nobody asked.
+    The words in the box win when there are any; the previous turn is the
+    fallback, not an override.
+
+    A bare upload with nothing said either way is a drawing — the common case,
+    and a wrong schedule read on a drawing returns no rows at all, which is a
     worse answer than simply reading the sheet.
     """
     q = (question or "").strip()
     if not q:
-        return "drawing"
+        q = (recent or "").strip()
+        if not q:
+            return "drawing"
     sched = len(_SCHEDULE_WORDS.findall(q))
     draw = len(_DRAWING_WORDS.findall(q))
     return "schedule" if sched > draw else "drawing"
