@@ -2398,10 +2398,16 @@ def download():
     # Which P6 release the file is for. P6 refuses a file built for a newer
     # schema than its own, with no error, so the caller picks the version.
     p6_version = request.args.get("p6_version")
+    # P6 can reject a file over its user-defined fields alone — the schedule
+    # itself is fine, and 19 crew counts are not worth a failed import. This
+    # writes the same schedule with the UDF blocks left out entirely, so the
+    # import goes through while the cause is being worked out.
+    include_udfs = request.args.get("udfs", "1").lower() not in ("0", "false", "no")
     tmp = tempfile.NamedTemporaryFile(suffix=".xml", delete=False)
     tmp.close()
     try:
-        write_p6_xml(project, tmp.name, p6_version=p6_version)
+        write_p6_xml(project, tmp.name, p6_version=p6_version,
+                     include_udfs=include_udfs)
         return send_file(tmp.name, as_attachment=True, download_name=output_name, mimetype="application/xml")
     except Exception as e:
         return jsonify({"error": f"Export failed: {str(e)}"}), 500

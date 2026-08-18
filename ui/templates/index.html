@@ -1913,6 +1913,13 @@
       <button class="btn btn-primary btn-full" id="download-btn" disabled onclick="startDownload()">
         ↓ Export XML
       </button>
+      <!-- P6 can reject a whole import over its user-defined fields alone.
+           The schedule itself is fine, so this writes it without them. -->
+      <label style="display:flex;align-items:center;gap:6px;font-size:10.5px;
+                    color:var(--text3);margin:4px 0 2px;cursor:pointer;"
+             title="Leave out user-defined fields (crew counts, comments). Use this if P6 refuses the import with a UDF error.">
+        <input type="checkbox" id="omit-udfs"> omit user-defined fields
+      </label>
       <button class="btn btn-ghost btn-full" id="cloud-save-btn" onclick="saveToCloud()"
               style="display:none;" title="Save all loaded schedules to Cloudflare R2">
         ☁ Save to cloud <span class="undo-badge" id="cloud-badge" style="display:none"></span>
@@ -3915,7 +3922,10 @@ function setP6Version(v){
   flashSched(`Exports will target P6 ${v}`);
 }
 function downloadUrl(){
-  return '/api/download?p6_version=' + encodeURIComponent(p6Version());
+  let u = '/api/download?p6_version=' + encodeURIComponent(p6Version());
+  const box = document.getElementById('omit-udfs');
+  if(box && box.checked) u += '&udfs=0';
+  return u;
 }
 
 async function startDownload() {

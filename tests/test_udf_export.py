@@ -267,3 +267,59 @@ def test_reading_a_file_normalises_the_type_in_memory():
     os.unlink(fh.name)
     for t in back.udf_types:
         assert t.data_type in _VALID_UDF_TYPES, (t.title, t.data_type)
+
+
+# ── an export that leaves UDFs out entirely ──────────────────────────────────
+# P6 can refuse a whole import over its user-defined fields while the schedule
+# itself is perfectly valid. 2,776 activities failing to import over 19 crew
+# counts is a bad trade, so the fields can be dropped and the schedule kept.
+
+def _xml_no_udfs(p):
+    import tempfile as _tf
+    f = _tf.NamedTemporaryFile(suffix=".xml", delete=False)
+    f.close()
+    write_p6_xml(p, f.name, p6_version="21.12", include_udfs=False)
+    raw = open(f.name, encoding="utf-8").read()
+    os.unlink(f.name)
+    return raw
+
+
+def test_omitting_udfs_removes_every_trace_of_them():
+    p = _proj([UDFType(uid="901", title="Number of Electricians", data_type="Integer")])
+    _act(p, "a1", "A1000", {"Number of Electricians": "6"})
+    raw = _xml_no_udfs(p)
+    assert "<UDFType>" not in raw
+    assert "<UDF>" not in raw
+    assert "<TypeObjectId>" not in raw
+
+
+def test_omitting_udfs_keeps_the_whole_schedule():
+    p = _proj([UDFType(uid="901", title="Number of Electricians", data_type="Integer")])
+    _act(p, "a1", "A1000", {"Number of Electricians": "6"})
+    _act(p, "a2", "A1010", {"Number of Electricians": "4"})
+    raw = _xml_no_udfs(p)
+    assert raw.count("<Activity>") == 2
+    assert "A1000" in raw and "A1010" in raw
+
+
+def test_the_default_still_includes_them():
+    p = _proj([UDFType(uid="901", title="Number of Electricians", data_type="Integer")])
+    _act(p, "a1", "A1000", {"Number of Electricians": "6"})
+    assert "<UDF>" in _xml(p)
+
+
+def test_the_download_route_can_drop_them():
+    import io as _io
+    import server as _server
+    p = _proj([UDFType(uid="901", title="Number of Electricians", data_type="Integer")])
+    _act(p, "a1", "A1000", {"Number of Electricians": "6"})
+    _server._projects.clear()
+    sess = _server._make_session("t", "t.xml")
+    sess["project"] = p
+    _server._projects["t"] = sess
+    _server._active_id[0] = "t"
+    c = _server.app.test_client()
+    with_udfs = c.get("/api/download").data.decode("utf-8")
+    without = c.get("/api/download?udfs=0").data.decode("utf-8")
+    assert "<UDF>" in with_udfs and "<UDF>" not in without
+    assert without.count("<Activity>") == with_udfs.count("<Activity>")

@@ -864,7 +864,7 @@ def _udf_data_type(project, title: str) -> str:
     return "Text"
 
 
-def _section_udf_type(root: ET.Element, project=None):
+def _section_udf_type(root: ET.Element, project=None, include_udfs: bool = True):
     """
     UDF definitions — one block per field, from the same list the values are
     written against, so every TypeObjectId a value references is declared here.
@@ -872,6 +872,8 @@ def _section_udf_type(root: ET.Element, project=None):
     COMMENTS is always emitted (the reference export carries it) even when no
     activity uses it.
     """
+    if not include_udfs:
+        return
     decls = _udf_declarations(project) if project is not None else []
     if not any(t == "COMMENTS" for t, _o, _d in decls):
         decls = [("COMMENTS", _COMMENTS_OID, "Text")] + decls
@@ -1562,7 +1564,8 @@ def _write_schedule_options(proj_el: ET.Element, proj_uid: str):
 # ── Main writer ───────────────────────────────────────────────────────────────
 
 def _write_p6_xml_impl(project: Project, output_path: str,
-                       p6_version: Optional[str] = None) -> str:
+                       p6_version: Optional[str] = None,
+                       include_udfs: bool = True) -> str:
     """
     Serialize a Project to a P6-importable XML file.
 
@@ -1636,7 +1639,7 @@ def _write_p6_xml_impl(project: Project, output_path: str,
     # Enterprise envelope.
     _section_display_currency(root)
     _section_currency(root)
-    _section_udf_type(root, project)
+    _section_udf_type(root, project, include_udfs)
     _section_obs(root)
     _section_global_calendars(root, project)
 
@@ -1757,7 +1760,7 @@ def _write_p6_xml_impl(project: Project, output_path: str,
     for wbs in sorted_wbs:
         _write_wbs(proj_el, wbs, proj_uid, wbs_oid_map)
 
-    udf_oid_map = _udf_oid_map(project)
+    udf_oid_map = _udf_oid_map(project) if include_udfs else {}
     for act in project.activities:
         _write_activity(proj_el, act, proj_uid, activity_oid_map, wbs_oid_map,
                         calendar_oid_map, udf_oid_map, project)
@@ -1803,6 +1806,7 @@ def write_p6_xml(
     seed_xml_path: Optional[str] = None,
     seed_project_id: Optional[str] = None,
     p6_version: Optional[str] = None,
+    include_udfs: bool = True,
 ) -> str:
     """
     Serialize a Project to P6 XML.
@@ -1839,7 +1843,8 @@ def write_p6_xml(
         write_p6_xml.last_warnings = []
 
     with _TargetProfileContext(profile):
-        return _write_p6_xml_impl(project, output_path, p6_version=p6_version)
+        return _write_p6_xml_impl(project, output_path, p6_version=p6_version,
+                                  include_udfs=include_udfs)
 
 
 write_p6_xml.last_warnings = []
