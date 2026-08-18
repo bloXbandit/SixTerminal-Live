@@ -754,10 +754,32 @@ _UDF_OID_START = 900
 # the activity with an invalid-UDF-data-type error.
 _COMMENTS_OID = "813"
 
-# The only values P6 accepts in <DataType> on a UDFType. Anything else is
-# rejected outright — "Invalid UDF data type when importing Activity NNNNN".
-_VALID_UDF_TYPES = ("Text", "Integer", "Double", "Cost", "Date",
-                    "StartDate", "FinishDate", "Indicator")
+# The only values P6 accepts in <DataType> on a UDFType — taken verbatim from
+# Oracle's own generated schema classes (UDFTypeType, in the javadoc-embedded
+# xsd:enumeration), not guessed. Two things were wrong in the first version of
+# this list, invisibly, because nothing here was ever checked against a real
+# P6-authored file: "Date" is not a member at all, and the real names carry a
+# space — "Start Date" / "Finish Date", not "StartDate" / "FinishDate". A file
+# that declared either would have failed the exact same "Invalid UDF data
+# type" the whole normalisation exists to prevent.
+_VALID_UDF_TYPES = ("Text", "Start Date", "Finish Date", "Cost", "Double",
+                    "Integer", "Indicator", "Code")
+
+# The child element each DataType's value is written into, on UDFAssignmentType
+# — also read from the real schema, not inferred from the DataType name. This
+# is the second, more damaging bug it uncovered: every value was being written
+# into <Text>/<Integer>/<Double>, and P6 does not have elements by those names
+# at all. The real ones are <TextValue>/<IntegerValue>/<DoubleValue> etc. — so
+# every UDF value in every export was inside an element P6's schema does not
+# recognise, independent of whether the DataType itself was valid. That is
+# what actually produced "Invalid UDF data type when importing Activity
+# NNNNN" even on a build that already carried the FT_TEXT fix: the type was
+# valid, the element holding its value was not.
+_UDF_VALUE_ELEMENT = {
+    "Text": "TextValue", "Integer": "IntegerValue", "Double": "DoubleValue",
+    "Cost": "CostValue", "Indicator": "IndicatorValue",
+    "Start Date": "StartDateValue", "Finish Date": "FinishDateValue",
+}
 
 # P6's INTERNAL type codes, which show up in files that came from XER, from the
 # API, or from a tool that passed them through. They are not XML DataTypes and
@@ -767,13 +789,18 @@ _P6_TYPE_CODES = {
     "FT_INT": "Integer",
     "FT_FLOAT": "Double",
     "FT_MONEY": "Cost",
-    "FT_END_DATE": "FinishDate",
-    "FT_START_DATE": "StartDate",
+    "FT_END_DATE": "Finish Date",
+    "FT_START_DATE": "Start Date",
     "FT_STATIC_TYPE": "Indicator",
     "FT_STATIC_TYPE_TEXT": "Text",
     "FT_STATIC_TYPE_DOUBLE": "Double",
     "FT_STATIC_TYPE_INT": "Integer",
-    "FT_STATIC_TYPE_DATE": "Date",
+    # P6's generic "Date" UDF type has no direct match in the XML schema's
+    # DataType enum (only Start Date / Finish Date exist) and this app has no
+    # way to know which the source meant. Text keeps the data — every date
+    # string still round-trips — rather than guessing the wrong one of two
+    # enum members, which would fail the same import this fixes.
+    "FT_STATIC_TYPE_DATE": "Text",
 }
 
 
@@ -833,7 +860,7 @@ def _udf_declarations(project) -> List[Tuple[str, str, str]]:
     next_oid = _UDF_OID_START
     for title in titles:
         dt = declared.get(title, "Text")
-        if dt in ("Double", "Integer"):
+        if dt in ("Double", "Integer", "Cost"):
             for a in project.activities:
                 v = (getattr(a, "udfs", None) or {}).get(title)
                 if v in (None, ""):
@@ -843,6 +870,16 @@ def _udf_declarations(project) -> List[Tuple[str, str, str]]:
                 except (TypeError, ValueError):
                     dt = "Text"
                     break
+        elif dt not in ("Text",):
+            # Indicator / Start Date / Finish Date / Code all need a value
+            # this app has no reliable way to produce — an Indicator is one of
+            # a fixed set of status strings, a Code references a lookup list
+            # entry by id, and a date needs real parsing. Every value here is
+            # already a plain string in `act.udfs`, so writing it under any of
+            # those types would put an arbitrary string where the schema
+            # expects a specific shape and fail import by a new route. Text
+            # keeps the data faithfully with no such risk.
+            dt = "Text"
         if title == "COMMENTS":
             oid = _COMMENTS_OID
         else:
@@ -891,7 +928,19 @@ def _section_udf_type(root: ET.Element, project=None, include_udfs: bool = True)
 
 def _write_activity_udfs(a_el: ET.Element, act, oid_map: Dict[str, str],
                          project) -> None:
-    """Per-activity UDF values, in the typed element P6 expects."""
+    """
+    Per-activity UDF values, in the typed element P6 expects.
+
+    That element is named for the VALUE ("TextValue", "IntegerValue", …), not
+    for the type ("Text", "Integer", …) — confirmed against Oracle's own
+    generated schema classes, which is also where this found that every value
+    this writer ever produced was sitting inside an element P6's schema does
+    not define at all (<Text> instead of <TextValue>, and so on). That is a
+    second, independent way to fail exactly the same "Invalid UDF data type"
+    import error, and it fires regardless of whether the DataType on the
+    UDFType declaration itself is valid — which is why fixing only the
+    DataType did not clear the error on its own.
+    """
     vals = getattr(act, "udfs", None) or {}
     if not vals:
         return
@@ -902,17 +951,17 @@ def _write_activity_udfs(a_el: ET.Element, act, oid_map: Dict[str, str],
             continue
         u = _sub(a_el, "UDF")
         _sub(u, "TypeObjectId", oid)
+        # _udf_declarations only ever settles on Text, Integer, Double or Cost
+        # for a field this app can populate — everything else is downgraded
+        # there already — so the element this maps to is always populated.
         dt = types.get(title, "Text")
-        # The declared type already accounts for every value this field holds
-        # (_udf_declarations downgrades a numeric field whose values are not
-        # all numeric), so the element written here always matches it. Falling
-        # back to <Text> under a numeric declaration is what P6 rejects.
-        if dt == "Double":
-            _sub(u, "Double", str(float(str(value))))
+        el = _UDF_VALUE_ELEMENT.get(dt, "TextValue")
+        if dt in ("Double", "Cost"):
+            _sub(u, el, str(float(str(value))))
         elif dt == "Integer":
-            _sub(u, "Integer", str(int(float(str(value)))))
+            _sub(u, el, str(int(float(str(value)))))
         else:
-            _sub(u, "Text", str(value))
+            _sub(u, el, str(value))
 
 
 def _section_obs(root: ET.Element):

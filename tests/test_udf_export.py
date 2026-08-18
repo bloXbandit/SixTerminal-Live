@@ -72,12 +72,28 @@ def _values(raw):
         r"<UDF>\s*<TypeObjectId>(\d+)</TypeObjectId>\s*<(\w+)>([^<]*)</\2>", raw)
 
 
+# The value element P6 actually expects for each DataType — confirmed against
+# Oracle's own generated schema classes (UDFAssignmentType). It is named for
+# the VALUE, not the type: a field declared "Integer" carries its value in
+# <IntegerValue>, never <Integer>. Writing (or checking for) the un-suffixed
+# name is a second, independent way to fail the same "Invalid UDF data type"
+# error — one this test suite's own helper was making, matching the writer's
+# equally wrong element name, which is exactly why round-tripping through this
+# tool's own tests never caught it.
+_VALUE_ELEMENT = {"Text": "TextValue", "Integer": "IntegerValue",
+                  "Double": "DoubleValue", "Cost": "CostValue",
+                  "Indicator": "IndicatorValue",
+                  "Start Date": "StartDateValue", "Finish Date": "FinishDateValue"}
+
+
 def _check(raw):
-    """Every value resolves to a declared type, with a matching element."""
+    """Every value resolves to a declared type, in the element P6 expects."""
     decl = _declared(raw)
     for oid, tag, _val in _values(raw):
         assert oid in decl, f"TypeObjectId {oid} is not declared anywhere"
-        assert decl[oid][0] == tag, f"<{tag}> under DataType {decl[oid][0]}"
+        dt = decl[oid][0]
+        assert tag == _VALUE_ELEMENT.get(dt, "TextValue"), \
+            f"<{tag}> under DataType {dt} — expected <{_VALUE_ELEMENT.get(dt)}>"
     return decl
 
 
@@ -143,7 +159,7 @@ def test_an_integer_field_is_written_as_an_integer():
     _act(p, "a1", "A1000", {"Crew Size": "6"})
     raw = _xml(p)
     _check(raw)
-    assert _values(raw)[0][1] == "Integer"
+    assert _values(raw)[0][1] == "IntegerValue"
 
 
 def test_a_double_field_is_written_as_a_double():
@@ -151,7 +167,7 @@ def test_a_double_field_is_written_as_a_double():
     _act(p, "a1", "A1000", {"Tonnage": "12.5"})
     raw = _xml(p)
     _check(raw)
-    assert _values(raw)[0][1] == "Double"
+    assert _values(raw)[0][1] == "DoubleValue"
 
 
 def test_a_numeric_field_holding_text_is_declared_as_text_not_mismatched():
@@ -170,7 +186,7 @@ def test_an_xer_style_data_type_is_translated():
     _act(p, "a1", "A1000", {"Crew Size": "4"})
     raw = _xml(p)
     _check(raw)
-    assert _values(raw)[0][1] == "Integer"
+    assert _values(raw)[0][1] == "IntegerValue"
 
 
 # ── nothing to write ──────────────────────────────────────────────────────────
@@ -323,3 +339,196 @@ def test_the_download_route_can_drop_them():
     without = c.get("/api/download?udfs=0").data.decode("utf-8")
     assert "<UDF>" in with_udfs and "<UDF>" not in without
     assert without.count("<Activity>") == with_udfs.count("<Activity>")
+
+
+# ── the real bug: schema-verified element names and enum literals ────────────
+# Confirmed against Oracle's own generated JAXB schema classes (the
+# UDFAssignmentType and UDFTypeType complex types, code-generated straight
+# from the real p6apibo.xsd) rather than against another guess:
+#
+#   - the value element is named for the VALUE, not the type. A field
+#     declared "Integer" carries its value in <IntegerValue>, never
+#     <Integer>. Every value this writer had ever produced sat inside an
+#     element P6's schema does not define at all — <Text>, <Integer>,
+#     <Double> instead of <TextValue>, <IntegerValue>, <DoubleValue>. That
+#     alone reproduces "Invalid UDF data type" regardless of whether the
+#     DataType on the declaration is valid, which is why fixing only the
+#     DataType did not clear the error that had already been reported twice.
+#
+#   - the DataType enum has no "Date" member, and the date members carry a
+#     SPACE: "Start Date" / "Finish Date", not "StartDate" / "FinishDate".
+#     The first fix used the un-spaced spellings, which are just as invalid
+#     as the FT_TEXT they were written to replace.
+#
+# Both bugs were invisible to every prior test because the reader used the
+# same wrong element names as the writer, so round-tripping through this
+# tool's own tests always agreed with itself — just never with real P6.
+
+def test_an_integer_value_sits_in_the_element_named_for_the_value():
+    p = _proj([UDFType(uid="9", title="Crew Size", data_type="Integer")])
+    _act(p, "a1", "A1000", {"Crew Size": "6"})
+    raw = _xml(p)
+    assert "<IntegerValue>6</IntegerValue>" in raw
+    assert "<Integer>" not in raw
+
+
+def test_a_text_value_sits_in_textvalue_not_text():
+    p = _proj([UDFType(uid="813", title="COMMENTS", data_type="Text")])
+    _act(p, "a1", "A1000", {"COMMENTS": "needs rigging plan"})
+    raw = _xml(p)
+    assert "<TextValue>needs rigging plan</TextValue>" in raw
+    assert "<Text>" not in raw
+
+
+def test_a_double_value_sits_in_doublevalue_not_double():
+    p = _proj([UDFType(uid="9", title="Tonnage", data_type="Double")])
+    _act(p, "a1", "A1000", {"Tonnage": "12.5"})
+    raw = _xml(p)
+    assert "<DoubleValue>12.5</DoubleValue>" in raw
+    assert "<Double>" not in raw
+
+
+def test_date_is_not_a_real_datatype_member():
+    """The enum has Start Date / Finish Date; plain "Date" does not exist."""
+    assert "Date" not in _VALID_UDF_TYPES
+    assert "Start Date" in _VALID_UDF_TYPES
+    assert "Finish Date" in _VALID_UDF_TYPES
+
+
+def test_the_date_members_carry_a_space():
+    assert normalize_udf_type("StartDate") != "StartDate"   # not a real member
+    assert normalize_udf_type("Start Date") == "Start Date"
+
+
+def test_a_field_this_app_cannot_reliably_format_downgrades_to_text():
+    """
+    Indicator / Code / date UDFs need formatting (a fixed status word, a code
+    list lookup, a real date) this app has no logic for. Rather than write an
+    arbitrary string into an element whose shape the schema constrains,
+    declaring the field Text keeps the data with no risk of a new mismatch.
+    """
+    p = _proj([UDFType(uid="9", title="Priority", data_type="Indicator")])
+    _act(p, "a1", "A1000", {"Priority": "High"})
+    raw = _xml(p)
+    decl = _check(raw)                       # still internally consistent
+    assert any(d == "Text" for d, _t in decl.values())
+    assert "<TextValue>High</TextValue>" in raw
+
+
+def test_every_real_datatype_member_gets_its_own_named_value_element():
+    assert set(_VALUE_ELEMENT) == set(_VALID_UDF_TYPES) - {"Code"}
+    assert _VALUE_ELEMENT == {
+        "Text": "TextValue", "Integer": "IntegerValue", "Double": "DoubleValue",
+        "Cost": "CostValue", "Indicator": "IndicatorValue",
+        "Start Date": "StartDateValue", "Finish Date": "FinishDateValue"}
+
+
+# ── the reader accepts a genuinely P6-authored file ───────────────────────────
+
+def _real_p6_udf_block(oid, tag, value):
+    """What an actual P6 export puts inside <Activity>, not this tool's."""
+    return f"<UDF><TypeObjectId>{oid}</TypeObjectId><{tag}>{value}</{tag}></UDF>"
+
+
+def test_a_genuinely_p6_authored_value_element_is_read():
+    """
+    Before this fix, a real P6 file's <IntegerValue> was invisible to this
+    reader — it only ever recognised the un-suffixed names this tool's own
+    (equally wrong) writer produced. A schedule round-tripped out of real P6
+    and back into this tool would have silently lost every UDF value.
+    """
+    import tempfile as _tf
+    from engine.xml_reader import load_xml
+    xml = f'''<?xml version="1.0" encoding="utf-8"?>
+<APIBusinessObjects xmlns="http://xmlns.oracle.com/Primavera/P6Professional/V19.12/API/BusinessObjects">
+  <Project>
+    <Id>P</Id><ObjectId>1</ObjectId>
+    <UDFType><DataType>Integer</DataType><ObjectId>9</ObjectId>
+      <SubjectArea>Activity</SubjectArea><Title>Crew Size</Title></UDFType>
+    <Calendar><ObjectId>1</ObjectId><Name>Std</Name><IsDefault>1</IsDefault>
+      <StandardWorkWeek><StandardWorkHours><DayOfWeek>Monday</DayOfWeek>
+      <Hours>8</Hours></StandardWorkHours></StandardWorkWeek></Calendar>
+    <WBS><ObjectId>1</ObjectId><Code>W</Code><Name>Work</Name><ProjectObjectId>1</ProjectObjectId></WBS>
+    <Activity><ObjectId>1</ObjectId><Id>A1000</Id><Name>A1000</Name>
+      <Type>Task Dependent</Type><Status>Not Started</Status>
+      <CalendarObjectId>1</CalendarObjectId><WBSObjectId>1</WBSObjectId>
+      {_real_p6_udf_block(9, "IntegerValue", 6)}
+    </Activity>
+  </Project>
+</APIBusinessObjects>'''
+    fh = _tf.NamedTemporaryFile(suffix=".xml", delete=False, mode="w")
+    fh.write(xml)
+    fh.close()
+    proj = load_xml(fh.name)
+    os.unlink(fh.name)
+    act = next(a for a in proj.activities if a.activity_id == "A1000")
+    assert act.udfs.get("Crew Size") == "6"
+
+
+def test_this_tools_own_legacy_export_still_reads_back():
+    """A file exported before this fix, still sitting on someone's disk."""
+    import tempfile as _tf
+    from engine.xml_reader import load_xml
+    xml = f'''<?xml version="1.0" encoding="utf-8"?>
+<APIBusinessObjects xmlns="http://xmlns.oracle.com/Primavera/P6Professional/V19.12/API/BusinessObjects">
+  <Project>
+    <Id>P</Id><ObjectId>1</ObjectId>
+    <UDFType><DataType>Integer</DataType><ObjectId>9</ObjectId>
+      <SubjectArea>Activity</SubjectArea><Title>Crew Size</Title></UDFType>
+    <Calendar><ObjectId>1</ObjectId><Name>Std</Name><IsDefault>1</IsDefault>
+      <StandardWorkWeek><StandardWorkHours><DayOfWeek>Monday</DayOfWeek>
+      <Hours>8</Hours></StandardWorkHours></StandardWorkWeek></Calendar>
+    <WBS><ObjectId>1</ObjectId><Code>W</Code><Name>Work</Name><ProjectObjectId>1</ProjectObjectId></WBS>
+    <Activity><ObjectId>1</ObjectId><Id>A1000</Id><Name>A1000</Name>
+      <Type>Task Dependent</Type><Status>Not Started</Status>
+      <CalendarObjectId>1</CalendarObjectId><WBSObjectId>1</WBSObjectId>
+      {_real_p6_udf_block(9, "Integer", 6)}
+    </Activity>
+  </Project>
+</APIBusinessObjects>'''
+    fh = _tf.NamedTemporaryFile(suffix=".xml", delete=False, mode="w")
+    fh.write(xml)
+    fh.close()
+    proj = load_xml(fh.name)
+    os.unlink(fh.name)
+    act = next(a for a in proj.activities if a.activity_id == "A1000")
+    assert act.udfs.get("Crew Size") == "6"
+
+
+def test_a_full_export_round_trips_through_the_real_reader_correctly():
+    """Write, then read back with the SAME reader a real P6 file would use."""
+    import tempfile as _tf
+    from engine.xml_reader import load_xml
+    p = _proj([UDFType(uid="9", title="Crew Size", data_type="Integer")])
+    _act(p, "a1", "A1000", {"Crew Size": "6"})
+    fh = _tf.NamedTemporaryFile(suffix=".xml", delete=False)
+    fh.close()
+    write_p6_xml(p, fh.name)
+    back = load_xml(fh.name)
+    os.unlink(fh.name)
+    act = next(a for a in back.activities if a.activity_id == "A1000")
+    assert act.udfs.get("Crew Size") == "6"
+
+
+# ── the position <UDF> sits at within <Activity> ──────────────────────────────
+# Verified against the real schema's ActivityType propOrder: every plain field
+# is alphabetical, and <UDF> comes after the LAST of them (WBSObjectId, for
+# everything this app emits) — not sorted into alphabetical position among the
+# plain fields, which is where an earlier attempt at this fix put it (between
+# <Type> and <UnitsPercentComplete>) and was rightly reverted as unverified.
+
+def test_udf_comes_after_every_plain_activity_field():
+    p = _proj([UDFType(uid="9", title="Crew Size", data_type="Integer")])
+    _act(p, "a1", "A1000", {"Crew Size": "6"})
+    raw = _xml(p)
+    one = raw[raw.index("<Activity>"):raw.index("</Activity>") + len("</Activity>")]
+    assert one.index("<UDF>") > one.index("<WBSObjectId>")
+
+
+def test_the_plain_fields_are_still_alphabetical():
+    p = _proj()
+    _act(p, "a1", "A1000")
+    raw = _xml(p)
+    one = raw[raw.index("<Activity>"):raw.index("</Activity>") + len("</Activity>")]
+    tags = re.findall(r"<(\w+)>", one)[1:-1]     # drop the Activity wrapper itself
+    assert tags == sorted(tags)

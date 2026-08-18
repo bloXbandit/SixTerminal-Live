@@ -180,6 +180,15 @@ def _read_udfs(el, udf_titles):
 
     P6 writes the value in one of several typed elements depending on the
     field's data type, so take whichever one is present rather than assuming.
+
+    The real elements — confirmed against Oracle's own generated schema
+    classes — are named for the VALUE (TextValue, IntegerValue, …), not the
+    type. This reader and the writer both used the un-suffixed names
+    (Text, Integer, …) until now, which is why re-loading this app's own
+    exports always worked: read and write agreed with each other, just not
+    with P6. The old names are kept as a second try so a file already
+    exported by this tool keeps loading; a P6-authored file only ever uses
+    the real ones.
     """
     out = {}
     for u in _descendants(el, "UDF"):
@@ -187,7 +196,10 @@ def _read_udfs(el, udf_titles):
         title = udf_titles.get(oid)
         if not title:
             continue
-        for tag in ("Text", "Double", "Integer", "StartDate", "FinishDate",
+        for tag in ("TextValue", "IntegerValue", "DoubleValue", "CostValue",
+                    "IndicatorValue", "StartDateValue", "FinishDateValue",
+                    # legacy: this tool's own pre-fix exports
+                    "Text", "Double", "Integer", "StartDate", "FinishDate",
                     "CodeValue", "Indicator"):
             v = _text(u, tag)
             if v not in (None, ""):
