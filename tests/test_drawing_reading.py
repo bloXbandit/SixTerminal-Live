@@ -178,3 +178,46 @@ def test_no_file_attached_is_refused():
     c = _client()
     assert c.post("/api/brain/image", data={},
                   content_type="multipart/form-data").status_code == 400
+
+
+# ── a pasted screenshot arrives with no real filename ─────────────────────────
+# Clipboard file data from an OS screenshot or "Copy image" often has no name
+# and no extension at all, or an unreliable one — and the reader decides
+# image vs. PDF purely from the extension, so a missing one reads as "not a
+# readable image" for a file that plainly is one.
+
+def test_a_filename_with_a_real_extension_is_left_alone():
+    assert server._named_upload("sheet.png", "image/png") == "sheet.png"
+
+
+def test_a_missing_extension_is_filled_from_the_mime_type():
+    assert server._named_upload("blob", "image/png") == "blob.png"
+    assert server._named_upload("", "image/jpeg") == "upload.jpeg"
+
+
+def test_an_unknown_mime_type_with_no_extension_is_left_bare():
+    """Falls through to the normal 'not a readable image' error, not a crash."""
+    assert server._named_upload("blob", "application/octet-stream") == "blob"
+
+
+def test_a_mime_type_with_parameters_still_resolves():
+    assert server._named_upload("blob", "image/png; charset=binary") == "blob.png"
+
+
+def test_a_pasted_image_with_no_extension_reaches_the_drawing_reader(monkeypatch):
+    """The werkzeug test client lets the file part carry its own mimetype,
+    matching what a browser sends for a clipboard image with a bare name."""
+    c = _client()
+    captured = {}
+
+    def fake_read_drawing(file_bytes, filename, *a, **k):
+        captured["filename"] = filename
+        return dict(_READING)
+
+    monkeypatch.setattr("interpreter.vision.read_drawing", fake_read_drawing)
+    body = c.post("/api/brain/image",
+                  data={"file": (io.BytesIO(b"png"), "blob", "image/png")},
+                  content_type="multipart/form-data").get_json()
+    assert body.get("success")
+    assert captured["filename"] == "blob.png"
+    assert body["filename"] == "blob.png"

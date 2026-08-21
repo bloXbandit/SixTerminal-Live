@@ -497,6 +497,10 @@
       border-color:var(--accent2);
       box-shadow:0 0 0 3px var(--accent-glow),0 0 20px rgba(0,207,255,.1);
     }
+    .input-wrap.drag-over{
+      border-color:var(--accent2);background:var(--accent-glow2);
+      box-shadow:0 0 0 3px var(--accent-glow);
+    }
     #instruction-input{
       flex:1;background:transparent;border:none;color:var(--text);
       font-family:var(--font);font-size:13px;padding:6px 0;
@@ -2304,7 +2308,7 @@
           <svg viewBox="0 0 24 24"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
         </button>
       </div>
-      <div class="input-hint">Enter to send &nbsp;&middot;&nbsp; Shift+Enter for new line &nbsp;&middot;&nbsp; 📎 attach a drawing</div>
+      <div class="input-hint">Enter to send &nbsp;&middot;&nbsp; Shift+Enter for new line &nbsp;&middot;&nbsp; 📎 attach, drop, or paste a screenshot</div>
     </div>
 
 </div>
@@ -2539,6 +2543,65 @@ editorPanel.addEventListener('drop', e => {
   const ext = (f.name.split('.').pop() || '').toLowerCase();
   if (_IMAGE_EXTS.has(ext) || ext === 'pdf') stageDrawing(f);
   else handleChosenFile(f);
+});
+
+// ── Drop and paste straight onto the chat input ──────────────────────────────
+// The panel-wide drop handler above only fires for a drop that lands inside
+// #panel-editor's own subtree — the input bar sits OUTSIDE that div in the
+// markup (it is a sibling, below the tab panels), so dropping a screenshot
+// directly onto the textbox itself had no listener at all and did nothing.
+// That is almost certainly why it read as "drag-drop doesn't work" even
+// though it worked over the message log.
+const inputBar = document.querySelector('.input-bar');
+const inputWrap = document.querySelector('.input-wrap');
+if (inputBar && inputWrap) {
+  inputBar.addEventListener('dragover', e => {
+    if (![...(e.dataTransfer.types || [])].includes('Files')) return;
+    e.preventDefault(); inputWrap.classList.add('drag-over');
+  });
+  inputBar.addEventListener('dragleave', e => {
+    if (e.relatedTarget && inputBar.contains(e.relatedTarget)) return;
+    inputWrap.classList.remove('drag-over');
+  });
+  inputBar.addEventListener('drop', e => {
+    const f = e.dataTransfer.files && e.dataTransfer.files[0];
+    inputWrap.classList.remove('drag-over');
+    if (!f) return;
+    e.preventDefault();
+    const ext = (f.name.split('.').pop() || '').toLowerCase();
+    if (_IMAGE_EXTS.has(ext) || ext === 'pdf') stageDrawing(f);
+    else handleChosenFile(f);
+  });
+}
+
+// A screenshot on the clipboard (OS snip tool, or a right-click "Copy image"
+// picked up with Ctrl+V or the browser's native right-click "Paste") arrives
+// as clipboard FILE data, not text — the textarea's default paste handling
+// only knows what to do with text/plain, so an image paste there previously
+// did nothing visible. Plain text paste is left completely alone: only a
+// clipboard item that is actually an image file is intercepted.
+document.getElementById('instruction-input')?.addEventListener('paste', e => {
+  const items = e.clipboardData && e.clipboardData.items;
+  if (!items) return;
+  for (const item of items) {
+    if (item.kind === 'file' && item.type.startsWith('image/')) {
+      const raw = item.getAsFile();
+      if (raw) {
+        e.preventDefault();
+        // A pasted clipboard image usually has no real filename — Chrome
+        // gives "image.png", but that is not guaranteed everywhere, and the
+        // server decides image vs. PDF by extension. Building a proper name
+        // from the actual MIME type removes the guess.
+        const ext = (item.type.split('/')[1] || 'png').replace('jpeg', 'jpg');
+        const named = (raw.name && /\.\w+$/.test(raw.name)) ? raw
+          : new File([raw], `pasted-${Date.now()}.${ext}`, {type: item.type});
+        stageDrawing(named);
+        return;
+      }
+    }
+  }
+  // No image on the clipboard — fall through to the browser's normal
+  // paste-as-text, unchanged.
 });
 
 async function uploadFile(file) {

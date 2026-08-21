@@ -270,6 +270,30 @@ def _unique_pid(stem: str) -> str:
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
+_MIME_EXT = {
+    "image/png": ".png", "image/jpeg": ".jpeg", "image/jpg": ".jpeg",
+    "image/webp": ".webp", "image/gif": ".gif", "application/pdf": ".pdf",
+}
+
+
+def _named_upload(filename: str, mimetype: str) -> str:
+    """
+    A filename with an extension the image/PDF readers can actually route on.
+
+    A clipboard paste is normally already named correctly by the browser's
+    File constructor before it reaches here, but this is the second line of
+    defence for anything that arrives without one — a pasted image with no
+    extension, or a client that skips the browser fix. The reader decides
+    image vs. PDF purely from the extension, so a missing one otherwise reads
+    as "not a readable image" for a file that plainly is one.
+    """
+    name = (filename or "").strip()
+    if os.path.splitext(name)[1]:
+        return name
+    ext = _MIME_EXT.get((mimetype or "").split(";")[0].strip().lower(), "")
+    return (name or "upload") + ext
+
+
 def _append_chat(role: str, text: str, context: str = None):
     """
     Record one turn of the conversation.
@@ -2046,6 +2070,7 @@ def brain_image():
     f = request.files["file"]
     question = (request.form.get("question") or "").strip()
     blob = f.read()
+    filename = _named_upload(f.filename, f.mimetype)
 
     # The same pixels answer two different jobs. "What does this show?" is a
     # drawing read; "make my dates match this" is a schedule read, and sending
@@ -2062,10 +2087,10 @@ def brain_image():
     mode = (request.form.get("mode")
             or _vision.classify_image_intent(question, said_before))
     if mode == "schedule":
-        return _read_schedule_image(sess, blob, f.filename or "", question)
+        return _read_schedule_image(sess, blob, filename, question)
 
     try:
-        reading = _vision.read_drawing(blob, f.filename or "", sess["project"],
+        reading = _vision.read_drawing(blob, filename, sess["project"],
                                        question=question,
                                        model_key=_settings["model_key"],
                                        api_key=_settings["api_key"])
@@ -2091,8 +2116,8 @@ def brain_image():
     reading["directives_graded"] = graded
 
     # The read joins the conversation so later questions can refer back to it.
-    label = reading.get("sheet_number") or reading.get("sheet_title") or f.filename
-    parts = [f"Drawing read from uploaded file '{f.filename}' "
+    label = reading.get("sheet_number") or reading.get("sheet_title") or filename
+    parts = [f"Drawing read from uploaded file '{filename}' "
              f"(sheet {label}, discipline: {reading.get('discipline', 'other')}):"]
     if reading.get("summary"):
         parts.append(f"  Summary: {reading['summary']}")
@@ -2107,11 +2132,11 @@ def brain_image():
         parts.append("  Suggested rules (proposed to user, NOT yet confirmed "
                      "unless they appear in the project brain):")
         parts.extend(f"    - {x}" for x in reading["directives"])
-    _append_chat("user", f"[uploaded drawing: {f.filename}]"
+    _append_chat("user", f"[uploaded drawing: {filename}]"
                          + (f" — {question}" if question else ""))
     _append_chat("assistant", f"Read sheet {label}: {reading.get('summary', '')}",
                  context="\n".join(parts))
-    return jsonify({"success": True, "reading": reading, "filename": f.filename,
+    return jsonify({"success": True, "reading": reading, "filename": filename,
                     "chat": sess["chat_history"][-2:]})
 
 
