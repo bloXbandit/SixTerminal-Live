@@ -21,7 +21,7 @@ import datetime as _dt
 import json
 import os
 import re
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 try:
     import anthropic
@@ -59,8 +59,26 @@ Return ONLY a JSON object, no markdown, exactly this shape:
   "rooms": ["room/area identifiers visible, using the job's own naming, e.g. MV 105"],
   "equipment": ["major equipment shown, e.g. GIS RMU, MV XFMR, PDU"],
   "facts": ["short factual observations that affect logic, one clause each"],
-  "directives": ["only sequencing statements the sheet clearly supports, phrased in plain rule language like 'X follows Y in the same room' or 'X before Y' — empty list if the sheet shows layout but no order"]
+  "room_flow": {
+    "family": "the room family the flow is over, e.g. MV — null if none",
+    "order": ["the room NUMBERS in build order, e.g. [107, 105, 106]"],
+    "why": "what on the sheet shows this order — the specific evidence",
+    "confidence": "stated | implied | none"
+  },
+  "directives": ["sequencing statements the sheet supports, in one of the three shapes below — empty list if the sheet shows layout but no order"]
 }
+
+THE THREE SHAPES THAT BECOME ENFORCED RULES. A directive written any other way is kept as a note and enforces nothing, so use these words:
+  1. "<work A> follows <work B> in the same room"   (also: "... in the same phase")
+  2. "<FAMILY> rooms run sequential"                 (they are built in number order)
+  3. "<FAMILY> rooms run 107, 105, 106"              (they are built in THIS order)
+Shape 3 is the one a drawing set is uniquely good for — number order is rarely the build order.
+
+room_flow — read the LAYOUT, not just the labels:
+- A feed direction, a riser working up, a phased hand-over boundary, a numbered install sequence, a keyed plan, a construction-sequence note, or equipment fed from a common source all imply which room is reachable or energised first.
+- Say WHY in the "why" field, citing what is actually on the sheet. "Rooms are numbered left to right" is not evidence of build order; "MV 107 feeds 105 and 106 from the utility entry" is.
+- confidence "stated" only when the sheet says the order in words or numbers it. "implied" when you are reading it off the layout. "none" when you are not reading an order at all — then use an empty order list.
+- Never turn plain room numbering into a flow. If the only thing you know is that the rooms exist, that is confidence "none".
 
 Rules:
 - Use the schedule's own vocabulary where the context below names rooms/equipment; match its spelling.
@@ -220,7 +238,45 @@ def _parse_reading(raw: str) -> Dict[str, Any]:
         "equipment": [str(x) for x in (data.get("equipment") or [])][:40],
         "facts": [str(x) for x in (data.get("facts") or [])][:25],
         "directives": [str(x) for x in (data.get("directives") or [])][:15],
+        "room_flow": _parse_room_flow(data.get("room_flow")),
     }
+
+
+def _parse_room_flow(raw: Any) -> Optional[Dict[str, Any]]:
+    """
+    An order read off the layout, or nothing.
+
+    Held to the same bar as everything else here: a flow with no family, or
+    fewer than two rooms, is not an order — and a model that answered
+    "confidence: none" is telling us it was not reading one, so it is not
+    quietly promoted into a rule.
+    """
+    if not isinstance(raw, dict):
+        return None
+    fam = str(raw.get("family") or "").strip()
+    confidence = str(raw.get("confidence") or "").strip().lower()
+    if not fam or confidence == "none":
+        return None
+    order, seen = [], set()
+    for x in (raw.get("order") or [])[:60]:
+        m = re.search(r"\d{1,4}", str(x))
+        if not m:
+            continue
+        n = int(m.group(0))
+        if n not in seen:
+            seen.add(n)
+            order.append(n)
+    if len(order) < 2:
+        return None
+    return {"family": fam, "order": order,
+            "why": str(raw.get("why") or "").strip(),
+            "confidence": confidence if confidence in ("stated", "implied") else "implied"}
+
+
+def flow_sentence(flow: Dict[str, Any]) -> str:
+    """The room flow as a sentence the brain's parser will read as a rule."""
+    return (f"{flow['family']} rooms run "
+            + ", ".join(str(n) for n in flow["order"]))
 
 
 def read_drawing(file_bytes: bytes, filename: str, project=None,
@@ -238,6 +294,125 @@ def read_drawing(file_bytes: bytes, filename: str, project=None,
             "\n\nThe user asked, about this sheet: " + question.strip()
             if (question or "").strip() else ""),
         model_key, api_key))
+
+
+MAX_SHEETS = 12
+
+
+def read_drawing_set(files: List[Tuple[bytes, str]], project=None,
+                     question: str = "", model_key: str = None,
+                     api_key: str = None) -> Dict[str, Any]:
+    """
+    A set of sheets read together, and what they say as a set.
+
+    One sheet at a time is how a drawing gets read; it is not how a drawing
+    SET gets understood. The riser says one thing, the floor plan another, and
+    the sequencing note on the third confirms it — evidence that only counts
+    once you can see it repeat. So each sheet is still read on its own (they
+    are separate images; there is no way around a call each), and then the
+    readings are merged with their provenance kept: which sheet said what, and
+    what more than one sheet agrees on.
+
+    Nothing is resolved by majority. Where two sheets state different orders
+    for the same room family, BOTH are reported as a conflict — a drawing set
+    that disagrees with itself is a finding, not a tie to break silently.
+
+    One sheet failing does not lose the rest; its error is carried per-sheet.
+    """
+    if not files:
+        raise RuntimeError("No sheets attached.")
+    if len(files) > MAX_SHEETS:
+        raise RuntimeError(
+            f"{len(files)} sheets at once — read up to {MAX_SHEETS} in a batch. "
+            f"Each sheet is a separate read, so a big set is best sent in "
+            f"groups you can review as you go.")
+
+    sheets: List[Dict[str, Any]] = []
+    for blob, name in files:
+        label = name
+        try:
+            reading = read_drawing(blob, name, project, question=question,
+                                   model_key=model_key, api_key=api_key)
+            label = (reading.get("sheet_number") or reading.get("sheet_title")
+                     or name)
+            sheets.append({"filename": name, "label": label,
+                           "reading": reading, "error": None})
+        except Exception as e:
+            sheets.append({"filename": name, "label": label,
+                           "reading": None, "error": str(e)})
+
+    ok = [s for s in sheets if s["reading"]]
+    if not ok:
+        raise RuntimeError("None of those sheets could be read. "
+                           + (sheets[0]["error"] or ""))
+
+    def merged(key: str, cap: int) -> List[Dict[str, Any]]:
+        """Deduped across sheets, remembering which sheets said it."""
+        order: List[str] = []
+        seen: Dict[str, Dict[str, Any]] = {}
+        for s in ok:
+            for item in (s["reading"].get(key) or []):
+                text = str(item).strip()
+                norm = re.sub(r"\s+", " ", text.lower())
+                if not norm:
+                    continue
+                if norm not in seen:
+                    seen[norm] = {"text": text, "sources": []}
+                    order.append(norm)
+                if s["label"] not in seen[norm]["sources"]:
+                    seen[norm]["sources"].append(s["label"])
+        return [seen[n] for n in order[:cap]]
+
+    # Room flows, grouped by family. Agreement across sheets is the strongest
+    # evidence a drawing set can give; disagreement is worth more than either
+    # side of it, so it is surfaced rather than resolved.
+    by_family: Dict[str, List[Dict[str, Any]]] = {}
+    for s in ok:
+        flow = s["reading"].get("room_flow")
+        if flow:
+            by_family.setdefault(flow["family"].upper(), []).append(
+                {**flow, "source": s["label"]})
+
+    flows, conflicts = [], []
+    for fam, found in by_family.items():
+        distinct = {tuple(f["order"]) for f in found}
+        if len(distinct) > 1:
+            conflicts.append({
+                "family": fam,
+                "readings": [{"order": f["order"], "source": f["source"],
+                              "why": f["why"], "confidence": f["confidence"]}
+                             for f in found],
+                "why": (f"{len(distinct)} different build orders for {fam} rooms "
+                        f"across these sheets — the set does not agree with "
+                        f"itself, so neither is proposed."),
+            })
+            continue
+        best = max(found, key=lambda f: (f["confidence"] == "stated", len(f["order"])))
+        flows.append({
+            "family": fam,
+            "order": best["order"],
+            "why": best["why"],
+            "confidence": best["confidence"],
+            "sources": [f["source"] for f in found],
+            "agreed_by": len(found),
+            "sentence": flow_sentence(best),
+        })
+
+    return {
+        "sheets": [{"filename": s["filename"], "label": s["label"],
+                    "error": s["error"],
+                    "summary": (s["reading"] or {}).get("summary", ""),
+                    "discipline": (s["reading"] or {}).get("discipline", "")}
+                   for s in sheets],
+        "read_count": len(ok),
+        "failed_count": len(sheets) - len(ok),
+        "rooms": merged("rooms", 80),
+        "equipment": merged("equipment", 80),
+        "facts": merged("facts", 40),
+        "directives": merged("directives", 30),
+        "room_flows": flows,
+        "conflicts": conflicts,
+    }
 
 
 def read_schedule(file_bytes: bytes, filename: str, project=None,

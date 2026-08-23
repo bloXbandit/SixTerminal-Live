@@ -2146,12 +2146,14 @@ def brain_image():
     sess = _get_session()
     if sess is None or sess["project"] is None:
         return jsonify({"error": "No schedule loaded"}), 400
-    if "file" not in request.files:
+    # "file" is one sheet; "files" is a set. Both are accepted so an existing
+    # single-sheet upload keeps working exactly as it did.
+    uploads = request.files.getlist("files") or request.files.getlist("file")
+    if not uploads:
         return jsonify({"error": "No drawing attached"}), 400
-    f = request.files["file"]
     question = (request.form.get("question") or "").strip()
-    blob = f.read()
-    filename = _named_upload(f.filename, f.mimetype)
+    sheets = [(u.read(), _named_upload(u.filename, u.mimetype)) for u in uploads]
+    blob, filename = sheets[0]
 
     # The same pixels answer two different jobs. "What does this show?" is a
     # drawing read; "make my dates match this" is a schedule read, and sending
@@ -2169,6 +2171,9 @@ def brain_image():
             or _vision.classify_image_intent(question, said_before))
     if mode == "schedule":
         return _read_schedule_image(sess, blob, filename, question)
+
+    if len(sheets) > 1:
+        return _read_drawing_set(sess, sheets, question)
 
     try:
         reading = _vision.read_drawing(blob, filename, sess["project"],
@@ -2218,6 +2223,73 @@ def brain_image():
     _append_chat("assistant", f"Read sheet {label}: {reading.get('summary', '')}",
                  context="\n".join(parts))
     return jsonify({"success": True, "reading": reading, "filename": filename,
+                    "chat": sess["chat_history"][-2:]})
+
+
+def _read_drawing_set(sess, sheets, question):
+    """
+    A set of sheets read together — what they agree on, and what they don't.
+
+    Same door as a single sheet: every proposed rule is graded against the
+    real schedule before it is offered, and nothing lands until it is clicked
+    through /api/brain. A drawing set carries more weight than one sheet, so
+    it is worth MORE care here, not less.
+    """
+    from interpreter import vision as _vision
+    try:
+        rep = _vision.read_drawing_set(sheets, sess["project"], question=question,
+                                       model_key=_settings["model_key"],
+                                       api_key=_settings["api_key"])
+    except RuntimeError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        return jsonify({"error": f"Could not read that drawing set: {e}"}), 500
+
+    project = sess["project"]
+
+    def grade(text):
+        d = project_brain.ground(project, project_brain.parse_directive(text))
+        return {"binds": d.kind != project_brain.NOTE,
+                "understood": project_brain.describe(d),
+                "matched": [d.matched_after, d.matched_subject]}
+
+    for item in rep["directives"]:
+        item.update(grade(item["text"]))
+    # A room flow only means something if it survives grounding — an order over
+    # rooms this schedule does not have is a reading of the drawing, not a rule
+    # about this job, and the card has to say which it is.
+    for flow in rep["room_flows"]:
+        flow.update(grade(flow["sentence"]))
+
+    binding = sum(1 for x in rep["directives"] if x["binds"])
+    flows_ok = sum(1 for f in rep["room_flows"] if f["binds"])
+    lines = [f"Read {rep['read_count']} sheet(s)"
+             + (f", {rep['failed_count']} could not be read" if rep["failed_count"] else "")
+             + f": {', '.join(s['label'] for s in rep['sheets'] if not s['error'])}."]
+    for f in rep["room_flows"]:
+        lines.append(f"  ROOM FLOW ({f['confidence']}, {f['agreed_by']} sheet(s)): "
+                     f"{f['sentence']} — {f['why']} "
+                     f"[{'binds' if f['binds'] else 'does not bind'}]")
+    for c in rep["conflicts"]:
+        lines.append(f"  CONFLICT: {c['why']}")
+    for x in rep["facts"][:15]:
+        lines.append(f"  fact: {x['text']} ({', '.join(x['sources'])})")
+    for x in rep["directives"][:15]:
+        lines.append(f"  proposed rule: {x['text']} ({', '.join(x['sources'])}) "
+                     f"[{'binds' if x['binds'] else 'guidance only'}]")
+    lines.append("NOTHING IS IN THE BRAIN YET. These are proposals the user "
+                 "confirms one by one. Do not say a rule is in force unless a "
+                 "later result says it was added.")
+
+    names = ", ".join(n for _, n in sheets)
+    _append_chat("user", f"[uploaded {len(sheets)} drawings: {names}]"
+                         + (f" — {question}" if question else ""))
+    _append_chat("assistant",
+                 f"Read {rep['read_count']} sheets — {binding} rule(s) that bind"
+                 + (f", {flows_ok} room flow(s)" if flows_ok else "")
+                 + (f", {len(rep['conflicts'])} conflict(s)" if rep["conflicts"] else ""),
+                 context="\n".join(lines))
+    return jsonify({"success": True, "type": "drawing_set", **rep,
                     "chat": sess["chat_history"][-2:]})
 
 

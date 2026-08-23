@@ -2354,11 +2354,11 @@
       <div id="attach-chip" style="display:none;"></div>
       <div class="input-wrap">
         <button id="attach-btn" onclick="document.getElementById('drawing-file').click()"
-                title="Attach a drawing — a snip, screenshot or PDF sheet. It waits until you hit send, so you can type what you want done with it.">
+                title="Attach drawings — snips, screenshots or PDF sheets. Pick several and they are read as a set. They wait until you hit send, so you can type what you want done with them.">
           <svg viewBox="0 0 24 24"><path d="M16.5 6v11.5a4 4 0 01-8 0V5a2.5 2.5 0 015 0v10.5a1 1 0 01-2 0V6H10v9.5a2.5 2.5 0 005 0V5a4 4 0 00-8 0v12.5a5.5 5.5 0 0011 0V6h-1.5z"/></svg>
         </button>
-        <input type="file" id="drawing-file" accept="image/png,image/jpeg,image/webp,image/gif,.pdf"
-               style="display:none;" onchange="stageDrawing(this.files[0]); this.value='';">
+        <input type="file" id="drawing-file" multiple accept="image/png,image/jpeg,image/webp,image/gif,.pdf"
+               style="display:none;" onchange="stageDrawings(this.files); this.value='';">
         <textarea id="instruction-input" placeholder="Type an edit or just chat…" rows="1"
           onkeydown="handleKey(event)" oninput="autoResize(this)"></textarea>
         <button id="send-btn" onclick="sendInstruction()" disabled title="Send">
@@ -2621,13 +2621,20 @@ if (inputBar && inputWrap) {
     inputWrap.classList.remove('drag-over');
   });
   inputBar.addEventListener('drop', e => {
-    const f = e.dataTransfer.files && e.dataTransfer.files[0];
+    const dropped = [...(e.dataTransfer.files || [])];
     inputWrap.classList.remove('drag-over');
-    if (!f) return;
+    if (!dropped.length) return;
     e.preventDefault();
-    const ext = (f.name.split('.').pop() || '').toLowerCase();
-    if (_IMAGE_EXTS.has(ext) || ext === 'pdf') stageDrawing(f);
-    else handleChosenFile(f);
+    // A dragged selection of sheets is a set — stage them all rather than
+    // silently taking the first and dropping the rest.
+    const isSheet = f => {
+      const ext = (f.name.split('.').pop() || '').toLowerCase();
+      return _IMAGE_EXTS.has(ext) || ext === 'pdf';
+    };
+    const sheets = dropped.filter(isSheet);
+    if (sheets.length) stageDrawings(sheets);
+    const other = dropped.find(f => !isSheet(f));
+    if (other && !sheets.length) handleChosenFile(other);
   });
 }
 
@@ -3375,11 +3382,11 @@ async function sendInstruction() {
   const reply = input.value.trim();
   // A staged sheet is the message. Send takes it and whatever was typed
   // alongside it — including nothing, which just means "read this".
-  if (_stagedDrawing) {
-    const file = _stagedDrawing;
+  if (_stagedDrawings.length) {
+    const files = _stagedDrawings.slice();
     clearStagedDrawing();
     input.value = ''; autoResize(input);
-    await sendDrawing(file, reply);
+    await sendDrawing(files, reply);
     return;
   }
   if (!reply) return;
@@ -8106,46 +8113,92 @@ async function brainCheck(){
 // anything about a sheet was to type BEFORE picking the file. Now it stages:
 // the chip sits above the input until you send, so "only match my dates to
 // this" arrives WITH the drawing instead of a turn too late.
-let _stagedDrawing = null;
+// Several sheets can stage at once: a drawing SET is read together, so what
+// two sheets agree on is evidence in a way one sheet alone never is.
+let _stagedDrawings = [];
+const MAX_SHEETS = 12;      // matches vision.MAX_SHEETS — each sheet is a read
 
 function stageDrawing(file){
   if(!file) return;
-  _stagedDrawing = file;
-  const chip = document.getElementById('attach-chip');
-  const kb = Math.max(1, Math.round(file.size / 1024));
-  chip.innerHTML = `<span style="display:inline-flex;align-items:center;gap:8px;
-      border:1px solid var(--accent);border-radius:var(--r-md);
-      background:rgba(0,207,255,.08);padding:4px 10px;margin-bottom:6px;font-size:11px;">
-      <span>📎 ${escHtml(file.name)} <span style="color:var(--text3);">· ${kb} KB</span></span>
-      <span style="color:var(--text3);">— say what to do with it, or just send</span>
-      <button class="btn btn-ghost btn-sm" onclick="clearStagedDrawing()">✕</button>
-    </span>`;
-  chip.style.display = 'block';
+  if(_stagedDrawings.length >= MAX_SHEETS){
+    flashSched(`Up to ${MAX_SHEETS} sheets at a time`, true); return;
+  }
+  _stagedDrawings.push(file);
+  renderAttachChips();
   document.getElementById('send-btn').disabled = false;
   document.getElementById('instruction-input').focus();
 }
 
-function clearStagedDrawing(){
-  _stagedDrawing = null;
-  const chip = document.getElementById('attach-chip');
-  chip.style.display = 'none';
-  chip.innerHTML = '';
+/** Several sheets at once — they get read as a SET, not N separate reads. */
+function stageDrawings(fileList){
+  const picked = [...(fileList || [])];
+  if(!picked.length) return;
+  const room = MAX_SHEETS - _stagedDrawings.length;
+  if(room <= 0){ flashSched(`Up to ${MAX_SHEETS} sheets at a time`, true); return; }
+  if(picked.length > room)
+    flashSched(`Taking the first ${room} — up to ${MAX_SHEETS} sheets at a time`, true);
+  picked.slice(0, room).forEach(f => _stagedDrawings.push(f));
+  renderAttachChips();
+  document.getElementById('send-btn').disabled = false;
+  document.getElementById('instruction-input').focus();
 }
 
-async function sendDrawing(file, question){
-  if(!file) return;
+function renderAttachChips(){
+  const chip = document.getElementById('attach-chip');
+  if(!_stagedDrawings.length){
+    chip.style.display = 'none'; chip.innerHTML = ''; return;
+  }
+  const one = _stagedDrawings.length === 1;
+  chip.innerHTML = _stagedDrawings.map((f, i) => {
+    const kb = Math.max(1, Math.round(f.size / 1024));
+    return `<span style="display:inline-flex;align-items:center;gap:6px;
+      border:1px solid var(--accent);border-radius:var(--r-md);
+      background:rgba(0,207,255,.08);padding:4px 10px;margin:0 6px 6px 0;font-size:11px;">
+      <span>📎 ${escHtml(f.name)} <span style="color:var(--text3);">· ${kb} KB</span></span>
+      <button class="btn btn-ghost btn-sm" onclick="removeStagedDrawing(${i})">✕</button>
+    </span>`;
+  }).join('')
+  + `<div style="font-size:10.5px;color:var(--text3);margin-bottom:6px;">`
+  + (one ? 'Say what to do with it, or just send.'
+         : `${_stagedDrawings.length} sheets — read together as a set, so what they `
+           + `agree on counts. Say what to do with them, or just send.`)
+  + `</div>`;
+  chip.style.display = 'block';
+}
+
+function removeStagedDrawing(i){
+  _stagedDrawings.splice(i, 1);
+  renderAttachChips();
+}
+
+function clearStagedDrawing(){
+  _stagedDrawings = [];
+  renderAttachChips();
+}
+
+async function sendDrawing(files, question){
+  files = [].concat(files || []).filter(Boolean);
+  if(!files.length) return;
   question = (question || '').trim();
-  addMsg('user', escHtml('[uploaded drawing: ' + file.name + ']') + (question ? ' — ' + escHtml(question) : ''));
-  addMsg('system', '<span class="spinner"></span><em style="color:var(--text3)">Reading the sheet…</em>', 'pending');
+  const many = files.length > 1;
+  const label = many ? `[uploaded ${files.length} drawings: ${files.map(f => f.name).join(', ')}]`
+                     : `[uploaded drawing: ${files[0].name}]`;
+  addMsg('user', escHtml(label) + (question ? ' — ' + escHtml(question) : ''));
+  addMsg('system', '<span class="spinner"></span><em style="color:var(--text3)">'
+    + (many ? `Reading ${files.length} sheets…` : 'Reading the sheet…') + '</em>', 'pending');
   const fd = new FormData();
-  fd.append('file', file);
+  // "file" stays the single-sheet field so that path is untouched; a set goes
+  // as "files", which the route reads as a set.
+  if(many) files.forEach(f => fd.append('files', f));
+  else fd.append('file', files[0]);
   if(question) fd.append('question', question);
   try{
     const d = await fetch('/api/brain/image', {method:'POST', body: fd}).then(r => r.json());
     removePending();
     if(d.error){ addMsg('system', errorCard(d.error)); return; }
     if(d.type === 'schedule_image'){ addMsg('system', scheduleImageCard(d)); return; }
-    addMsg('system', drawingCard(d.reading, d.filename));
+    if(d.type === 'drawing_set') addMsg('system', drawingSetCard(d));
+    else addMsg('system', drawingCard(d.reading, d.filename));
     // The assistant's read line — the same text a reload restores, so the
     // record of what the sheet said never depends on the ephemeral card.
     const readLine = (d.chat || []).find(m => m.role === 'assistant');
@@ -8286,6 +8339,111 @@ function drawingCard(rd, filename){
         onclick="saveDrawingNote('${id}', this)">Keep summary as note</button>` : ''}
     </div>
   </div>`;
+}
+
+// ── A set of sheets, read together ───────────────────────────────────────────
+// The point of a set is what survives more than one sheet: a flow two drawings
+// agree on is worth more than either alone, and two that disagree is a finding
+// rather than a coin toss. Both are shown as such. Every line still lands one
+// click at a time, through the same door as a typed rule.
+
+function drawingSetCard(d){
+  const id = 'dset-' + Date.now();
+  window._drawingSets = window._drawingSets || {};
+  window._drawingSets[id] = d;
+  const src = s => `<span style="color:var(--text3);font-size:10px;">${escHtml((s||[]).join(', '))}</span>`;
+
+  const flowRow = (f, i) => {
+    const agreed = f.agreed_by > 1
+      ? `<span class="tie-conf tie-hi">${f.agreed_by} sheets agree</span>` : '';
+    const conf = `<span class="tie-conf ${f.confidence === 'stated' ? 'tie-hi' : 'tie-mid'}">${escHtml(f.confidence)}</span>`;
+    const btn = f.binds
+      ? `<button class="btn btn-primary btn-sm" id="${id}-f${i}"
+           onclick="addSetFlow('${id}',${i},this)">Add rule</button>`
+      : `<span style="font-size:10.5px;color:var(--text3);">won't bind —
+           ${escHtml((f.understood||'').replace(/^Guidance only — /, ''))}</span>`;
+    return `<tr${f.binds ? '' : ' style="opacity:.55;"'}>
+      <td><b>${escHtml(f.sentence)}</b>
+        <div style="font-size:10.5px;color:var(--text3);">${escHtml(f.why || '')}</div>
+        <div style="margin-top:3px;">${conf} ${agreed} ${src(f.sources)}</div></td>
+      <td style="white-space:nowrap;">${btn}</td></tr>`;
+  };
+
+  const dirRow = (x, i) => {
+    const btn = x.binds
+      ? `<button class="btn btn-primary btn-sm" onclick="addSetDirective('${id}',${i},this)">Add rule</button>`
+      : `<button class="btn btn-ghost btn-sm" onclick="addSetDirective('${id}',${i},this)">Keep as note</button>`;
+    const bind = x.binds
+      ? `<div style="font-size:10.5px;color:var(--text3);">binds ${x.matched[0]} ↔ ${x.matched[1]} activities</div>`
+      : `<div style="font-size:10.5px;color:var(--text3);">won't bind — ${escHtml((x.understood||'').replace(/^Guidance only — /, ''))}</div>`;
+    return `<tr${x.binds ? '' : ' style="opacity:.6;"'}>
+      <td class="tie-why">${escHtml(x.text)}${bind}<div>${src(x.sources)}</div></td>
+      <td style="white-space:nowrap;">${btn}</td></tr>`;
+  };
+
+  const read = (d.sheets || []).filter(s => !s.error);
+  const failed = (d.sheets || []).filter(s => s.error);
+
+  return `<div class="disambig-card" id="${id}">
+    <div class="disambig-header">▤ ${read.length} sheets read together</div>
+    <div class="disambig-subtext">${escHtml(read.map(s => s.label).join(' · '))}</div>
+    ${failed.length ? `<div style="font-size:10.5px;color:var(--red);margin:6px 0;">`
+      + failed.map(s => `${escHtml(s.label)} — ${escHtml(s.error)}`).join('<br>') + '</div>' : ''}
+
+    ${(d.conflicts||[]).length ? `
+      <div class="tie-group-head" style="margin-top:8px;">These sheets disagree — nothing proposed</div>
+      ${d.conflicts.map(c => `<div style="font-size:11px;color:var(--text2);
+          border-left:2px solid var(--red);padding-left:8px;margin:6px 0;">
+        ${escHtml(c.why)}<br>${c.readings.map(r =>
+          `<span style="color:var(--text3);">${escHtml(r.source)}: `
+          + escHtml(r.order.join(' → ')) + ` — ${escHtml(r.why||'')}</span>`).join('<br>')}
+      </div>`).join('')}` : ''}
+
+    ${(d.room_flows||[]).length ? `
+      <div class="tie-group-head" style="margin-top:8px;">Build order read off these sheets</div>
+      <table class="disambig-table"><tbody>
+        ${d.room_flows.map(flowRow).join('')}</tbody></table>` : ''}
+
+    ${(d.directives||[]).length ? `
+      <div class="tie-group-head" style="margin-top:8px;">Sequencing these sheets support</div>
+      <table class="disambig-table"><tbody>
+        ${d.directives.map(dirRow).join('')}</tbody></table>` : ''}
+
+    ${(d.facts||[]).length ? `
+      <div class="tie-group-head" style="margin-top:8px;">Facts</div>
+      <ul style="font-size:11.5px;color:var(--text2);margin:6px 0 6px 18px;">
+        ${d.facts.slice(0,12).map(f => '<li>' + escHtml(f.text) + ' ' + src(f.sources) + '</li>').join('')}
+      </ul>` : ''}
+
+    <div class="disambig-actions">
+      <span class="disambig-hint">Nothing is saved until you confirm it. Each line
+        is checked against the schedule like anything typed by hand.</span>
+    </div>
+  </div>`;
+}
+
+async function _postBrainLine(text, btn, okLabel){
+  btn.disabled = true; const was = btn.textContent; btn.textContent = '…';
+  const d = await fetch('/api/brain', {method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({text})}).then(r => r.json());
+  if(d.error){ btn.disabled = false; btn.textContent = was; flashSched(d.error, true); return; }
+  renderServerChat(d.chat);
+  btn.classList.remove('btn-primary');
+  btn.textContent = d.directive.kind === 'note' ? '✓ Kept as note' : (okLabel || '✓ Rule');
+  btn.title = d.directive.understood;
+}
+
+async function addSetFlow(cardId, idx, btn){
+  const f = ((window._drawingSets||{})[cardId] || {}).room_flows?.[idx];
+  if(!f) return;
+  await _postBrainLine(f.sentence, btn, '✓ Order set');
+}
+
+async function addSetDirective(cardId, idx, btn){
+  const x = ((window._drawingSets||{})[cardId] || {}).directives?.[idx];
+  if(!x) return;
+  await _postBrainLine(x.text, btn);
 }
 
 async function addDrawingDirective(cardId, idx, btn){
