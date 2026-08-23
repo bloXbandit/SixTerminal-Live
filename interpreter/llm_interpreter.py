@@ -697,11 +697,21 @@ bulk_rules:
   For names, mode "append" ADDS text instead of replacing it (position
   "prefix" or "suffix") and re-running is safe — an activity that already
   carries the text is skipped.
+  ONE CONDITION CAN DRIVE SEVERAL CHANGES. When the user asks for more than
+  one change to the same matched set ("every Set Generator activity should be
+  6 electricians AND 5 days"), use "sets" with one entry per field — do NOT
+  repeat the same where-clause as separate rules. Each field may appear only
+  once per rule.
   Pass preview true first when the change is broad, and report the count back
   before applying it.
   {"action": "bulk_rules", "preview": true, "rules": [
      {"where": {"field": "name", "op": "contains", "value": "Set Generator"},
       "set": {"field": "electricians", "value": "6"}}]}
+  {"action": "bulk_rules", "rules": [
+     {"where": {"field": "name", "op": "contains", "value": "Set Generator"},
+      "sets": [{"field": "electricians", "value": "6"},
+               {"field": "duration", "value": 5},
+               {"field": "name", "mode": "append", "value": "(GEN)"}]}]}
   {"action": "bulk_rules", "wbs_name": "Phase 1 (Build-Out)", "rules": [
      {"where": {"field": "name", "op": "contains", "value": "Pull LBB"},
       "set": {"field": "name", "mode": "append", "value": "(ER 209)"}}]}

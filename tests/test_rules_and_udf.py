@@ -179,6 +179,120 @@ def test_an_unsupported_target_field_is_refused():
     assert not ok and "Cannot set" in msg
 
 
+# ── One IF, several SETs ─────────────────────────────────────────────────────
+# "Every Set Generator activity should be 6 electricians AND 5 days" is one
+# decision about one set of activities. Making the user re-state the same
+# condition once per field is tedious and easy to get subtly wrong on the
+# second copy — so a rule carries a list of changes, not just one.
+
+def _multi(where_value, sets):
+    return {"where": {"field": "name", "op": "contains", "value": where_value},
+            "sets": sets}
+
+
+def test_one_condition_can_drive_several_changes():
+    p = _project()
+    ok, msg = _run(p, [_multi("Set Generator", [
+        {"field": "electricians", "value": "6"},
+        {"field": "duration", "value": 9},
+        {"field": "name", "mode": "append", "value": "(GEN)"}])])
+    assert ok
+    a = p.get_activity(activity_id="A1000")
+    assert a.udfs[electricians_field(p)] == "6"
+    assert a.planned_duration / 8.0 == 9
+    assert a.name.endswith("(GEN)")
+
+
+def test_an_activity_that_several_sets_touched_is_counted_once():
+    """The number means 'activities this rule changed', not 'writes made' —
+    three fields on three activities is 3, not 9."""
+    p = _project()
+    ok, msg = _run(p, [_multi("Set Generator", [
+        {"field": "electricians", "value": "6"},
+        {"field": "duration", "value": 9}])])
+    assert "Changed 3" in msg
+
+
+def test_a_non_matching_activity_is_left_alone_by_every_set():
+    p = _project()
+    _run(p, [_multi("Set Generator", [{"field": "electricians", "value": "6"},
+                                      {"field": "duration", "value": 9}])])
+    other = p.get_activity(activity_id="A1020")
+    assert other.planned_duration / 8.0 == 5 and not other.udfs
+
+
+def test_an_activity_counts_when_only_one_of_several_sets_moves_it():
+    """Re-running a rule where one field already holds the wanted value must
+    still apply — and count — the field that does not."""
+    p = _project()
+    _run(p, [_rule("Set Generator", "duration", 9)])        # duration already 9
+    ok, msg = _run(p, [_multi("Set Generator", [
+        {"field": "duration", "value": 9},                  # no-op now
+        {"field": "electricians", "value": "6"}])])         # still needs doing
+    assert "Changed 3" in msg
+    assert p.get_activity(activity_id="A1000").udfs[electricians_field(p)] == "6"
+
+
+def test_a_rule_whose_sets_all_no_op_changes_nothing():
+    p = _project()
+    _run(p, [_multi("Set Generator", [{"field": "duration", "value": 9},
+                                      {"field": "electricians", "value": "6"}])])
+    ok, msg = _run(p, [_multi("Set Generator", [{"field": "duration", "value": 9},
+                                                {"field": "electricians", "value": "6"}])])
+    assert "Changed 0" in msg
+
+
+def test_preview_of_a_multi_set_rule_writes_nothing():
+    p = _project()
+    before = [(a.activity_id, a.name, a.planned_duration, dict(a.udfs or {}))
+              for a in p.activities]
+    ok, msg = _run(p, [_multi("Set Generator", [
+        {"field": "electricians", "value": "6"},
+        {"field": "duration", "value": 9}])], preview=True)
+    assert ok and "Would change 3" in msg
+    assert [(a.activity_id, a.name, a.planned_duration, dict(a.udfs or {}))
+            for a in p.activities] == before
+
+
+def test_preview_and_apply_agree_on_a_multi_set_rule():
+    sets = [{"field": "electricians", "value": "6"}, {"field": "duration", "value": 9}]
+    _, preview_msg = _run(_project(), [_multi("Set Generator", sets)], preview=True)
+    _, apply_msg = _run(_project(), [_multi("Set Generator", sets)])
+    assert re.search(r"Would change (\d+)", preview_msg).group(1) == \
+           re.search(r"Changed (\d+)", apply_msg).group(1)
+
+
+def test_the_sample_line_names_every_field_that_moved():
+    p = _project()
+    ok, msg = _run(p, [_multi("Pull wire", [
+        {"field": "electricians", "value": "2"},
+        {"field": "duration", "value": 3}])])
+    assert "electricians" in msg and "duration" in msg
+
+
+def test_setting_the_same_field_twice_is_refused():
+    """Preview writes nothing, so a second set on the same field would be
+    measured against the original value while the real run measures it
+    against the first set's result — the dry run would not match the edit."""
+    p = _project()
+    ok, msg = _run(p, [_multi("Set Generator", [{"field": "duration", "value": 9},
+                                                {"field": "duration", "value": 4}])])
+    assert not ok and "twice" in msg.lower()
+
+
+def test_a_rule_with_no_set_at_all_is_refused():
+    p = _project()
+    ok, msg = _run(p, [{"where": {"field": "name", "op": "contains", "value": "Set"}}])
+    assert not ok and "set" in msg.lower()
+
+
+def test_a_single_set_object_still_works_unchanged():
+    """The shape every existing caller and saved command uses."""
+    p = _project()
+    ok, _ = _run(p, [_rule("Set Generator", "duration", 9)])
+    assert ok and p.get_activity(activity_id="A1000").planned_duration / 8.0 == 9
+
+
 # ── UDFs round-trip ──────────────────────────────────────────────────────────
 
 def test_electricians_field_binds_to_the_project_own_spelling():

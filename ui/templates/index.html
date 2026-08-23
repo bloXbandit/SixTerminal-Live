@@ -1309,9 +1309,15 @@
     .ctx-sep{height:1px;background:var(--border);margin:4px 6px;}
     /* Find & change rule rows */
     .rule-row{
-      display:flex;align-items:center;gap:6px;flex-wrap:wrap;
+      display:flex;flex-direction:column;gap:6px;
       padding:8px;margin-bottom:6px;border-radius:var(--r-sm);
       background:var(--panel2);border:1px solid var(--border);
+    }
+    /* One IF line, then one line per "then set" underneath it. */
+    .rule-if,.rule-set{display:flex;align-items:center;gap:6px;flex-wrap:wrap;}
+    .rule-sets{
+      display:flex;flex-direction:column;gap:6px;
+      padding-left:10px;margin-left:4px;border-left:2px solid var(--border2);
     }
     .rule-word{font-size:11px;color:var(--text3);}
     .rule-row select,.rule-row input[type="text"],.rule-row input:not([type]){
@@ -1322,7 +1328,8 @@
     .rule-row select:focus,.rule-row input:focus{border-color:var(--accent);}
     .rule-value,.rule-newvalue{min-width:150px;flex:1;}
     .rule-append{display:inline-flex;align-items:center;gap:4px;font-size:10.5px;color:var(--text3);}
-    .rule-x{margin-left:auto;}
+    .rule-x,.rule-set-x{margin-left:auto;}
+    .rule-add-set{align-self:flex-start;margin-left:14px;}
     .mini-btn.danger{color:var(--red);border-color:rgba(239,68,68,.35);}
     .mini-btn.danger:hover{background:var(--red-bg);border-color:var(--red);}
     /* Add-WBS inline form */
@@ -7791,33 +7798,68 @@ const RULE_SET_FIELDS = [
   ['constraint_type','Constraint type'],
 ];
 
+const _ruleOpt = (arr, sel) => arr.map(([v,l]) =>
+  `<option value="${v}"${v===sel?' selected':''}>${escHtml(l)}</option>`).join('');
+
 function addRuleRow(){
   const list = document.getElementById('rules-list');
   const row = document.createElement('div');
   row.className = 'rule-row';
-  const opt = (arr, sel) => arr.map(([v,l]) =>
-    `<option value="${v}"${v===sel?' selected':''}>${escHtml(l)}</option>`).join('');
   row.innerHTML = `
-    <span class="rule-word">If</span>
-    <select class="rule-field">${opt(RULE_MATCH_FIELDS,'name')}</select>
-    <select class="rule-op">${opt(RULE_OPS,'contains')}</select>
-    <input class="rule-value" placeholder="text to look for">
+    <div class="rule-if">
+      <span class="rule-word">If</span>
+      <select class="rule-field">${_ruleOpt(RULE_MATCH_FIELDS,'name')}</select>
+      <select class="rule-op">${_ruleOpt(RULE_OPS,'contains')}</select>
+      <input class="rule-value" placeholder="text to look for">
+      <button class="mini-btn no rule-x" title="Remove this rule">&times;</button>
+    </div>
+    <div class="rule-sets"></div>
+    <button class="mini-btn rule-add-set" type="button">＋ Add another change</button>`;
+  row.querySelector('.rule-x').onclick = () => { row.remove(); markRulesDirty(); };
+  row.querySelector('.rule-add-set').onclick = () => addSetRow(row);
+  row.querySelectorAll('.rule-if input,.rule-if select')
+     .forEach(el => el.addEventListener('input', markRulesDirty));
+  list.appendChild(row);
+  addSetRow(row);              // one IF always starts with one "then set"
+}
+
+/**
+ * One more "then set" under the same IF.
+ *
+ * A single condition often drives several changes at once — "if the name has
+ * MV 105 in it, set the duration AND the electricians AND tag the name" is
+ * one decision, and re-stating the same IF three times to express it is both
+ * tedious and easy to get subtly wrong on the second copy.
+ */
+function addSetRow(row){
+  const sets = row.querySelector('.rule-sets');
+  const line = document.createElement('div');
+  line.className = 'rule-set';
+  line.innerHTML = `
     <span class="rule-word">then set</span>
-    <select class="rule-target" onchange="onRuleTargetChange(this)">${opt(RULE_SET_FIELDS,'electricians')}</select>
+    <select class="rule-target">${_ruleOpt(RULE_SET_FIELDS,'electricians')}</select>
     <label class="rule-append" style="display:none;">
       <input type="checkbox" class="rule-mode"> add to existing
     </label>
     <input class="rule-newvalue" placeholder="new value">
-    <button class="mini-btn no rule-x" title="Remove this rule">&times;</button>`;
-  row.querySelector('.rule-x').onclick = () => { row.remove(); markRulesDirty(); };
-  row.querySelectorAll('input,select').forEach(el => el.addEventListener('input', markRulesDirty));
-  list.appendChild(row);
+    <button class="mini-btn no rule-set-x" type="button" title="Remove this change">&times;</button>`;
+  line.querySelector('.rule-target').onchange = e => onRuleTargetChange(e.target);
+  // The last remaining set is what makes the rule a rule — removing it would
+  // leave an IF that does nothing, so the row goes instead.
+  line.querySelector('.rule-set-x').onclick = () => {
+    if(sets.querySelectorAll('.rule-set').length > 1) line.remove();
+    else row.remove();
+    markRulesDirty();
+  };
+  line.querySelectorAll('input,select').forEach(el => el.addEventListener('input', markRulesDirty));
+  sets.appendChild(line);
+  markRulesDirty();
 }
 
 /** "Add to existing" only means something for the name field. */
 function onRuleTargetChange(sel){
-  const row = sel.closest('.rule-row');
-  row.querySelector('.rule-append').style.display =
+  const line = sel.closest('.rule-set');
+  line.querySelector('.rule-append').style.display =
     sel.value === 'name' ? 'inline-flex' : 'none';
   markRulesDirty();
 }
@@ -8463,16 +8505,19 @@ function openRulesModal(){
 
 function collectRules(){
   return [...document.querySelectorAll('#rules-list .rule-row')].map(r => {
-    const target = r.querySelector('.rule-target').value;
-    const set = {field: target, value: r.querySelector('.rule-newvalue').value};
-    if(target === 'name' && r.querySelector('.rule-mode').checked) set.mode = 'append';
+    const sets = [...r.querySelectorAll('.rule-set')].map(line => {
+      const target = line.querySelector('.rule-target').value;
+      const set = {field: target, value: line.querySelector('.rule-newvalue').value};
+      if(target === 'name' && line.querySelector('.rule-mode').checked) set.mode = 'append';
+      return set;
+    });
     return {
       where: {field: r.querySelector('.rule-field').value,
               op: r.querySelector('.rule-op').value,
               value: r.querySelector('.rule-value').value},
-      set,
+      sets,
     };
-  }).filter(r => r.where.value !== '');
+  }).filter(r => r.where.value !== '' && r.sets.length);
 }
 
 async function runRules(preview){

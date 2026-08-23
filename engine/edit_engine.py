@@ -1954,14 +1954,132 @@ def _rule_matches(text: str, op: str, value: str) -> bool:
     return vl in tl          # "contains" — the default
 
 
+def _apply_one_set(project: Project, a: Activity, action: Dict,
+                   preview: bool) -> Optional[Tuple[Any, Any]]:
+    """
+    Carry out ONE "then set" against one activity.
+
+    Returns (before, after) when something actually changes, or None when this
+    activity already holds the wanted value — the caller uses that to avoid
+    counting an activity that no set on the rule moved. Writes nothing when
+    preview is set, so the dry run and the real change run the same code.
+    """
+    target = (action.get("field") or "").strip().lower()
+    new_value = action.get("value")
+    position = (action.get("position") or "suffix").strip().lower()
+
+    if target in ("name", "activity_name"):
+        before = a.name
+        text = "" if new_value is None else str(new_value)
+        if action.get("mode") == "append":
+            if text and text in (a.name or ""):
+                return None                    # already carries it — re-running is safe
+            after = f"{a.name} {text}".strip() if position != "prefix" else f"{text} {a.name}".strip()
+        else:
+            after = text
+        if after == before:
+            return None
+        if not preview:
+            a.name = after
+        return before, after
+
+    if target in ("duration", "duration_days"):
+        try:
+            days = float(new_value)
+        except (TypeError, ValueError):
+            raise EditError("duration needs a number of days")
+        if days < 0:
+            raise EditError("duration cannot be negative")
+        before, after = round((a.planned_duration or 0) / 8.0, 2), days
+        if before == after:
+            return None
+        if not preview:
+            a.planned_duration = days * 8.0
+            if a.status == "Not Started":
+                a.remaining_duration = a.planned_duration
+        return before, after
+
+    if target in ("electricians", "udf"):
+        key = action.get("udf_field") or electricians_field(project)
+        before = (a.udfs or {}).get(key, "")
+        after = "" if new_value is None else str(new_value).strip()
+        if before == after:
+            return None
+        if not preview:
+            _update_udf(project, {"activity_id": a.activity_id,
+                                  "field": key, "value": after})
+        return before, after
+
+    if target in ("wbs_name", "folder"):
+        w = project.get_wbs(a.wbs_uid)
+        if not w:
+            return None
+        before, after = w.name, str(new_value or "").strip()
+        if not after or before == after:
+            return None
+        if not preview:
+            w.name = after
+        return before, after
+
+    if target == "constraint_type":
+        before, after = a.constraint_type or "", str(new_value or "").strip()
+        if before == after:
+            return None
+        if not preview:
+            a.constraint_type = after or None
+            if not after:
+                a.constraint_date = None
+        return before, after
+
+    raise EditError(f"Cannot set '{target}'. Use name, duration, "
+                    f"electricians, wbs_name or constraint_type.")
+
+
+def _rule_sets(rule: Dict) -> List[Dict]:
+    """
+    The "then set" list for one rule, however it was written.
+
+    One IF can drive several SETs — "if the name contains MV 105, set the
+    duration AND the electricians AND tag the name" is one decision, not
+    three rules that each have to re-state the same condition. A single
+    `set` object still works unchanged; `sets` (or a list in `set`) carries
+    more than one.
+    """
+    raw = rule.get("sets")
+    if raw is None:
+        raw = rule.get("set")
+    if isinstance(raw, dict):
+        raw = [raw]
+    if not isinstance(raw, list) or not raw:
+        raise EditError("Each rule needs at least one 'set'")
+    actions = [s for s in raw if isinstance(s, dict) and (s.get("field") or "").strip()]
+    if not actions:
+        raise EditError("Each rule needs at least one 'set' with a field")
+
+    # Two sets aimed at the same field would make the preview lie: preview
+    # writes nothing, so the second one would be measured against the
+    # original value while the real run measures it against the first one's
+    # result. Refusing is better than showing a dry run that differs from
+    # what applying actually does.
+    seen = set()
+    for s in actions:
+        f = (s.get("field") or "").strip().lower()
+        if f in seen:
+            raise EditError(f"This rule sets '{f}' twice — give each field one "
+                            f"value, or split it into two rules.")
+        seen.add(f)
+    return actions
+
+
 def _apply_rule(project: Project, rule: Dict, scope: List[Activity],
                 preview: bool) -> Tuple[int, List[str]]:
     """
     Apply one if/then rule. Returns (changed_count, sample descriptions).
 
-    Nothing is written when preview is set, so the same code path produces the
-    dry run and the real change — a preview that ran different logic from the
-    edit would not be worth much.
+    The condition is tested once per activity and every "then set" on the
+    rule runs against the ones that match. An activity counts once no matter
+    how many of its fields the rule moved — the number is "how many
+    activities this rule changed", not how many writes it made.
     """
     where = rule.get("where") or {}
     field = (where.get("field") or "name").strip().lower()
@@ -1972,75 +2090,27 @@ def _apply_rule(project: Project, rule: Dict, scope: List[Activity],
     if needle is None:
         raise EditError("where.value is required")
 
-    action = (rule.get("set") or {})
-    target = (action.get("field") or "").strip().lower()
-    new_value = action.get("value")
-    position = (action.get("position") or "suffix").strip().lower()
+    actions = _rule_sets(rule)
 
     changed, samples = 0, []
     for a in scope:
         if not _rule_matches(_rule_haystack(project, a, field), op, str(needle)):
             continue
-        before = None
-        if target in ("name", "activity_name"):
-            before = a.name
-            text = "" if new_value is None else str(new_value)
-            if action.get("mode") == "append":
-                after = f"{a.name} {text}".strip() if position != "prefix" else f"{text} {a.name}".strip()
-                if text and text in (a.name or ""):
-                    continue                       # already carries it — re-running is safe
-            else:
-                after = text
-            if after == before:
-                continue
-            if not preview:
-                a.name = after
-        elif target in ("duration", "duration_days"):
-            try:
-                days = float(new_value)
-            except (TypeError, ValueError):
-                raise EditError("duration needs a number of days")
-            if days < 0:
-                raise EditError("duration cannot be negative")
-            before, after = round((a.planned_duration or 0) / 8.0, 2), days
-            if before == after:
-                continue
-            if not preview:
-                a.planned_duration = days * 8.0
-                if a.status == "Not Started":
-                    a.remaining_duration = a.planned_duration
-        elif target in ("electricians", "udf"):
-            key = action.get("udf_field") or electricians_field(project)
-            before = (a.udfs or {}).get(key, "")
-            after = "" if new_value is None else str(new_value).strip()
-            if before == after:
-                continue
-            if not preview:
-                _update_udf(project, {"activity_id": a.activity_id,
-                                      "field": key, "value": after})
-        elif target in ("wbs_name", "folder"):
-            w = project.get_wbs(a.wbs_uid)
-            if not w:
-                continue
-            before, after = w.name, str(new_value or "").strip()
-            if not after or before == after:
-                continue
-            if not preview:
-                w.name = after
-        elif target == "constraint_type":
-            before, after = a.constraint_type or "", str(new_value or "").strip()
-            if before == after:
-                continue
-            if not preview:
-                a.constraint_type = after or None
-                if not after:
-                    a.constraint_date = None
-        else:
-            raise EditError(f"Cannot set '{target}'. Use name, duration, "
-                            f"electricians, wbs_name or constraint_type.")
+        moved = []
+        for action in actions:
+            got = _apply_one_set(project, a, action, preview)
+            if got is not None:
+                moved.append(((action.get("field") or "").strip().lower(), got))
+        if not moved:
+            continue
         changed += 1
         if len(samples) < 8:
-            samples.append(f"{a.activity_id}: {before} → {after}")
+            if len(moved) == 1:
+                before, after = moved[0][1]
+                samples.append(f"{a.activity_id}: {before} → {after}")
+            else:
+                detail = ", ".join(f"{f} {b} → {af}" for f, (b, af) in moved)
+                samples.append(f"{a.activity_id}: {detail}")
     return changed, samples
 
 
