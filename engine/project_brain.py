@@ -375,6 +375,74 @@ def _phases(name: str) -> frozenset:
     return frozenset(t for t in _locus(name) if t.startswith("ph"))
 
 
+# ── What proposals actually get accepted ─────────────────────────────────────
+# Confirming a rule is the only way knowledge used to enter the brain, and it
+# costs the user a sentence. But every Apply and every dismiss is already a
+# judgement about a proposed tie — thrown away until now. Propose the same
+# wrong tie forty times and decline it forty times and nothing changed.
+#
+# What is learned is the SHAPE of the tie, not the pair: "Pull Wire ->
+# Terminations" accepted twelve times should lift the thirteenth in a room
+# nobody has touched yet. So the room number comes out and the remaining
+# words are the signature.
+
+_SIG_DROP = frozenset("""
+a an and or of the to for at in on by with from into onto per is be
+""".split())
+
+
+def tie_signature(pred_name: str, succ_name: str) -> str:
+    """
+    The kind of handoff this is, with the place taken out.
+
+    "Pull Wire MV 105 -> Terminations MV 105" and the same pair in MV 106 are
+    one signature — which is the point: what was learned in one room has to
+    apply in the next, or it never generalises past the row it came from.
+
+    The place is removed WHOLE, family word and number together. Dropping only
+    the digits leaves "mv" behind, and then a tie recorded from a card that
+    showed "Pull Wire MV 105" would not match the same tie scored against an
+    activity simply named "Pull Wire" — which is the common case, because
+    plenty of jobs carry the room in the folder rather than the name.
+    """
+    def core(name: str) -> str:
+        bare = _ROOM_RE.sub(" ", name or "")
+        words = [w for w in _norm(bare).split()
+                 if w not in _SIG_DROP and not w.isdigit() and len(w) > 1]
+        return "-".join(sorted(set(words))[:6])
+    return f"{core(pred_name)}>{core(succ_name)}"
+
+
+# One observation is an accident. Below this a signature says nothing, which
+# keeps a single misclick from re-ranking the schedule.
+_MIN_OBSERVATIONS = 2
+# What agreement is worth, capped. Feedback nudges an order the schedule and
+# the stated rules already argue for; it must never outweigh them.
+_FEEDBACK_WEIGHT = 0.06
+_FEEDBACK_CAP = 0.25
+
+
+def feedback_score(counts: Dict[str, Any], pred_name: str, succ_name: str) -> float:
+    """
+    How this kind of tie has been received, as a bounded nudge.
+
+    Returns 0.0 until a signature has been judged twice — and the same
+    signature seen in reverse counts AGAINST, because accepting A -> B is
+    also evidence that B -> A is wrong.
+    """
+    if not counts:
+        return 0.0
+    fwd = counts.get(tie_signature(pred_name, succ_name)) or {}
+    rev = counts.get(tie_signature(succ_name, pred_name)) or {}
+    seen = (fwd.get("accepted", 0) + fwd.get("declined", 0)
+            + rev.get("accepted", 0) + rev.get("declined", 0))
+    if seen < _MIN_OBSERVATIONS:
+        return 0.0
+    net = (fwd.get("accepted", 0) - fwd.get("declined", 0)
+           - rev.get("accepted", 0))
+    return max(-_FEEDBACK_CAP, min(_FEEDBACK_CAP, net * _FEEDBACK_WEIGHT))
+
+
 def where_of(project, act) -> str:
     """
     The activity's folder path, minus the root node.
@@ -595,20 +663,52 @@ class Brain:
     def __init__(self, key: str, directives: Optional[List[Directive]] = None):
         self.key = key
         self.directives: List[Directive] = directives or []
+        # What this project is FOR — one standing target, measured off the
+        # schedule whenever it is asked for. See engine/objectives.py.
+        self.objective: Optional[Any] = None
+        # How proposals of each SHAPE have been received on this job.
+        # signature -> {"accepted": n, "declined": n}. Never sent to the
+        # model: it is a scoring input, so it costs nothing per turn.
+        self.feedback: Dict[str, Dict[str, int]] = {}
+
+    def is_empty(self) -> bool:
+        """Nothing worth saving — checked before writing a file for a project
+        that was never taught anything."""
+        return not self.directives and self.objective is None and not self.feedback
+
+    def record(self, pred_name: str, succ_name: str, accepted: bool) -> str:
+        """Remember how a proposed tie of this shape was received."""
+        sig = tie_signature(pred_name, succ_name)
+        row = self.feedback.setdefault(sig, {"accepted": 0, "declined": 0})
+        row["accepted" if accepted else "declined"] += 1
+        return sig
 
     # -- persistence ------------------------------------------------------
     def to_json(self) -> Dict[str, Any]:
-        return {"key": self.key, "directives": [d.to_json() for d in self.directives]}
+        return {"key": self.key,
+                "directives": [d.to_json() for d in self.directives],
+                "objective": self.objective.to_json() if self.objective else None,
+                "feedback": self.feedback}
 
     @classmethod
     def from_json(cls, data: Dict[str, Any]) -> "Brain":
+        from . import objectives as _obj
         ds = []
         for raw in (data or {}).get("directives", []):
             fields = {k: raw.get(k) for k in Directive.__dataclass_fields__ if k in raw}
             fields.setdefault("id", uuid.uuid4().hex[:8])
             fields.setdefault("text", "")
             ds.append(Directive(**fields))
-        return cls((data or {}).get("key", "unknown"), ds)
+        b = cls((data or {}).get("key", "unknown"), ds)
+        b.objective = _obj.from_json((data or {}).get("objective"))
+        raw_fb = (data or {}).get("feedback")
+        if isinstance(raw_fb, dict):
+            for sig, row in raw_fb.items():
+                if isinstance(row, dict):
+                    b.feedback[str(sig)] = {
+                        "accepted": int(row.get("accepted") or 0),
+                        "declined": int(row.get("declined") or 0)}
+        return b
 
     # -- editing ----------------------------------------------------------
     def add(self, text: str, project=None) -> Directive:
@@ -638,18 +738,83 @@ class Brain:
 
     @property
     def notes(self) -> List[Directive]:
-        return [d for d in self.directives if d.enabled and d.kind == NOTE]
+        """General knowledge about the job — facts, not enforceable rules."""
+        return [d for d in self.directives
+                if d.enabled and d.kind == NOTE and not d.note_reason]
 
-    def context_block(self) -> str:
-        """What the agent is told, kept short — this rides in every prompt."""
-        if not self.directives:
+    @property
+    def open_questions(self) -> List[Directive]:
+        """
+        Things stated as rules that could not be bound to any activity.
+
+        These are the most useful thing in the brain and used to be the least
+        visible: "QA/QC follows terminations" when nothing here is called
+        QA/QC means either the naming differs or the work is missing, and
+        both are worth raising. Buried in a flat NOTE list they read as
+        ordinary guidance and nobody ever went back to them.
+        """
+        return [d for d in self.directives
+                if d.enabled and d.kind == NOTE and d.note_reason]
+
+    def set_objective(self, obj) -> None:
+        self.objective = obj
+
+    def objective_line(self, project=None) -> str:
+        from . import objectives as _obj
+        if self.objective is None or project is None:
             return ""
-        lines = ["", "HOW THIS PROJECT IS BEING BUILT (stated by the user):"]
-        for d in self.rules:
-            lines.append(f"  RULE — {d.text}   [enforced: {describe(d)}]")
-        for d in self.notes:
-            lines.append(f"  NOTE — {d.text}")
-        lines.append("  Rules are enforced in the tie ranking and checked against the "
-                     "schedule. Where one contradicts the dates, say so — do not "
-                     "quietly pick a side.")
+        try:
+            return _obj.line(project, self.objective)
+        except Exception:
+            return ""      # a target whose kind no longer exists must not break a turn
+
+    # How many of each section the prompt will carry. This block rides in
+    # every request, so it is bounded rather than growing with the brain —
+    # the full list is always one click away in the panel, and a tail line
+    # says how much was left out so nothing looks complete when it is not.
+    _CAP = 30
+
+    def context_block(self, project=None) -> str:
+        """
+        What the agent is told about the job, in three separate piles.
+
+        One flat list meant the agent could not tell an enforced rule from a
+        stray remark from a question nobody answered — so it treated them
+        alike, quoting guidance as if it were binding. They are kept apart
+        here for the same reason they are kept apart everywhere else: they
+        carry different authority.
+        """
+        objective = self.objective_line(project)
+        rules, notes, questions = self.rules, self.notes, self.open_questions
+        if not (objective or rules or notes or questions):
+            return ""
+
+        def section(title, items, fmt):
+            if not items:
+                return []
+            out = [title]
+            out.extend(fmt(d) for d in items[:self._CAP])
+            if len(items) > self._CAP:
+                out.append(f"  …and {len(items) - self._CAP} more (ask to see them all)")
+            return out
+
+        lines = [""]
+        if objective:
+            lines += ["WHAT THIS PROJECT IS FOR:", "  " + objective,
+                      "  Report progress against this when it is relevant. When the "
+                      "user asks what to do next, answer from it."]
+        lines += section(
+            "RULES — HOW THIS JOB IS BUILT (stated by the user, ENFORCED):",
+            rules, lambda d: f"  {d.text}   [{describe(d)}]")
+        lines += section(
+            "WHAT YOU KNOW ABOUT THIS JOB (context, nothing enforced):",
+            notes, lambda d: f"  {d.text}")
+        lines += section(
+            "OPEN — stated but not matched to any activity. Raise these when relevant; "
+            "do NOT treat them as in force:",
+            questions, lambda d: f"  {d.text}   [{d.note_reason}]")
+        if rules:
+            lines.append("Rules are enforced in the tie ranking and checked against "
+                         "the schedule. Where one contradicts the dates, say so — do "
+                         "not quietly pick a side.")
         return "\n".join(lines)

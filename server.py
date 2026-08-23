@@ -42,6 +42,7 @@ from engine.importer import extract as import_extract, build_project_from_contra
 from engine.compare import (compare_projects, copy_wbs_branch,
                             replace_wbs_branch, apply_activity_changes)
 from engine import cloud_store
+from engine import objectives
 from engine.logic_advisor import (milestone_report, milestone_drivers,
                                   commissioning_ladder, to_commands, find_wbs,
                                   area_digest, area_report, procurement_report,
@@ -259,6 +260,13 @@ def _active_directives() -> list:
     return b.directives if b else []
 
 
+def _active_feedback() -> dict:
+    """How proposals have been received on the open job — a ranking input
+    only, so it never costs a token."""
+    b = _active_brain()
+    return b.feedback if b else {}
+
+
 def _unique_pid(stem: str) -> str:
     if stem not in _projects:
         return stem
@@ -468,7 +476,7 @@ def _persist(pid):
             "activity_count": len(sess["project"].activities),
             # What the user told the agent about this job rides with the
             # schedule — losing it on a restart would mean re-teaching it.
-            "brain": brain.to_json() if brain and brain.directives else None,
+            "brain": brain.to_json() if brain and not brain.is_empty() else None,
             # The conversation too — the agent reasons from it now, and a
             # restart that kept the schedule but dropped the record would
             # leave it unable to answer for what it already did.
@@ -1427,7 +1435,8 @@ def edit():
         matches = _advisor.find_activity_in(project, instruction)
         if len(matches) == 1:
             opts = _advisor.tie_options(project, matches[0],
-                                        directives=_active_directives())
+                                        directives=_active_directives(),
+                                        feedback=_active_feedback())
             if opts["predecessors"] or opts["successors"]:
                 lines = [f"Tie options offered for {opts['activity_id']} — {opts['name']}:"]
                 n = 0
@@ -1472,7 +1481,7 @@ def edit():
                 _append_chat("user",
                              f"[picked: {tag}]" if tag else f"[confirmed: {instruction}]")
         else:
-            llm_ctx = project.llm_context() + _brain_for(project).context_block()
+            llm_ctx = project.llm_context() + _brain_for(project).context_block(project)
             if sess.get("last_undone"):
                 llm_ctx += f"\n\nRECENT UNDO: The user just undid: \"{sess['last_undone']}\". If asked to redo, you know exactly what was done."
             commands, raw_llm = interpret(
@@ -1543,7 +1552,7 @@ def edit():
                 )
                 commands2, raw_llm2 = interpret(
                     retry_instruction,
-                    project_summary=project.llm_context() + _brain_for(project).context_block(),
+                    project_summary=project.llm_context() + _brain_for(project).context_block(project),
                     edit_history=[],
                     chat_history=sess["chat_history"][:-1],
                     model_key=_settings["model_key"],
@@ -1868,7 +1877,8 @@ def advise_milestones():
         limit = 3
     try:
         return jsonify(milestone_report(sess["project"], limit_per_milestone=limit,
-                                        directives=_active_directives()))
+                                        directives=_active_directives(),
+                                        feedback=_active_feedback()))
     except Exception as e:
         return jsonify({"error": f"Logic advice failed: {e}",
                         "trace": traceback.format_exc()}), 500
@@ -2016,7 +2026,8 @@ def advise_wire():
     if node is None:
         return jsonify({"error": "That folder is not in this schedule"}), 404
     out = wire_folder(sess["project"], uid, min_confidence=floor,
-                      directives=_active_directives())
+                      directives=_active_directives(),
+                      feedback=_active_feedback())
     out["wbs_name"] = node.name
     return jsonify(out)
 
@@ -2068,6 +2079,117 @@ def _brain_payload(brain) -> dict:
         "rule_count": len(brain.rules),
         "note_count": len(brain.notes),
     }
+
+
+@app.route("/api/feedback", methods=["POST"])
+def feedback_record():
+    """
+    Remember how a proposed tie was received.
+
+    Applying one and dismissing one are both judgements about a proposal, and
+    both used to be thrown away — so the same wrong tie could be offered
+    indefinitely. What is remembered is the SHAPE of the tie with the room
+    number taken out, so "Pull Wire -> Terminations" learned in MV 105
+    carries into MV 106.
+
+    Deliberately fire-and-forget: a click must never fail because of this, so
+    an unusable payload is a no-op rather than an error the user has to read.
+    """
+    sess = _get_session()
+    if sess is None or sess["project"] is None:
+        return jsonify({"success": False, "recorded": 0})
+    data = request.get_json() or {}
+    accepted = bool(data.get("accepted"))
+    rows = data.get("ties")
+    if not isinstance(rows, list):
+        rows = [data]
+    brain = _brain_for(sess["project"])
+    project = sess["project"]
+    n = 0
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        pred = row.get("predecessor_name")
+        succ = row.get("successor_name")
+        # Names are what carry the shape, but a card may only hold ids —
+        # resolve those rather than dropping the observation.
+        if not pred and row.get("predecessor_id"):
+            a = project.get_activity(activity_id=row["predecessor_id"])
+            pred = a.name if a else None
+        if not succ and row.get("successor_id"):
+            a = project.get_activity(activity_id=row["successor_id"])
+            succ = a.name if a else None
+        if not pred or not succ:
+            continue
+        brain.record(pred, succ, bool(row.get("accepted", accepted)))
+        n += 1
+    if n:
+        _mark_dirty(_active_id[0])
+    return jsonify({"success": True, "recorded": n})
+
+
+@app.route("/api/objective", methods=["GET"])
+def objective_get():
+    """
+    Where this project stands against its standing target.
+
+    Progress is measured off the schedule on every call, never stored — a
+    counter would drift the moment anything was edited outside this route,
+    undone, or restored from a backup.
+    """
+    sess = _get_session()
+    if sess is None or sess["project"] is None:
+        return jsonify({"error": "No schedule loaded"}), 400
+    project = sess["project"]
+    brain = _brain_for(project)
+    body = {"success": True, "objective": None,
+            "options": objectives.suggest(project)}
+    if brain.objective is not None:
+        body["objective"] = objectives.progress(project, brain.objective)
+    return jsonify(body)
+
+
+@app.route("/api/objective", methods=["POST"])
+def objective_set():
+    """Fix what this project is for. One standing target at a time."""
+    sess = _get_session()
+    if sess is None or sess["project"] is None:
+        return jsonify({"error": "No schedule loaded"}), 400
+    project = sess["project"]
+    data = request.get_json() or {}
+    kind = (data.get("kind") or "").strip()
+    scope_uid = data.get("wbs_uid") or None
+    scope_name = ""
+    if scope_uid:
+        node = project.get_wbs(scope_uid)
+        if node is None:
+            return jsonify({"error": "That folder is not in this schedule"}), 400
+        scope_name = node.name
+    try:
+        obj = objectives.make(project, kind, text=data.get("text") or "",
+                              scope_uid=scope_uid, scope_name=scope_name)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    brain = _brain_for(project)
+    brain.set_objective(obj)
+    _mark_dirty(_active_id[0])
+    rep = objectives.progress(project, obj)
+    _append_chat("system_result", f"Objective set — {rep['text']} ({rep['where']})",
+                 context=f"The user set the standing objective for this project: "
+                         f"{objectives.line(project, obj)}")
+    return jsonify({"success": True, "objective": rep,
+                    "chat": sess["chat_history"][-1:]})
+
+
+@app.route("/api/objective", methods=["DELETE"])
+def objective_clear():
+    sess = _get_session()
+    if sess is None or sess["project"] is None:
+        return jsonify({"error": "No schedule loaded"}), 400
+    brain = _brain_for(sess["project"])
+    brain.set_objective(None)
+    _mark_dirty(_active_id[0])
+    return jsonify({"success": True, "objective": None})
 
 
 @app.route("/api/brain", methods=["GET"])

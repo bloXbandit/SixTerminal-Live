@@ -443,12 +443,19 @@ def test_it_survives_a_round_trip_through_storage():
 
 
 def test_what_the_agent_is_told_names_both_the_rule_and_what_it_means():
+    """An enforced rule and a general remark carry different authority, so
+    they must not arrive in one undifferentiated pile."""
     b = pb.Brain("k")
     b.add("QA/QC inspections follow terminations")
     b.add("Owner wants the CUP energised early")
     block = b.context_block()
-    assert "RULE" in block and "NOTE" in block
+    assert "ENFORCED" in block and "nothing enforced" in block
     assert "QA/QC inspections follow terminations" in block
+    assert "Owner wants the CUP energised early" in block
+    # and on the right sides of the divide
+    rules_part, _, notes_part = block.partition("WHAT YOU KNOW ABOUT THIS JOB")
+    assert "QA/QC inspections follow terminations" in rules_part
+    assert "Owner wants the CUP energised early" in notes_part
 
 
 def test_an_untaught_project_adds_nothing_to_the_prompt():

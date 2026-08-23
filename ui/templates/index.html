@@ -1623,6 +1623,11 @@
         stopped and shown to you first. Anything else is kept as a <b>note</b>
         the agent reads.
       </div>
+      <!-- What this project is FOR — one standing target, measured off the
+           schedule every time it is shown. -->
+      <div id="objective-box" style="border:1px solid var(--border2);border-radius:var(--r-md);
+           padding:10px 12px;margin-bottom:14px;background:var(--panel2);"></div>
+
       <div style="display:flex;gap:8px;margin-bottom:6px;">
         <input id="brain-text" type="text" style="flex:1;"
                placeholder="e.g. QA/QC follows terminations in the same room"
@@ -1630,8 +1635,10 @@
         <button class="btn btn-primary btn-sm" onclick="brainAdd()">Teach it</button>
       </div>
       <div style="font-size:11px;color:var(--text3);margin-bottom:12px;">
-        It understands “X after Y”, “Y before X”, “X follows Y in the same room”
-        and “ER rooms run sequential”. Everything else is kept word for word.
+        It understands “X after Y”, “Y before X”, “X follows Y in the same room”,
+        “ER rooms run sequential” and “MV rooms run 107, 105, 106” — the last one
+        for when rooms are not built in number order. Everything else is kept
+        word for word.
       </div>
       <div id="brain-list"></div>
       <div id="brain-check" style="margin-top:12px;"></div>
@@ -3463,8 +3470,10 @@ function tieOptionsCard(d){
       <td class="tie-lag">${r.implied_lag_days == null ? '—' : r.implied_lag_days + 'd'}</td>
       <td><span class="tie-conf ${bar}">${conf}%</span></td>
       <td class="tie-why">${escHtml((r.signals || []).slice(0, 2).join('; '))}</td>
-      <td><button class="btn btn-primary btn-sm"
-            onclick="applyTie('${id}','${kind}',${i},this)">Apply</button></td>
+      <td style="white-space:nowrap;"><button class="btn btn-primary btn-sm"
+            onclick="applyTie('${id}','${kind}',${i},this)">Apply</button>
+        <button class="btn btn-ghost btn-sm" title="Not this one — stop offering this kind"
+            onclick="dismissTie('${id}','${kind}',${i},this)">✕</button></td>
     </tr>`;
   };
   const table = (list, kind, label) => !list.length ? '' : `
@@ -3493,6 +3502,19 @@ function tieOptionsCard(d){
   </div>`;
 }
 
+// Applying a proposal and dismissing one are both judgements about it. Both
+// are reported so the ranker learns what this job actually accepts — quietly,
+// and never blocking the click it is attached to.
+function noteTieOutcome(rows, accepted){
+  const ties = [].concat(rows || []).filter(Boolean).map(r => ({
+    predecessor_id: r.predecessor_id, successor_id: r.successor_id,
+    predecessor_name: r.predecessor_name, successor_name: r.successor_name,
+  }));
+  if(!ties.length) return;
+  fetch('/api/feedback', {method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({accepted: !!accepted, ties})}).catch(() => {});
+}
+
 async function applyTie(cardId, kind, idx, btn){
   const d = _tieCards[cardId];
   if(!d) return;
@@ -3507,6 +3529,18 @@ async function applyTie(cardId, kind, idx, btn){
   btn.textContent = applied ? '✓ Added' : 'Failed';
   btn.classList.toggle('btn-primary', false);
   if(!applied) btn.disabled = false;
+  if(applied) noteTieOutcome(r, true);
+}
+
+/** Not this one — recorded, so the same shape stops being offered. */
+function dismissTie(cardId, kind, idx, btn){
+  const d = _tieCards[cardId];
+  const r = d && (kind === 'pred' ? d.predecessors : d.successors)[idx];
+  if(!r) return;
+  noteTieOutcome(r, false);
+  const row = btn.closest('tr');
+  if(row){ row.style.opacity = '.4'; row.querySelectorAll('button').forEach(b => b.disabled = true); }
+  btn.textContent = '✕ No';
 }
 
 // ═══════════════════════════════════════════════════
@@ -3532,8 +3566,10 @@ function logicProposalsCard(d){
       <td class="tie-lag">${r.implied_lag_days == null ? '—' : r.implied_lag_days + 'd'}</td>
       <td><span class="tie-conf ${vcls}">${escHtml(r.verdict || '')}</span></td>
       <td class="tie-why">${escHtml(r.rationale || '')}</td>
-      <td><button class="btn btn-primary btn-sm"
-            onclick="applyLogicProposal('${id}',${i},this)">Apply</button></td>
+      <td style="white-space:nowrap;"><button class="btn btn-primary btn-sm"
+            onclick="applyLogicProposal('${id}',${i},this)">Apply</button>
+        <button class="btn btn-ghost btn-sm" title="Not this one — stop offering this kind"
+            onclick="dismissLogicProposal('${id}',${i},this)">✕</button></td>
     </tr>`;
   };
   return `<div class="disambig-card" id="${id}">
@@ -3561,6 +3597,17 @@ async function applyLogicProposal(cardId, idx, btn){
   btn.textContent = applied ? '✓ Added' : 'Failed';
   btn.classList.toggle('btn-primary', false);
   if(!applied) btn.disabled = false;
+  if(applied) noteTieOutcome(r, true);
+}
+
+function dismissLogicProposal(cardId, idx, btn){
+  const d = _logicPropCards[cardId];
+  const r = d && d.items[idx];
+  if(!r) return;
+  noteTieOutcome(r, false);
+  const row = btn.closest('tr');
+  if(row){ row.style.opacity = '.4'; row.querySelectorAll('button').forEach(b => b.disabled = true); }
+  btn.textContent = '✕ No';
 }
 
 // ═══════════════════════════════════════════════════
@@ -8005,8 +8052,72 @@ function openBrainModal(){
   document.getElementById('brain-text').value = '';
   document.getElementById('brain-check').innerHTML = '';
   brainRefresh();
+  refreshObjective();
   openModal('brain-modal');
   setTimeout(() => document.getElementById('brain-text').focus(), 60);
+}
+
+// ── What this project is FOR ─────────────────────────────────────────────────
+// One standing target. Progress is measured off the schedule on every read,
+// never stored, so work done anywhere — the grid, the agent, a re-upload —
+// moves it without anything being told.
+
+async function refreshObjective(){
+  const box = document.getElementById('objective-box');
+  if(!box) return;
+  let d;
+  try{ d = await fetch('/api/objective').then(r => r.json()); }
+  catch(e){ box.innerHTML = ''; return; }
+  if(d.error){ box.innerHTML = ''; return; }
+
+  if(d.objective){
+    const o = d.objective;
+    const bar = o.grew ? '' : `<div style="height:5px;border-radius:3px;background:var(--border);
+        overflow:hidden;margin:7px 0 5px;">
+        <div style="height:100%;width:${o.percent}%;background:var(--accent);"></div></div>`;
+    const state = o.complete
+      ? `<span style="color:var(--accent);">Met — nothing outstanding.</span>`
+      : o.grew
+        ? `<span style="color:var(--red);">${o.remaining} left — ${Math.abs(o.done)} more
+             than when this was set (${o.baseline}). Work has been added since.</span>`
+        : `${o.done} of ${o.baseline} done · <b>${o.percent}%</b> ·
+           ${o.remaining} ${escHtml(o.counts)} left`;
+    box.innerHTML = `<div style="display:flex;align-items:baseline;gap:8px;">
+        <b style="font-size:12px;">${escHtml(o.text)}</b>
+        <span style="font-size:10.5px;color:var(--text3);">${escHtml(o.where)}</span>
+        <button class="btn btn-ghost btn-sm" style="margin-left:auto;"
+          onclick="clearObjective()">Change</button>
+      </div>${bar}
+      <div style="font-size:11px;color:var(--text2);">${state}</div>`;
+    return;
+  }
+
+  const opts = d.options || [];
+  if(!opts.length){
+    box.innerHTML = `<div style="font-size:11.5px;color:var(--text3);">
+      Nothing outstanding to set a target against — this schedule is clean.</div>`;
+    return;
+  }
+  box.innerHTML = `<div style="font-size:11.5px;color:var(--text2);margin-bottom:7px;">
+      <b>What is this project for?</b> Set it once and the agent tracks progress
+      against it every session, instead of starting from scratch each time.
+    </div>` + opts.map(o => `<button class="mini-btn" style="margin:0 6px 6px 0;"
+      onclick="setObjective('${escAttr(o.kind)}')">${escHtml(o.label)}
+      <span style="color:var(--text3);">· ${o.outstanding}</span></button>`).join('');
+}
+
+async function setObjective(kind){
+  const d = await fetch('/api/objective', {method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({kind})}).then(r => r.json());
+  if(d.error){ flashSched(d.error, true); return; }
+  if(d.chat) renderServerChat(d.chat);
+  refreshObjective();
+}
+
+async function clearObjective(){
+  await fetch('/api/objective', {method:'DELETE'});
+  refreshObjective();
 }
 
 function brainRender(d){

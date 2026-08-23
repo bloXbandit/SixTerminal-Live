@@ -613,8 +613,13 @@ def _wbs_closeness(chain_a: List[str], chain_b: List[str]) -> int:
 class _Ctx:
     """Per-call caches so scoring stays cheap over a big pool."""
 
-    def __init__(self, project: Project, directives: Optional[List[Any]] = None):
+    def __init__(self, project: Project, directives: Optional[List[Any]] = None,
+                 feedback: Optional[Dict[str, Any]] = None):
         self.project = project
+        # How proposals of each shape have been received on this job. Optional
+        # everywhere — a project nobody has clicked through ranks exactly as
+        # it did before.
+        self.feedback: Dict[str, Any] = feedback or {}
         self._tok: Dict[str, frozenset] = {}
         self._area: Dict[str, frozenset] = {}
         self._chain: Dict[str, List[str]] = {}
@@ -797,6 +802,21 @@ def score_tie(ctx: _Ctx, pred: Activity, succ: Activity,
             date_factor = max(date_factor, 0.55)
             why.insert(0, f"you said: {sup[0].text}")
 
+    # 11. How ties of this SHAPE have actually been received on this job.
+    #
+    # Applying a proposal and dismissing one are both judgements, and both used
+    # to be discarded — the same wrong tie could be offered indefinitely. This
+    # nudges by what was accepted before, deliberately AFTER the stated rules
+    # and bounded small: it breaks ties between candidates the evidence already
+    # likes, and must never overrule a rule or manufacture a handoff out of a
+    # pair with nothing else going for it.
+    if ctx.feedback:
+        nudge = _brain.feedback_score(ctx.feedback, pred.name, succ.name)
+        if nudge:
+            support = max(0.0, min(1.0, support + nudge))
+            why.append("you usually accept this kind of tie" if nudge > 0
+                       else "you usually reject this kind of tie")
+
     # A perfect date with nothing else behind it lands at 0.15 — well under the
     # bar. Two unrelated activities that happen to abut are a coincidence, not
     # a handoff, and the floor has to sit low enough that a stray point or two
@@ -806,7 +826,8 @@ def score_tie(ctx: _Ctx, pred: Activity, succ: Activity,
 
 def milestone_drivers(project: Project, milestone: Activity,
                       limit: int = 3, ctx: Optional["_Ctx"] = None,
-                      directives: Optional[List[Any]] = None) -> List[Dict[str, Any]]:
+                      directives: Optional[List[Any]] = None,
+                      feedback: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
     """
     What should drive this milestone's date.
 
@@ -824,7 +845,7 @@ def milestone_drivers(project: Project, milestone: Activity,
         return []
     scope_uid, scope_label = _phase_scope(project, milestone)
     pool = (activities_in(project, scope_uid) if scope_uid else list(project.activities))
-    ctx = ctx or _Ctx(project, directives)
+    ctx = ctx or _Ctx(project, directives, feedback)
 
     # Everything in scope that finishes by the milestone and is close enough to
     # be a handoff. The calendar-day gate comes before the working-day count,
@@ -975,7 +996,8 @@ def find_activity_in(project: Project, text: str) -> List[Activity]:
 
 
 def tie_options(project: Project, act: Activity, limit: int = 4,
-                directives: Optional[List[Any]] = None) -> Dict[str, Any]:
+                directives: Optional[List[Any]] = None,
+                feedback: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """
     Ranked predecessor and successor candidates for ONE activity, each with the
     confidence and the reasons behind it, ready to be offered as apply buttons.
@@ -983,7 +1005,7 @@ def tie_options(project: Project, act: Activity, limit: int = 4,
     Same scoring as everywhere else — this is the single-activity view of it,
     for when the user points at a row and asks what it should connect to.
     """
-    ctx = _Ctx(project, directives)
+    ctx = _Ctx(project, directives, feedback)
     start = _parse(act.actual_start or act.planned_start or act.early_start)
     finish = _parse(act.actual_finish or act.planned_finish or act.early_finish)
     linked_pred = {r.predecessor_uid for r in project.relations if r.successor_uid == act.uid}
@@ -1045,7 +1067,8 @@ def tie_options(project: Project, act: Activity, limit: int = 4,
 
 def wire_folder(project: Project, root_uid: str, min_confidence: float = 0.45,
                 limit: int = 400,
-                directives: Optional[List[Any]] = None) -> Dict[str, Any]:
+                directives: Optional[List[Any]] = None,
+                feedback: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """
     Every tie worth making inside one folder, ranked — the bulk answer to open
     ends. The reference schedule has 1,610 activities with no predecessor and
@@ -1069,7 +1092,7 @@ def wire_folder(project: Project, root_uid: str, min_confidence: float = 0.45,
                 "open_starts": 0, "open_finishes": 0}
 
     has_pred, has_succ = _open_ended(project)
-    ctx = _Ctx(project, directives)
+    ctx = _Ctx(project, directives, feedback)
     by_uid = {a.uid: a for a in acts}
     open_start = [a for a in acts if a.uid not in has_pred
                   and a.activity_type not in ("Start Milestone", "Finish Milestone")
@@ -1118,7 +1141,8 @@ def wire_folder(project: Project, root_uid: str, min_confidence: float = 0.45,
 
 
 def milestone_report(project: Project, limit_per_milestone: int = 3,
-                     directives: Optional[List[Any]] = None) -> Dict[str, Any]:
+                     directives: Optional[List[Any]] = None,
+                feedback: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """
     Every milestone, its logic state, and what could drive it.
 
@@ -1131,7 +1155,7 @@ def milestone_report(project: Project, limit_per_milestone: int = 3,
                   if a.activity_type in ("Start Milestone", "Finish Milestone")]
     milestones.sort(key=lambda a: str(a.planned_start or a.planned_finish or ""))
 
-    ctx = _Ctx(project, directives)   # one set of caches for every milestone
+    ctx = _Ctx(project, directives, feedback)   # one set of caches for every milestone
     items = []
     for m in milestones:
         drivers = milestone_drivers(project, m, limit=limit_per_milestone, ctx=ctx)
