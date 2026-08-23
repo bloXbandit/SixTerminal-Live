@@ -1335,9 +1335,9 @@ def procurement_report(project: Project, needle: Optional[str] = None,
     }
 
 
-def area_report(project: Project, needle: str) -> Dict[str, Any]:
+def area_report(project: Project, needle: str, sample: int = 8) -> Dict[str, Any]:
     """Everything the agent needs to reason about one area, in one call."""
-    digest = area_digest(project, needle)
+    digest = area_digest(project, needle, sample=sample)
     if "error" in digest:
         return digest
     seq = sequence_recommendations(project, needle)

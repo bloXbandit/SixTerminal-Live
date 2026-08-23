@@ -774,7 +774,11 @@ def _recommend_logic(project: Project, cmd: Dict) -> Tuple[bool, str]:
     name = cmd.get("wbs_name") or cmd.get("area")
 
     if scope in ("wbs", "area") and name:
-        rep = area_report(project, name)
+        # A folder can hold anywhere from a handful of activities to a whole
+        # phase's worth. 150 covers a real room/area/phase-slice in full; past
+        # that, dumping every row would cost more context than it is worth and
+        # the agent is told to narrow to a sub-folder instead.
+        rep = area_report(project, name, sample=150)
         if "error" in rep:
             raise EditError(rep["error"])
         a, s = rep["area"], rep["summary"]
@@ -790,9 +794,33 @@ def _recommend_logic(project: Project, cmd: Dict) -> Tuple[bool, str]:
         if s["installed_before_delivery"]:
             lines.append(f"WARNING: {s['installed_before_delivery']} item(s) are dated to be "
                          f"installed before the equipment is delivered.")
-        for r in rep["sequence_recommendations"][:15]:
-            lines.append(f"  {r['predecessor_name']} -> {r['successor_name']} "
-                         f"[{r['verdict']}, implied lag {r['implied_lag_days']}d]")
+        if a["sub_folders"]:
+            lines.append("Sub-folders: " + ", ".join(
+                f"{k['name']} ({k['activity_count']})" for k in a["sub_folders"]))
+        shown = a["activities_shown"]
+        lines.append("")
+        if shown < a["activity_count"]:
+            lines.append(f"ACTIVITIES (first {shown} of {a['activity_count']}, "
+                         f"earliest start first — ask about a specific sub-folder "
+                         f"above to see the rest in full):")
+        else:
+            lines.append(f"ACTIVITIES (all {shown}):")
+        for act in a["activities"]:
+            flags = []
+            if not act["linked"]:
+                flags.append("UNLINKED")
+            if act["constraint"]:
+                flags.append(act["constraint"])
+            flag_str = f"  [{', '.join(flags)}]" if flags else ""
+            lines.append(f"  {act['activity_id']} — {act['name']}  "
+                         f"{act['start']} -> {act['finish']} ({act['duration_days']}d, "
+                         f"{act['status']}){flag_str}")
+        if s["sequence_ties_proposed"]:
+            lines.append("")
+            lines.append("PROPOSED SEQUENCE TIES:")
+            for r in rep["sequence_recommendations"][:30]:
+                lines.append(f"  {r['predecessor_name']} -> {r['successor_name']} "
+                             f"[{r['verdict']}, implied lag {r['implied_lag_days']}d]")
         return True, "\n".join(lines)
 
     if scope == "procurement":

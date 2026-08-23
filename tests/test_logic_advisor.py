@@ -415,3 +415,21 @@ def test_recommend_logic_reports_an_unknown_area():
     ok, msg = apply_command(p, {"action": "recommend_logic", "scope": "wbs",
                                 "wbs_name": "Nonexistent Area"})
     assert not ok and "No folder" in msg
+
+
+def test_recommend_logic_wbs_scope_lists_every_activity_in_the_folder():
+    """
+    The prompt tells the agent 'ask about a folder and get every activity in
+    that branch with dates' — this is the call that promise depends on. A
+    text summary of counts is not enough for the agent to discuss what is
+    actually IN the area; it needs the real activity_id/name/date rows.
+    """
+    from engine.logic_advisor import find_wbs
+    p = _project()
+    ok, msg = apply_command(p, {"action": "recommend_logic", "scope": "wbs",
+                                "wbs_name": "Phase 1 (Build-Out)"})
+    assert ok
+    for a in p.activities:
+        if a.wbs_uid == find_wbs(p, "Phase 1 (Build-Out)").uid:
+            assert a.activity_id in msg
+            assert a.name in msg

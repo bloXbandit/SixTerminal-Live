@@ -304,6 +304,20 @@
       border-left:2px solid var(--accent2);
       line-height:1.7;
     }
+    /* Structured chat text — real paragraphs/lists instead of one run-on
+       block, produced by formatChat(). */
+    .msg-bubble p{margin:0 0 10px;}
+    .msg-bubble p:last-child{margin-bottom:0;}
+    .msg-bubble ul,.msg-bubble ol{margin:2px 0 10px;padding-left:20px;}
+    .msg-bubble ul:last-child,.msg-bubble ol:last-child{margin-bottom:0;}
+    .msg-bubble li{margin:2px 0;}
+    .msg-bubble li::marker{color:var(--text3);}
+    .msg-bubble code{
+      background:var(--surface);border:1px solid var(--border);
+      border-radius:4px;padding:1px 5px;font-size:.92em;
+      font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+    }
+    .msg-bubble strong{color:inherit;font-weight:650;}
 
     /* Result card */
     .result-card{
@@ -2630,7 +2644,7 @@ async function uploadFile(file) {
 function renderServerChat(entries) {
   for (const m of (entries || [])) {
     if (m.role === 'user')               addMsg('user',      escHtml(m.text));
-    else if (m.role === 'assistant')     addMsg('assistant', escHtml(m.text));
+    else if (m.role === 'assistant')     addMsg('assistant', formatChat(m.text));
     else if (m.role === 'system_result') addMsg('system',    escHtml(m.text));
   }
 }
@@ -3348,7 +3362,7 @@ async function sendInstruction() {
     }).then(r => r.json());
     removePending();
     if (d.error)                          { addMsg('system', errorCard(d.error)); }
-    else if (d.type === 'chat')           { addMsg('assistant', escHtml(d.message)); }
+    else if (d.type === 'chat')           { addMsg('assistant', formatChat(d.message)); }
     else if (d.type === 'clarify')        { handleClarify(d); }
     else if (d.type === 'disambiguation') { addMsg('system', disambigCard(d)); }
     else if (d.type === 'tie_options')    { addMsg('system', tieOptionsCard(d)); }
@@ -3361,7 +3375,7 @@ async function sendInstruction() {
 function handleClarify(d) {
   pendingClarifyInstruction = d.instruction;
   updateInputHint('Replying to: ' + d.instruction);
-  addMsg('assistant', escHtml(d.question));
+  addMsg('assistant', formatChat(d.question));
   document.getElementById('instruction-input').focus();
 }
 
@@ -3608,7 +3622,7 @@ function handleResult(d) {
   redoCount = d.redo_count || 0;
   document.getElementById('info-edits').textContent = editCount;
   updateUndoBtn();
-  if (d.chat_message) addMsg('assistant', escHtml(d.chat_message));
+  if (d.chat_message) addMsg('assistant', formatChat(d.chat_message));
   const editsDone = (d.commands_applied || 0) + (d.commands_failed || 0);
   if (editsDone > 0) addMsg('system', resultCard(d));
   // Fallback: if nothing rendered at all, show raw result summary
@@ -3862,7 +3876,7 @@ async function switchProject(pid) {
       document.getElementById('welcome-screen').style.display = 'none';
       for (const m of restoredMsgs) {
         if (m.role === 'user')               addMsg('user',      escHtml(m.text));
-        else if (m.role === 'assistant')     addMsg('assistant', escHtml(m.text));
+        else if (m.role === 'assistant')     addMsg('assistant', formatChat(m.text));
         else if (m.role === 'system_result') addMsg('system',    escHtml(m.text));
       }
     }
@@ -4131,6 +4145,36 @@ function escHtml(s) {
   return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
 function escAttr(s) { return String(s).replace(/'/g,'&#39;').replace(/"/g,'&quot;'); }
+
+// The model writes plain text with blank-line paragraphs, "- " / "1. " lists
+// and occasional **bold**/`code` — escHtml() alone drops all of that into one
+// run-on block because HTML collapses whitespace. This turns the same text
+// into real <p>/<ul>/<ol> so it reads the way the model actually laid it out.
+function _inlineMd(s) {
+  return escHtml(s)
+    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+    .replace(/`([^`]+)`/g, '<code>$1</code>');
+}
+function formatChat(text) {
+  const src = String(text == null ? '' : text).replace(/\r\n/g, '\n').trim();
+  if (!src) return '';
+  const blocks = src.split(/\n{2,}/);
+  const BULLET = /^\s*[-*•]\s+/;
+  const NUMBERED = /^\s*\d+[.)]\s+/;
+  let out = '';
+  for (const block of blocks) {
+    const lines = block.split('\n').filter(l => l.trim().length);
+    if (!lines.length) continue;
+    if (lines.every(l => BULLET.test(l))) {
+      out += '<ul>' + lines.map(l => `<li>${_inlineMd(l.replace(BULLET, ''))}</li>`).join('') + '</ul>';
+    } else if (lines.every(l => NUMBERED.test(l))) {
+      out += '<ol>' + lines.map(l => `<li>${_inlineMd(l.replace(NUMBERED, ''))}</li>`).join('') + '</ol>';
+    } else {
+      out += '<p>' + lines.map(_inlineMd).join('<br>') + '</p>';
+    }
+  }
+  return out;
+}
 
 // ═══════════════════════════════════════════════════
 //  Tab navigation
@@ -7970,7 +8014,7 @@ async function sendDrawing(file, question){
     // The assistant's read line — the same text a reload restores, so the
     // record of what the sheet said never depends on the ephemeral card.
     const readLine = (d.chat || []).find(m => m.role === 'assistant');
-    if(readLine) addMsg('assistant', escHtml(readLine.text));
+    if(readLine) addMsg('assistant', formatChat(readLine.text));
   }catch(e){ removePending(); addMsg('system', errorCard(e.message)); }
 }
 
