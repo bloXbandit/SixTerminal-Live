@@ -1907,6 +1907,40 @@ def rules_run():
     return _apply_direct([cmd], data.get("label") or "Find and change")
 
 
+@app.route("/api/ids/normalize", methods=["POST"])
+def ids_normalize():
+    """
+    Put stray activity codes back on the job's own pattern.
+
+    The convention is read out of the file — MDC1.MIL.#### for milestones,
+    MDC1.FDG.#### in foundations — so nothing is configured. A preview
+    returns the full reviewable list; applying sends that same list back, so
+    what the user approved is exactly what is written.
+    """
+    sess = _get_session()
+    if sess is None or sess["project"] is None:
+        return jsonify({"error": "No schedule loaded"}), 400
+    data = request.get_json() or {}
+    preview = bool(data.get("preview"))
+
+    if preview:
+        from engine import id_normalizer
+        scope = data.get("wbs_uid") or None
+        if scope and not sess["project"].get_wbs(scope):
+            return jsonify({"error": "That folder is not in this schedule"}), 400
+        try:
+            return jsonify({"success": True, "preview": True,
+                            **id_normalizer.plan(sess["project"], scope)})
+        except Exception as e:
+            return jsonify({"error": f"Could not read the id pattern: {e}"}), 400
+
+    changes = data.get("changes")
+    if not isinstance(changes, list) or not changes:
+        return jsonify({"error": "Nothing to rename — run the preview first."}), 400
+    return _apply_direct([{"action": "normalize_activity_ids", "changes": changes}],
+                         data.get("label") or f"Normalize {len(changes)} activity ID(s)")
+
+
 @app.route("/api/advise/area", methods=["GET"])
 def advise_area():
     """

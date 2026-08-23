@@ -37,6 +37,7 @@ Supported commands:
   add_wbs_for_each          — Add a child folder under EVERY folder matching a pattern
   bulk_rename_activities    — Rename activities by explicit from→to list (ID, name, or WBS scope)
   bulk_update_activity_id   — Mass ID updates: resequence, pattern replace, or prefix swap
+  normalize_activity_ids    — Put stray activity codes back on the job's own ID pattern
 
 Each command dict must have an "action" key. Other keys depend on the action.
 """
@@ -323,6 +324,8 @@ def apply_command(project: Project, command: Dict[str, Any]) -> Tuple[bool, str]
             return _bulk_rename_activities(project, command)
         elif action == "bulk_update_activity_id":
             return _bulk_update_activity_id(project, command)
+        elif action == "normalize_activity_ids":
+            return _normalize_activity_ids(project, command)
         else:
             return False, f"Unknown action: '{action}'"
     except EditError as e:
@@ -2808,3 +2811,70 @@ def _bulk_update_activity_id(project: Project, cmd: Dict) -> Tuple[bool, str]:
 
     else:
         raise EditError(f"Unknown mode '{mode}' for bulk_update_activity_id. Use: resequence, pattern, prefix_swap")
+
+
+def _normalize_activity_ids(project: Project, cmd: Dict) -> Tuple[bool, str]:
+    """
+    Put every stray activity code back on the job's own pattern.
+
+    The convention is read out of the ids already in the file — MDC1.MIL.####
+    for milestones, MDC1.FDG.#### in foundations — and rows that drifted onto
+    generic codes are proposed a conforming one in their own folder's prefix.
+    Safe for the network: relations bind by uid, not by this code.
+
+    preview=true reports without writing. `changes` applies an exact list that
+    was previewed, so what the user approved is what lands rather than a fresh
+    computation that might differ.
+    """
+    from engine import id_normalizer
+
+    changes = cmd.get("changes")
+    if changes is None:
+        scope_uid = None
+        name = cmd.get("wbs_name") or cmd.get("wbs_code") or cmd.get("wbs_uid")
+        if name:
+            w = _find_wbs(project, cmd.get("wbs_code"), cmd.get("wbs_name"),
+                          cmd.get("wbs_uid"))
+            if not w:
+                raise EditError(_no_wbs(project, name))
+            scope_uid = w.uid
+        report = id_normalizer.plan(project, scope_uid)
+        changes = report["changes"]
+        notes = report["skipped"]
+        convention = report["convention"]
+    else:
+        if not isinstance(changes, list):
+            raise EditError("changes must be a list")
+        notes, convention = [], None
+
+    problems = id_normalizer.validate(project, changes)
+    if problems:
+        raise EditError("; ".join(problems[:3]))
+
+    # An explicit list carries only uid and the wanted code — the rest is
+    # filled in from the project so the report reads the same either way.
+    by_uid = {a.uid: a for a in project.activities}
+    rows = []
+    for c in changes:
+        a = by_uid.get(c.get("uid"))
+        rows.append((c.get("from") or (a.activity_id if a else "?"),
+                     c.get("to"),
+                     c.get("name") or (a.name if a else "")))
+
+    def _listing(fmt):
+        out = [fmt(f, t, nm) for f, t, nm in rows[:20]]
+        if len(rows) > 20:
+            out.append(f"    …and {len(rows) - 20} more")
+        out.extend("    NOTE: " + n for n in notes)
+        return out
+
+    head = f"{len(changes)} activity id(s)"
+    if convention:
+        head += f" off the '{convention}' pattern"
+    if bool(cmd.get("preview")):
+        return True, "\n".join([f"{head} would be renamed:"]
+                               + _listing(lambda f, t, nm: f"    {f} → {t}  ({nm})"))
+
+    n = id_normalizer.apply_changes(project, changes)
+    return True, "\n".join([f"Renamed {n} activity id(s) onto the project pattern."]
+                           + _listing(lambda f, t, nm: f"    {f} → {t}"))

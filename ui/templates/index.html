@@ -1756,6 +1756,38 @@
   </div>
 </div>
 
+<div class="modal-overlay" id="normids-modal" onclick="closeModal('normids-modal',event)">
+  <div class="modal" style="max-width:860px;">
+    <div class="modal-head">
+      <h2><span class="mh-icon">#</span> Normalize activity IDs</h2>
+    </div>
+    <div class="modal-body">
+      <div style="font-size:11.5px;color:var(--text2);margin-bottom:12px;line-height:1.6;">
+        Reads the coding your schedule already uses — per folder — and puts rows
+        that drifted onto generic codes back on it. Nothing is configured; the
+        pattern comes out of the file. Relations are unaffected: they bind to
+        activities, not to these codes.
+      </div>
+
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px;font-size:11.5px;">
+        <span style="color:var(--text3);">Check</span>
+        <select id="normids-scope" class="cmp-select" style="min-width:280px;">
+          <option value="">Whole schedule</option>
+        </select>
+      </div>
+
+      <div id="normids-summary" style="font-size:11.5px;margin-bottom:10px;"></div>
+      <div id="normids-body" style="max-height:340px;overflow:auto;"></div>
+    </div>
+    <div class="modal-foot">
+      <span id="normids-count" style="margin-right:auto;font-size:11px;color:var(--text3);"></span>
+      <button class="btn btn-ghost btn-sm" onclick="closeModal('normids-modal')">Cancel</button>
+      <button class="btn btn-ghost btn-sm" id="normids-scan-btn" onclick="scanNormalizeIds()">Check IDs</button>
+      <button class="btn btn-primary btn-sm" id="normids-apply-btn" onclick="applyNormalizeIds()" disabled>Apply</button>
+    </div>
+  </div>
+</div>
+
 <div class="modal-overlay" id="paste-modal" onclick="closeModal('paste-modal',event)">
   <div class="modal wide">
     <div class="modal-head">
@@ -2088,6 +2120,9 @@
             <button class="tb-item" onclick="tbDo(openRulesModal)">
               <span class="tb-item-ico">⇄</span> Find &amp; change…
               <span class="tb-item-hint">if name contains X, set Y</span></button>
+            <button class="tb-item" onclick="tbDo(openNormalizeIdsModal)">
+              <span class="tb-item-ico">#</span> Normalize activity IDs…
+              <span class="tb-item-hint">put stray codes back on the job's pattern</span></button>
             <div class="tb-pop-sep"></div>
             <button class="tb-item" onclick="tbDo(() => askAdvisor('procurement'))">
               <span class="tb-item-ico">⛁</span> Procurement check…
@@ -8348,6 +8383,115 @@ function fillScopeSelect(id){
   sel.innerHTML = '<option value="">Whole schedule</option>' +
     (lastSchedData?.wbs_sections || []).map(w =>
       `<option value="${escAttr(w.uid)}">${escHtml(wbsLabel(w, byUid))}</option>`).join('');
+}
+
+// ═══════════════════════════════════════════════════
+//  Normalize activity IDs — put stray codes back on the job's pattern
+// ═══════════════════════════════════════════════════
+// The proposal is computed server-side from the ids already in the file, and
+// the SAME list is what gets applied — the user approves rows, not a rule that
+// gets re-derived at apply time and might land differently.
+
+let _normIdChanges = [];
+
+function openNormalizeIdsModal(){
+  if(!lastSchedData){ flashSched('Load a schedule first', true); return; }
+  fillScopeSelect('normids-scope');
+  _normIdChanges = [];
+  document.getElementById('normids-summary').innerHTML = '';
+  document.getElementById('normids-body').innerHTML =
+    '<div style="padding:18px;color:var(--text3);font-size:11.5px;">'
+    + 'Click <b>Check IDs</b> to see what would change. Nothing is written until you apply.</div>';
+  document.getElementById('normids-count').textContent = '';
+  document.getElementById('normids-apply-btn').disabled = true;
+  document.getElementById('normids-scope').onchange = () => {
+    _normIdChanges = [];
+    document.getElementById('normids-apply-btn').disabled = true;
+  };
+  openModal('normids-modal');
+}
+
+async function scanNormalizeIds(){
+  const btn = document.getElementById('normids-scan-btn');
+  const body = document.getElementById('normids-body');
+  const summary = document.getElementById('normids-summary');
+  const label = btn.textContent;
+  btn.disabled = true; btn.textContent = 'Checking…';
+  try{
+    const d = await fetch('/api/ids/normalize', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({preview:true,
+                            wbs_uid: document.getElementById('normids-scope').value || undefined})
+    }).then(r => r.json());
+    btn.disabled = false; btn.textContent = label;
+    if(d.error){
+      summary.innerHTML = `<span style="color:var(--red);">⚠ ${escHtml(d.error)}</span>`;
+      body.innerHTML = ''; return;
+    }
+    _normIdChanges = d.changes || [];
+    const notes = [...(d.skipped || []),
+                   ...(d.left_alone || []).map(x => `${x.activity_id} — ${x.why}`)];
+    summary.innerHTML = d.convention
+      ? `This schedule is coded <b>${escHtml(d.convention)}</b>`
+        + ` <span style="color:var(--text3);">(${Math.round((d.share||0)*100)}% of its IDs).</span>`
+      : '';
+    if(!_normIdChanges.length){
+      body.innerHTML = '<div style="padding:18px;color:var(--text3);font-size:11.5px;">'
+        + (notes.length ? notes.map(escHtml).join('<br>')
+                        : 'Every activity ID already follows the pattern — nothing to change.')
+        + '</div>';
+      document.getElementById('normids-count').textContent = '';
+      document.getElementById('normids-apply-btn').disabled = true;
+      return;
+    }
+    body.innerHTML = `<table class="disambig-table">
+      <thead><tr><th>Now</th><th>Becomes</th><th>Activity</th><th>Folder</th></tr></thead>
+      <tbody>${_normIdChanges.map(c => `<tr>
+        <td class="act-id" style="opacity:.65;">${escHtml(c.from)}</td>
+        <td class="act-id">${escHtml(c.to)}</td>
+        <td>${escHtml(c.name || '')}</td>
+        <td class="tie-why">${escHtml(c.wbs_path || '')}</td>
+      </tr>`).join('')}</tbody></table>`
+      + (notes.length ? `<div style="margin-top:10px;font-size:10.5px;color:var(--text3);">`
+          + notes.map(escHtml).join('<br>') + '</div>' : '');
+    document.getElementById('normids-count').textContent =
+      `${_normIdChanges.length} ID${_normIdChanges.length===1?'':'s'} would change`;
+    document.getElementById('normids-apply-btn').disabled = false;
+  }catch(e){
+    btn.disabled = false; btn.textContent = label;
+    summary.innerHTML = `<span style="color:var(--red);">⚠ ${escHtml(e.message)}</span>`;
+  }
+}
+
+async function applyNormalizeIds(){
+  if(!_normIdChanges.length) return;
+  const btn = document.getElementById('normids-apply-btn');
+  btn.disabled = true; btn.textContent = 'Applying…';
+  try{
+    const d = await fetch('/api/ids/normalize', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({changes: _normIdChanges})
+    }).then(r => r.json());
+    btn.textContent = 'Apply';
+    if(d.error){ btn.disabled = false; flashSched(d.error, true); return; }
+    const n = _normIdChanges.length;
+    _normIdChanges = [];
+    closeModal('normids-modal');
+    undoCount = d.undo_count ?? undoCount;
+    redoCount = d.redo_count ?? redoCount;
+    if(d.edit_count != null){
+      editCount = d.edit_count;
+      const ei = document.getElementById('info-edits'); if(ei) ei.textContent = editCount;
+    }
+    updateUndoBtn();
+    await loadSchedule();
+    flashSched(`Normalized ${n} activity ID${n===1?'':'s'}`);
+    addMsg('system', `<strong>Normalize activity IDs</strong><br>`
+      + escHtml(`${n} ID${n===1?'':'s'} put back on the project pattern.`));
+  }catch(e){
+    btn.disabled = false; btn.textContent = 'Apply';
+    flashSched(e.message, true);
+  }
 }
 
 function openLoadingModal(){

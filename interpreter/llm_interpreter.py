@@ -15,7 +15,7 @@ Supported actions (must match edit_engine.py):
   bulk_rename, bulk_update_duration,
   set_constraint, clear_constraint, set_actual_date, set_progress,
   update_planned_date,
-  recommend_logic, update_udf, bulk_rules,
+  recommend_logic, update_udf, bulk_rules, normalize_activity_ids,
   update_labor_units, bulk_clear_constraints, bulk_append_name
 
 Supported models: claude, gpt-4.1-mini, gpt-4.1-nano, gpt-5.4-mini
@@ -715,6 +715,20 @@ bulk_rules:
   {"action": "bulk_rules", "wbs_name": "Phase 1 (Build-Out)", "rules": [
      {"where": {"field": "name", "op": "contains", "value": "Pull LBB"},
       "set": {"field": "name", "mode": "append", "value": "(ER 209)"}}]}
+
+normalize_activity_ids:
+  Put stray activity codes back on the job's own pattern. The convention is
+  read out of the schedule itself — MDC1.MIL.#### for milestones,
+  MDC1.FDG.#### in foundations — so nothing needs naming: rows that drifted
+  onto generic codes (A1000, A1010) get a conforming id in THEIR OWN folder's
+  prefix. Safe for the network; relations bind by activity, not by this code.
+  Use this when the user asks to clean up, align, standardise or normalize
+  activity IDs — do NOT hand-write hundreds of update_activity_id commands.
+  preview true reports what would change without writing. Optional wbs_name
+  limits it to one branch.
+  {"action": "normalize_activity_ids", "preview": true}
+  {"action": "normalize_activity_ids"}
+  {"action": "normalize_activity_ids", "wbs_name": "Phase 1 (Build-Out)"}
 
 delete_wbs:
   Delete a folder and everything nested under it. By default the activities
