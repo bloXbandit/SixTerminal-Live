@@ -1353,6 +1353,42 @@ def _merge_projects(base, incoming, target_wbs_uid=None, flatten=False, dedupe=N
     return report
 
 
+def _logic_proposals(project, cmd):
+    """
+    The clickable data behind a recommend_logic report.
+
+    _recommend_logic() (edit_engine.py) already flattens these into the text
+    the model reads — same ranked ties, same rationale. Without this, a
+    "here's what's missing" turn only ever reaches the user as prose with
+    nothing to click; this hands back the same rows as real records so the
+    frontend can put an Apply button on each one, same as tieOptionsCard does
+    for a single-activity lookup.
+    """
+    scope = (cmd.get("scope") or "milestones").strip().lower()
+    if scope in ("wbs", "area") and (cmd.get("wbs_name") or cmd.get("area")):
+        name = cmd.get("wbs_name") or cmd.get("area")
+        rep = area_report(project, name)
+        if "error" in rep:
+            return None
+        items = rep["sequence_recommendations"][:25]
+        if not items:
+            return None
+        return {"scope": "wbs", "label": rep["area"]["path"], "items": items}
+    if scope == "milestones":
+        rep = milestone_report(project, limit_per_milestone=1)
+        items = []
+        for m in rep["milestones"]:
+            if m["has_predecessor"] or not m["drivers"]:
+                continue
+            items.append(m["drivers"][0])
+            if len(items) >= 25:
+                break
+        if not items:
+            return None
+        return {"scope": "milestones", "label": "Unanchored milestones", "items": items}
+    return None
+
+
 @app.route("/api/edit", methods=["POST"])
 def edit():
     sess = _get_session()
@@ -1611,6 +1647,16 @@ def edit():
         _append_chat("system_result", edit_summary,
                      context="\n".join(outcome_lines))
 
+        # A recommend_logic report that found real candidates gets its ranked
+        # rows attached too, so the reply carries something clickable instead
+        # of read-only prose the user would otherwise have to retype as edits.
+        logic_proposals = None
+        for cmd, ok, _ in applied:
+            if ok and cmd.get("action") == "recommend_logic":
+                logic_proposals = _logic_proposals(project, cmd)
+                if logic_proposals:
+                    break
+
         return jsonify({
             "type":             "result",
             "chat_message":     chat_message,
@@ -1625,6 +1671,7 @@ def edit():
             "undo_count":       len(sess["undo_stack"]),
             "redo_count":       len(sess["redo_stack"]),
             "edit_count":       len(sess["edit_history"]),
+            "logic_proposals":  logic_proposals,
         })
 
     except Exception as e:

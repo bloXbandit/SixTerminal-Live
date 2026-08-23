@@ -3460,6 +3460,60 @@ async function applyTie(cardId, kind, idx, btn){
 }
 
 // ═══════════════════════════════════════════════════
+//  Logic suggestions from a recommend_logic report — one Apply per row
+// ═══════════════════════════════════════════════════
+// Same source data as the report text (recommend_logic ranks these before
+// flattening them into prose) — this just gives each row a button instead of
+// leaving the user to retype the tie as a fresh instruction.
+
+const _logicPropCards = {};
+
+function logicProposalsCard(d){
+  const id = 'logicprop-' + Date.now();
+  _logicPropCards[id] = d;
+  const VERDICT_CLS = {confirms: 'tie-hi', slack: 'tie-mid', conflict: 'tie-lo'};
+  const row = (r, i) => {
+    const vcls = VERDICT_CLS[(r.verdict || '').toLowerCase()] || 'tie-mid';
+    return `<tr>
+      <td class="act-id">${escHtml(r.predecessor_id)}</td>
+      <td>${escHtml(r.predecessor_name || '')}</td>
+      <td class="act-id">${escHtml(r.successor_id)}</td>
+      <td>${escHtml(r.successor_name || '')}</td>
+      <td class="tie-lag">${r.implied_lag_days == null ? '—' : r.implied_lag_days + 'd'}</td>
+      <td><span class="tie-conf ${vcls}">${escHtml(r.verdict || '')}</span></td>
+      <td class="tie-why">${escHtml(r.rationale || '')}</td>
+      <td><button class="btn btn-primary btn-sm"
+            onclick="applyLogicProposal('${id}',${i},this)">Apply</button></td>
+    </tr>`;
+  };
+  return `<div class="disambig-card" id="${id}">
+    <div class="disambig-header">⇆ Logic suggestions — ${escHtml(d.label || '')}</div>
+    <div class="disambig-subtext">Ranked ties this report found. Apply adds a
+      Finish-to-Start relation; nothing here has been made yet.</div>
+    <table class="disambig-table">
+      <thead><tr><th>Pred ID</th><th>Predecessor</th><th>Succ ID</th><th>Successor</th>
+                 <th>Gap</th><th>Verdict</th><th>Why</th><th></th></tr></thead>
+      <tbody>${d.items.map(row).join('')}</tbody>
+    </table>
+  </div>`;
+}
+
+async function applyLogicProposal(cardId, idx, btn){
+  const d = _logicPropCards[cardId];
+  const r = d && d.items[idx];
+  if(!r) return;
+  btn.disabled = true; btn.textContent = '…';
+  const ok = await directEdit(
+    [{action:'add_relation', predecessor_id:r.predecessor_id,
+      successor_id:r.successor_id, type:'fs', lag_days:0}],
+    `${r.predecessor_id} → ${r.successor_id}`);
+  const applied = ok && ok.commands_applied > 0;
+  btn.textContent = applied ? '✓ Added' : 'Failed';
+  btn.classList.toggle('btn-primary', false);
+  if(!applied) btn.disabled = false;
+}
+
+// ═══════════════════════════════════════════════════
 //  Stopped: this contradicts a rule you set
 // ═══════════════════════════════════════════════════
 // Report and stop, with the override in reach. Applying a tie that runs
@@ -3625,6 +3679,9 @@ function handleResult(d) {
   if (d.chat_message) addMsg('assistant', formatChat(d.chat_message));
   const editsDone = (d.commands_applied || 0) + (d.commands_failed || 0);
   if (editsDone > 0) addMsg('system', resultCard(d));
+  if (d.logic_proposals && d.logic_proposals.items && d.logic_proposals.items.length) {
+    addMsg('system', logicProposalsCard(d.logic_proposals));
+  }
   // Fallback: if nothing rendered at all, show raw result summary
   if (!d.chat_message && editsDone === 0) {
     addMsg('assistant', 'Done.');
