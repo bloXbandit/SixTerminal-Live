@@ -67,6 +67,39 @@ def test_no_json_at_all_is_an_error_not_a_guess():
         pass
 
 
+def test_truncated_json_is_a_plain_sentence_not_a_leaked_parser_error():
+    """
+    A response cut off mid-object (hit the model's own output cap on a sheet
+    with a lot on it) used to surface as the raw json.JSONDecodeError text —
+    "Expecting ',' delimiter: line 484 column 6" — straight to the user.
+    """
+    try:
+        _parse_reading('{"summary": "a lot on this sheet", "seen": {"a": 1}, "facts": ["one", "two')
+        assert False, "should have raised"
+    except ValueError as e:
+        assert "Expecting" not in str(e)
+        assert "crop" in str(e).lower()
+
+
+def test_a_schedule_screenshot_cut_off_mid_row_is_a_plain_sentence(monkeypatch):
+    """
+    A full-page schedule capture can transcribe to well over a hundred rows;
+    if the model's own output limit still cuts that off mid-object, the user
+    should get "crop tighter" — not "Expecting ',' delimiter: line 484
+    column 6" straight from Python's JSON parser.
+    """
+    import interpreter.vision as vz
+    monkeypatch.setattr(vz, "_ask_model",
+                        lambda *a, **k: '{"rows": [{"activity_id": "A1", "name": "Row One"}, '
+                                       '{"activity_id": "A2", "name": "cut off he')
+    try:
+        vz.read_schedule(b"\x89PNG", "shot.png")
+        assert False, "should have raised"
+    except RuntimeError as e:
+        assert "Expecting" not in str(e)
+        assert "crop" in str(e).lower()
+
+
 def test_missing_fields_default_instead_of_crashing():
     r = _parse_reading('{"summary": "x"}')
     assert r["rooms"] == [] and r["directives"] == [] and r["discipline"] == "other"

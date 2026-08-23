@@ -844,8 +844,16 @@ def _build_session_history(edit_history: Optional[list]) -> str:
             continue
         instruction = entry.get("instruction", "")
         results = entry.get("results", [])
+        # A recommend_logic report can run to a full per-activity listing —
+        # exactly the detail the turn that ran it needed. Carrying that same
+        # full text uncached in EVERY later turn for the next 9 turns is not
+        # "recall without token bloat" any more, so only the recall survives
+        # here; the full listing already did its job when it was generated.
+        def _msg(r):
+            m = r.get('message', '')
+            return m if len(m) <= 220 else m[:220] + " …[see report when it ran]"
         summary = " | ".join(
-            f"{'v' if r.get('success') else 'x'} {r.get('action','?')}: {r.get('message','')}"
+            f"{'v' if r.get('success') else 'x'} {r.get('action','?')}: {_msg(r)}"
             for r in results
         )
         lines.append(f"[{i}] \"{instruction}\" -> {summary}")

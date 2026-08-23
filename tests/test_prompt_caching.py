@@ -123,6 +123,28 @@ def test_the_instruction_conversation_and_edit_history_all_still_arrive(monkeypa
     assert "Added Finish to Start relation" in user_content
 
 
+def test_a_huge_report_in_edit_history_stays_compact_on_later_turns(monkeypatch):
+    """
+    recommend_logic can return a full per-activity listing for a large WBS
+    folder — real detail the turn that ran it needed. _build_session_history
+    is a different job: compact recall for the NEXT 9 turns, none of which
+    are cached, so repeating that full listing in each of them would be paid
+    for nine times over for no benefit the model didn't already get once.
+    """
+    huge_report = "Electrical — 150 activities...\n" + "\n".join(
+        f"  A{i} — Some Activity Name {i}  2026-0{i%9+1}-01 -> 2026-0{i%9+1}-05 (5d, Not Started)"
+        for i in range(150))
+    assert len(huge_report) > 4000
+    kw = _anthropic_call(
+        monkeypatch, instruction="what else is missing?",
+        edit_history=[{"instruction": "what's in Electrical?", "commands": [],
+                       "results": [{"action": "recommend_logic", "success": True,
+                                   "message": huge_report}]}])
+    user_content = kw["messages"][0]["content"]
+    assert len(user_content) < 2000
+    assert "see report when it ran" in user_content
+
+
 # ── the property that makes caching actually work ────────────────────────────
 
 def test_two_calls_with_the_same_schedule_produce_byte_identical_static_blocks(monkeypatch):

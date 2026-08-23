@@ -206,7 +206,11 @@ def _parse_reading(raw: str) -> Dict[str, Any]:
     m = re.search(r"\{.*\}", raw or "", re.S)
     if not m:
         raise ValueError("The model returned no JSON")
-    data = json.loads(m.group(0))
+    try:
+        data = json.loads(m.group(0))
+    except json.JSONDecodeError:
+        raise ValueError("That sheet had more on it than one read could capture "
+                         "cleanly. Try a tighter crop of the part that matters.")
     return {
         "sheet_number": data.get("sheet_number"),
         "sheet_title": data.get("sheet_title"),
@@ -254,11 +258,26 @@ def read_schedule(file_bytes: bytes, filename: str, project=None,
         "Transcribe the activity rows in this schedule." + (
             "\n\nThe user asked: " + question.strip()
             if (question or "").strip() else ""),
-        model_key, api_key)
+        # A drawing's reading is a handful of facts; a schedule screenshot can
+        # run to a hundred-plus rows of structured JSON. 4096 tokens — the
+        # default — was cutting that off mid-row on a real full-page capture,
+        # which came back as a JSONDecodeError leaking a raw parser message
+        # ("Expecting ',' delimiter…") straight to the user instead of a
+        # readable answer.
+        model_key, api_key, max_tokens=8192)
     m = re.search(r"\{.*\}", raw or "", re.S)
     if not m:
         raise RuntimeError("The model did not return readable rows for that image.")
-    data = json.loads(m.group(0))
+    try:
+        data = json.loads(m.group(0))
+    except json.JSONDecodeError:
+        # Still too much table for one pass, even with the higher cap above —
+        # tell the user what to do about it instead of surfacing where the
+        # JSON parser gave up.
+        raise RuntimeError(
+            "That screenshot has more rows than one read can capture cleanly. "
+            "Try a tighter crop with fewer rows, or split it into two "
+            "screenshots and send them one at a time.")
     rows = []
     for r in (data.get("rows") or [])[:300]:
         if not isinstance(r, dict):
@@ -307,7 +326,7 @@ def _check(file_bytes: bytes, filename: str):
 
 
 def _ask_model(file_bytes, ext, is_pdf, system_prompt, user_text,
-               model_key, api_key) -> str:
+               model_key, api_key, max_tokens: int = 4096) -> str:
     """One image + one prompt to whichever provider is configured."""
     cfg = resolve_model(model_key)
     provider = cfg["provider"]
@@ -328,7 +347,7 @@ def _ask_model(file_bytes, ext, is_pdf, system_prompt, user_text,
                              "media_type": _IMAGE_TYPES[ext], "data": b64}})
         client = anthropic.Anthropic(api_key=key)
         resp = client.messages.create(
-            model=cfg["model_id"], max_tokens=4096, system=system_prompt,
+            model=cfg["model_id"], max_tokens=max_tokens, system=system_prompt,
             messages=[{"role": "user", "content": [
                 block, {"type": "text", "text": user_text}]}])
         return resp.content[0].text
@@ -354,7 +373,7 @@ def _ask_model(file_bytes, ext, is_pdf, system_prompt, user_text,
                         "url": f"data:{_IMAGE_TYPES[ext]};base64,{b64}"}},
                     {"type": "text", "text": user_text},
                 ]}],
-            max_completion_tokens=4096)
+            max_completion_tokens=max_tokens)
         return resp.choices[0].message.content
 
     raise RuntimeError(f"Unknown provider '{provider}'.")
