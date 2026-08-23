@@ -9,6 +9,14 @@ openpyxl>=3.1.0          # Excel (.xlsx) extraction
 pdfplumber>=0.11.0       # text-layer PDF extraction
 pypdf>=4.0.0             # fast PDF page count (avoids pdfplumber overhead on large files)
 
+# Reading a PDF SHEET on a model that will not take one natively: the pages
+# are rendered to images locally and sent as images, which every vision model
+# accepts. Pure wheels, no system packages — installs on Render as-is.
+# Without these a PDF still works, but only on a provider that accepts one
+# directly (Anthropic, and OpenAI models that support file input).
+pypdfium2>=4.0.0
+Pillow>=10.0.0
+
 # Optional cloud persistence — Cloudflare R2 (S3-compatible) via boto3.
 # Inactive unless the R2_* env vars are set; the app runs in-memory otherwise.
 boto3>=1.34.0

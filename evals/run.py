@@ -19,6 +19,7 @@ import sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from evals import cases as case_mod
+from evals import keys as key_mod
 from evals.harness import (PASS_BAR, compare, load_baseline, run_suite,
                            save_baseline)
 
@@ -44,8 +45,26 @@ def main(argv=None) -> int:
     ap.add_argument("--compare", metavar="NAME")
     ap.add_argument("--json", metavar="PATH", help="write the full report here")
     ap.add_argument("--no-colour", action="store_true")
+    ap.add_argument("--check-key", action="store_true",
+                    help="say whether a key can be found, and stop")
     args = ap.parse_args(argv)
     colour = not args.no_colour and sys.stdout.isatty()
+
+    if args.check_key:
+        st = key_mod.status()          # read the sources BEFORE loading them
+        print(f"key file: {st['env_file']}"
+              f"{'' if st['env_file_exists'] else '  (not present)'}")
+        for provider, info in st["providers"].items():
+            where = f" from {info['source']}, ends …{info['ends_with']}" if info["set"] else ""
+            print(f"  {provider:<10} {'found' if info['set'] else 'not found'}{where}")
+        if not any(i["set"] for i in st["providers"].values()):
+            print("\nAdd one line to .env.local (gitignored):\n"
+                  "  ANTHROPIC_API_KEY=sk-ant-...\n"
+                  "or export it in your shell.")
+            return 2
+        return 0
+
+    key_mod.load_into_env()
 
     picked = case_mod.select(args.ids, args.categories)
     if not picked:
@@ -57,6 +76,14 @@ def main(argv=None) -> int:
             print(f"{c.id:<44} {c.category:<16} {c.claim}")
         print(f"\n{len(picked)} cases in {len(set(c.category for c in picked))} categories")
         return 0
+
+    api_key = key_mod.resolve(args.model, args.api_key)
+    if not api_key:
+        print(f"No API key for '{args.model}'. Run --check-key to see what is "
+              f"found, or put one line in .env.local:\n"
+              f"  ANTHROPIC_API_KEY=sk-ant-...")
+        return 2
+    args.api_key = api_key
 
     total_calls = len(picked) * args.repeats
     print(f"{len(picked)} cases x {args.repeats} repeats = {total_calls} model calls "

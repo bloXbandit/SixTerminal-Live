@@ -23,15 +23,36 @@ have**, so the important claims are decidable by looking:
 Only a handful of cases fall back to matching the chat message, and those are
 treated as the weaker evidence they are.
 
+## Giving it a key
+
+Write one line into `.env.local` at the repo root:
+
+```
+ANTHROPIC_API_KEY=sk-ant-...
+OPENAI_API_KEY=sk-...
+```
+
+That file is gitignored and a test asserts it stays that way, so a key put
+there cannot be committed. It is deliberately a different filename from the
+`.env` deployment tooling reads, so a local convenience cannot turn into a
+deployed secret by accident. An exported shell variable always wins over the
+file, so a key you set on purpose beats one you forgot about.
+
+```bash
+python -m evals.run --check-key
+```
+
+says which keys were found and where from — never the key itself, just the
+last four characters, which is enough to tell two apart when one is wrong.
+
 ## Running it
 
 ```bash
-export ANTHROPIC_API_KEY=...          # or OPENAI_API_KEY
-
 python -m evals.run --list                       # what exists, and the claim each defends
 python -m evals.run --repeats 5                  # the whole suite
 python -m evals.run --category direction         # one area, while iterating
 python -m evals.run --case same-thing-for-the-list-above --repeats 10
+python -m evals.run --model gpt-4.1-mini         # score a different model
 ```
 
 Every case runs several times and is scored as a **pass rate**. The model is

@@ -18,6 +18,7 @@ back with a plain explanation instead of a guess.
 
 import base64
 import datetime as _dt
+import io
 import json
 import os
 import re
@@ -45,6 +46,71 @@ _IMAGE_TYPES = {
 # beats silently degrading a drawing until it is unreadable.
 _MAX_BYTES = 5 * 1024 * 1024
 _MAX_PDF_BYTES = 30 * 1024 * 1024
+
+# ── PDFs on any model that can read one ──────────────────────────────────────
+# A PDF used to be Anthropic-only: every other provider got a flat refusal
+# telling the user to switch models. That was true once and stopped being
+# true, and a hard-coded "only Claude can do this" is exactly the kind of
+# claim that rots — the user had a perfectly capable OpenAI key and was told
+# to go away.
+#
+# So there is no capability list to keep current. The PDF is offered to the
+# provider in ITS native shape first, and if that is refused the pages are
+# rendered to images locally and sent as images — which every vision model
+# accepts. A provider that gains PDF support starts using it with no change
+# here; one that never does still works.
+
+# Rendering is optional: without it a PDF simply needs a provider that takes
+# one natively, which is the behaviour that existed before.
+try:
+    import pypdfium2 as _pdfium
+    from PIL import Image as _PILImage
+    _RASTER_AVAILABLE = True
+except ImportError:                                  # pragma: no cover
+    _RASTER_AVAILABLE = False
+
+# A sheet set is sent one sheet at a time, so a PDF here is normally a handful
+# of pages. This is a guard against somebody attaching the whole 400-page
+# issue, not a working limit.
+_MAX_PDF_PAGES = 8
+# 150 DPI equivalent. Drawing text is small; below this the sheet numbers and
+# room tags stop being legible, which is the whole reason for reading it.
+_RASTER_SCALE = 2.0
+
+
+def rasterize_pdf(file_bytes: bytes, max_pages: int = _MAX_PDF_PAGES,
+                  scale: float = _RASTER_SCALE) -> List[bytes]:
+    """
+    PDF pages as PNG bytes, so any model with eyes can read the sheet.
+
+    Renders locally rather than asking the provider to. Pages that come back
+    over the image limit are re-rendered smaller rather than being sent and
+    refused — a drawing that is slightly softer still reads; one the API
+    rejects does not.
+    """
+    if not _RASTER_AVAILABLE:
+        raise RuntimeError(
+            "This model cannot read PDFs directly, and PDF rendering is not "
+            "installed here. Send a PNG/JPG screenshot of the sheet, or run "
+            "`pip install pypdfium2 Pillow`.")
+    try:
+        doc = _pdfium.PdfDocument(file_bytes)
+    except Exception as e:
+        raise RuntimeError(f"That PDF could not be opened: {e}")
+    out: List[bytes] = []
+    for i in range(min(len(doc), max_pages)):
+        at = scale
+        for _ in range(4):                    # shrink until it fits, then stop
+            buf = io.BytesIO()
+            doc[i].render(scale=at).to_pil().save(buf, format="PNG")
+            data = buf.getvalue()
+            if len(data) <= _MAX_BYTES or at <= 0.5:
+                out.append(data)
+                break
+            at /= 1.5
+    if not out:
+        raise RuntimeError("That PDF has no pages that could be rendered.")
+    return out
 
 READ_PROMPT = """You are a senior electrical construction scheduler reading one sheet of a drawing set (it may be a screenshot, a snip, or a photo of a screen).
 
@@ -528,10 +594,6 @@ def _ask_model(file_bytes, ext, is_pdf, system_prompt, user_text,
         return resp.content[0].text
 
     if provider == "openai":
-        if is_pdf:
-            raise RuntimeError("PDF pages need the Claude model — switch the "
-                               "model in settings, or send a screenshot "
-                               "instead.")
         key = api_key or os.environ.get("OPENAI_API_KEY", "")
         if not key:
             raise RuntimeError("OpenAI API key not set. Enter your key in the "
@@ -539,16 +601,43 @@ def _ask_model(file_bytes, ext, is_pdf, system_prompt, user_text,
         if not _OPENAI_AVAILABLE:
             raise RuntimeError("openai package not installed.")
         client = OpenAI(api_key=key)
-        resp = client.chat.completions.create(
-            model=cfg["model_id"],
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": [
-                    {"type": "image_url", "image_url": {
-                        "url": f"data:{_IMAGE_TYPES[ext]};base64,{b64}"}},
-                    {"type": "text", "text": user_text},
-                ]}],
-            max_completion_tokens=max_tokens)
-        return resp.choices[0].message.content
 
-    raise RuntimeError(f"Unknown provider '{provider}'.")
+        def _send(parts):
+            resp = client.chat.completions.create(
+                model=cfg["model_id"],
+                messages=[{"role": "system", "content": system_prompt},
+                          {"role": "user", "content": parts
+                           + [{"type": "text", "text": user_text}]}],
+                max_completion_tokens=max_tokens)
+            return resp.choices[0].message.content
+
+        if not is_pdf:
+            return _send([{"type": "image_url", "image_url": {
+                "url": f"data:{_IMAGE_TYPES[ext]};base64,{b64}"}}])
+
+        # OpenAI takes a PDF directly on the models that support it. Try that
+        # first — it keeps the real text layer, which reads far better than a
+        # picture of the same page — and fall back to rendering only if this
+        # particular model will not take one.
+        try:
+            return _send([{"type": "file", "file": {
+                "filename": "sheet.pdf",
+                "file_data": f"data:application/pdf;base64,{b64}"}}])
+        except Exception as native_error:
+            if not _RASTER_AVAILABLE:
+                raise RuntimeError(
+                    f"This model would not take the PDF directly "
+                    f"({native_error}), and PDF rendering is not installed. "
+                    f"Send a screenshot of the sheet instead.")
+            pages = rasterize_pdf(file_bytes)
+            return _send([{"type": "image_url", "image_url": {
+                "url": "data:image/png;base64,"
+                       + base64.standard_b64encode(p).decode()}}
+                for p in pages])
+
+    # An unknown provider is still worth trying: an OpenAI-compatible endpoint
+    # is the common case, and refusing outright is how a working key ends up
+    # being told the tool cannot help.
+    raise RuntimeError(
+        f"Unknown provider '{provider}'. Pick a Claude or GPT model in "
+        f"settings, or enter the model id exactly as its provider names it.")

@@ -362,3 +362,81 @@ def test_a_missing_baseline_is_none_not_a_crash(tmp_path, monkeypatch):
     import evals.harness as h
     monkeypatch.setattr(h, "BASELINE_DIR", str(tmp_path))
     assert h.load_baseline("never-saved") is None
+
+
+# ── finding an API key without it reaching the repository ────────────────────
+
+def test_a_key_file_is_read(tmp_path):
+    from evals import keys
+    f = tmp_path / ".env.local"
+    f.write_text("ANTHROPIC_API_KEY=sk-ant-abc\n# a comment\nOPENAI_API_KEY='sk-oai-x'\n")
+    got = keys.read_env_file(str(f))
+    assert got["ANTHROPIC_API_KEY"] == "sk-ant-abc"
+    assert got["OPENAI_API_KEY"] == "sk-oai-x", "quotes should be stripped"
+
+
+def test_a_missing_key_file_is_empty_not_a_crash(tmp_path):
+    from evals import keys
+    assert keys.read_env_file(str(tmp_path / "nope")) == {}
+
+
+def test_blank_and_malformed_lines_are_skipped(tmp_path):
+    from evals import keys
+    f = tmp_path / ".env.local"
+    f.write_text("\n\nJUST_A_WORD\nGOOD=1\nEMPTY=\n")
+    assert keys.read_env_file(str(f)) == {"GOOD": "1"}
+
+
+def test_an_exported_key_wins_over_the_file(tmp_path, monkeypatch):
+    """A key you exported on purpose must beat one in a file you forgot."""
+    from evals import keys
+    f = tmp_path / ".env.local"
+    f.write_text("ANTHROPIC_API_KEY=from-file\n")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "from-shell")
+    keys.load_into_env(str(f))
+    assert os.environ["ANTHROPIC_API_KEY"] == "from-shell"
+
+
+def test_the_key_for_a_model_follows_its_provider(monkeypatch):
+    from evals import keys
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "ant")
+    monkeypatch.setenv("OPENAI_API_KEY", "oai")
+    monkeypatch.setattr(keys, "ENV_FILE", "/nonexistent")
+    assert keys.resolve("claude") == "ant"
+    assert keys.resolve("gpt-4.1-mini") == "oai"
+
+
+def test_an_explicit_key_beats_everything(monkeypatch):
+    from evals import keys
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "ant")
+    assert keys.resolve("claude", explicit="typed-in") == "typed-in"
+
+
+def test_status_never_returns_the_key_itself(monkeypatch):
+    """It exists to tell two keys apart when one is wrong, not to hand one
+    to anything that prints it."""
+    from evals import keys
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-secret-tail1234")
+    monkeypatch.setattr(keys, "ENV_FILE", "/nonexistent")
+    st = keys.status()
+    blob = repr(st)
+    assert "secret" not in blob
+    assert st["providers"]["anthropic"]["ends_with"] == "1234"
+
+
+def test_status_says_where_the_key_came_from(tmp_path, monkeypatch):
+    from evals import keys
+    f = tmp_path / ".env.local"
+    f.write_text("OPENAI_API_KEY=sk-oai-9999\n")
+    monkeypatch.setattr(keys, "ENV_FILE", str(f))
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    assert keys.status()["providers"]["openai"]["source"] == ".env.local"
+
+
+def test_the_key_file_is_gitignored():
+    """The whole point. If this ever stops being true a key gets committed."""
+    import subprocess
+    root = os.path.join(os.path.dirname(__file__), "..")
+    r = subprocess.run(["git", "check-ignore", "-q", ".env.local"],
+                       cwd=root, capture_output=True)
+    assert r.returncode == 0, ".env.local is NOT gitignored"

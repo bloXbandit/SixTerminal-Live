@@ -2,6 +2,7 @@ __pycache__/
 *.py[cod]
 *.pyo
 .env
+.env.local
 .venv
 venv/
 env/
@@ -15,3 +16,6 @@ build/
 !samples/*.xml
 *.log
 tmp/
+
+# Eval reports written by `python -m evals.run --json`
+evals/reports/
