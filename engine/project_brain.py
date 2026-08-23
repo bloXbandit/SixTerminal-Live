@@ -79,6 +79,24 @@ class Directive:
     matched_subject: int = 0        # activities the later side names
     matched_after: int = 0          # activities the earlier side names
     note_reason: str = ""           # why a rule-shaped sentence stayed a note
+    # The shape the SENTENCE has, which never changes. `kind` is what the rule
+    # currently IS, which does: a rule matching nothing in today's schedule is
+    # demoted to guidance, and must be able to come back if the work appears.
+    # Without keeping the two apart, grounding is a one-way door.
+    parsed_kind: str = ""
+    # How the rule has fared when it actually bit. A rule stopped an edit and
+    # the user went ahead anyway is evidence about the RULE, not just that
+    # edit — and it used to be discarded, so a rule overridden thirty times
+    # looked exactly like one never questioned.
+    overridden: int = 0
+    upheld: int = 0
+    last_conflict_at: str = ""
+    # "I know, keep it anyway." Acknowledging is not the same as upholding:
+    # it silences the prompt at the count it stood at, so the rule is raised
+    # again only if it goes on losing AFTER the user said to keep it. Counting
+    # an acknowledgement as an uphold instead would need three clicks to clear
+    # a three-override flag.
+    ack_overrides: int = -1
 
     def to_json(self) -> Dict[str, Any]:
         return asdict(self)
@@ -156,6 +174,14 @@ def parse_directive(text: str) -> Directive:
     if not raw:
         return d
 
+    def _shape(kind):
+        """The shape is recorded twice on purpose: `kind` is what the rule IS
+        right now and grounding may demote it, `parsed_kind` is what the
+        SENTENCE says and never changes — so a demotion can be undone when the
+        work it names finally appears in the schedule."""
+        d.kind = d.parsed_kind = kind
+        return d
+
     body = re.sub(r"(?i)^\s*(?:please\s+|note[:,]?\s+|remember[:,]?\s+)", "", raw)
     body = body.rstrip(".")
     same_phase = bool(_SAME_PHASE_RE.search(body))
@@ -168,9 +194,9 @@ def parse_directive(text: str) -> Directive:
     if m:
         subj, aft = _clean(m.group("subj")), _clean(m.group("after"))
         if subj and aft and subj.lower() != aft.lower():
-            d.kind, d.subject, d.after = ORDER, subj, aft
+            d.subject, d.after = subj, aft
             d.same_area, d.same_phase = same_area, same_phase
-            return d
+            return _shape(ORDER)
 
     # A STATED order is tried before "sequential", because it is the more
     # specific claim: "MV rooms run 107, 105, 106" says everything "MV rooms
@@ -185,15 +211,15 @@ def parse_directive(text: str) -> Directive:
                 seen_rooms.add(v)
                 rooms.append(v)
         if fam and fam.lower() not in _STOP and len(fam) <= 15 and len(rooms) >= 2:
-            d.kind, d.family, d.order, d.same_area = ROOM_ORDER, fam, rooms, same_area
-            return d
+            d.family, d.order, d.same_area = fam, rooms, same_area
+            return _shape(ROOM_ORDER)
 
     m = _SEQ_RE.search(body)
     if m:
         fam = _clean(m.group("fam"))
         if fam and fam.lower() not in _STOP and len(fam) <= 15:
-            d.kind, d.family, d.same_area = SEQUENCE, fam, same_area
-            return d
+            d.family, d.same_area = fam, same_area
+            return _shape(SEQUENCE)
 
     return d
 
@@ -210,6 +236,15 @@ def ground(project, d: Directive) -> Directive:
     so, with the reason.
     """
     acts = getattr(project, "activities", None) or []
+    # Grounding runs again whenever the schedule changes, so it has to start
+    # from what the SENTENCE says, not from the verdict it reached last time.
+    # Otherwise a rule demoted once could never recover when the work it names
+    # finally appears in the file — and re-grounding would be a ratchet that
+    # only ever turned rules into notes.
+    if not d.parsed_kind:
+        d.parsed_kind = d.kind
+    d.kind, d.note_reason = d.parsed_kind, ""
+    d.matched_subject = d.matched_after = 0
     if d.kind == ORDER:
         d.matched_after = sum(1 for a in acts if phrase_matches(d.after, a.name))
         d.matched_subject = sum(1 for a in acts if phrase_matches(d.subject, a.name))
@@ -415,6 +450,12 @@ def tie_signature(pred_name: str, succ_name: str) -> str:
 
 # One observation is an accident. Below this a signature says nothing, which
 # keeps a single misclick from re-ranking the schedule.
+# Overriding a rule twice is a pair of exceptions; a third time is a pattern
+# worth raising. Set low on purpose — the cost of asking is one line in a
+# panel, and the cost of NOT asking is a rule quietly fighting the user for
+# months.
+_REVIEW_OVERRIDES = 3
+
 _MIN_OBSERVATIONS = 2
 # What agreement is worth, capped. Feedback nudges an order the schedule and
 # the stated rules already argue for; it must never outweigh them.
@@ -683,6 +724,95 @@ class Brain:
         row["accepted" if accepted else "declined"] += 1
         return sig
 
+    def record_conflict(self, did: str, overridden: bool) -> Optional[Directive]:
+        """
+        Remember how a rule fared the one time it actually bit.
+
+        A rule that stopped an edit and was overridden anyway is evidence
+        about the RULE, not just about that edit. Backing off when it fires is
+        evidence the other way. Both were discarded before, which is why a
+        rule overridden thirty times looked exactly like one never questioned.
+        """
+        for d in self.directives:
+            if d.id == did:
+                if overridden:
+                    d.overridden += 1
+                else:
+                    d.upheld += 1
+                d.last_conflict_at = _dt.datetime.now().isoformat(timespec="seconds")
+                return d
+        return None
+
+    def reground(self, project) -> List[Directive]:
+        """
+        Re-test every rule against the schedule as it is NOW.
+
+        Match counts were frozen at the moment a rule was taught, so a rule
+        that bound twelve activities went on claiming twelve after they were
+        renamed, moved or deleted — and a rule demoted to guidance because its
+        work did not exist yet could never come back once it did. Both are
+        fixed by grounding again; nothing else needs to know it happened.
+
+        Returns the directives whose status actually changed.
+        """
+        changed = []
+        for d in self.directives:
+            before = (d.kind, d.matched_after, d.matched_subject)
+            ground(project, d)
+            if (d.kind, d.matched_after, d.matched_subject) != before:
+                changed.append(d)
+        return changed
+
+    def needs_review(self) -> List[Dict[str, Any]]:
+        """
+        Rules worth a second look, with the reason and what to do about it.
+
+        Two ways a rule goes bad, and they want different answers. One keeps
+        getting overridden — it is probably too broad, or has an exception
+        only the user knows. The other has quietly stopped matching anything —
+        the naming changed, or the work was deleted, and it is now enforcing
+        nothing while still looking like a rule.
+
+        Nothing is decided here. A rule the user meant is still a rule however
+        often it loses an argument with the schedule; the point is to stop it
+        being invisible.
+        """
+        out = []
+        for d in self.directives:
+            if not d.enabled:
+                continue
+            since_ack = d.overridden - max(d.ack_overrides, 0)
+            if (since_ack >= _REVIEW_OVERRIDES and d.overridden > d.upheld):
+                out.append({
+                    "id": d.id, "text": d.text, "reason": "overridden",
+                    "overridden": d.overridden, "upheld": d.upheld,
+                    "why": (f"You have overridden this {d.overridden} times"
+                            + (f" and kept it {d.upheld}" if d.upheld else "")
+                            + ". It may be too broad, or have an exception worth "
+                              "stating."),
+                    "suggest": "Narrow it, restate it, or drop it.",
+                })
+            elif (d.parsed_kind and d.parsed_kind != NOTE and d.kind == NOTE
+                    and d.ack_overrides < 0):
+                out.append({
+                    "id": d.id, "text": d.text, "reason": "orphaned",
+                    "overridden": d.overridden, "upheld": d.upheld,
+                    "why": f"Enforcing nothing — {d.note_reason or 'it matches no activity'}.",
+                    "suggest": "Reword it to match how the work is named here, or drop it.",
+                })
+        return out
+
+    def acknowledge(self, did: str) -> Optional[Directive]:
+        """
+        "I know — keep it." Silences the prompt at the count it stands at, so
+        the rule is raised again only if it goes on losing afterwards.
+        """
+        for d in self.directives:
+            if d.id == did:
+                d.ack_overrides = d.overridden
+                return d
+        return None
+
     # -- persistence ------------------------------------------------------
     def to_json(self) -> Dict[str, Any]:
         return {"key": self.key,
@@ -813,6 +943,16 @@ class Brain:
             "OPEN — stated but not matched to any activity. Raise these when relevant; "
             "do NOT treat them as in force:",
             questions, lambda d: f"  {d.text}   [{d.note_reason}]")
+        # A rule the user keeps overriding is still a rule — but the agent
+        # should stop presenting it as settled, and say so when it comes up.
+        contested = [d for d in rules
+                     if d.overridden >= _REVIEW_OVERRIDES and d.overridden > d.upheld]
+        lines += section(
+            "CONTESTED — enforced, but the user keeps overriding these. Apply them, "
+            "and when one blocks something say it has been overridden before and "
+            "ask whether it still holds:",
+            contested,
+            lambda d: f"  {d.text}   [overridden {d.overridden}×, kept {d.upheld}×]")
         if rules:
             lines.append("Rules are enforced in the tie ranking and checked against "
                          "the schedule. Where one contradicts the dates, say so — do "

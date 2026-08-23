@@ -576,7 +576,14 @@ def _restore_from_cloud():
         if raw_brain:
             key = project_brain.project_key(project)
             if key not in _brains:
-                _brains[key] = project_brain.Brain.from_json(raw_brain)
+                brain = project_brain.Brain.from_json(raw_brain)
+                # Match counts were true when the rule was taught, not
+                # necessarily now — the schedule may have been renamed,
+                # extended or cut back since. Re-test against what is
+                # actually here, so a rule that has quietly stopped matching
+                # anything shows up as such instead of still claiming twelve.
+                brain.reground(project)
+                _brains[key] = brain
         if _active_id[0] is None:
             _active_id[0] = pid
 
@@ -2079,6 +2086,61 @@ def _brain_payload(brain) -> dict:
         "rule_count": len(brain.rules),
         "note_count": len(brain.notes),
     }
+
+
+@app.route("/api/brain/conflict", methods=["POST"])
+def brain_conflict_outcome():
+    """
+    How a rule fared the one time it actually bit.
+
+    Overriding it is evidence about the RULE, not just about that edit;
+    backing off is evidence the other way. Both were discarded before, which
+    is why a rule overridden thirty times looked identical to one never
+    questioned. Fire-and-forget, like the tie feedback: a decision the user
+    already made must never fail on bookkeeping.
+    """
+    sess = _get_session()
+    if sess is None or sess["project"] is None:
+        return jsonify({"success": False, "recorded": 0})
+    data = request.get_json() or {}
+    ids = data.get("directive_ids")
+    if not isinstance(ids, list):
+        ids = [ids] if ids else []
+    overridden = bool(data.get("overridden"))
+    brain = _brain_for(sess["project"])
+    n = sum(1 for did in ids
+            if did and brain.record_conflict(str(did), overridden) is not None)
+    if n:
+        _mark_dirty(_active_id[0])
+    return jsonify({"success": True, "recorded": n,
+                    "review": brain.needs_review()})
+
+
+@app.route("/api/brain/<did>/keep", methods=["POST"])
+def brain_keep(did):
+    """"I know — keep it." Stops the prompt without pretending the rule won."""
+    sess = _get_session()
+    if sess is None or sess["project"] is None:
+        return jsonify({"error": "No schedule loaded"}), 400
+    brain = _brain_for(sess["project"])
+    if brain.acknowledge(did) is None:
+        return jsonify({"error": "No such rule"}), 404
+    _mark_dirty(_active_id[0])
+    return jsonify({"success": True, "review": brain.needs_review()})
+
+
+@app.route("/api/brain/review", methods=["GET"])
+def brain_review():
+    """Rules worth a second look — contested, or quietly enforcing nothing."""
+    sess = _get_session()
+    if sess is None or sess["project"] is None:
+        return jsonify({"error": "No schedule loaded"}), 400
+    brain = _brain_for(sess["project"])
+    changed = brain.reground(sess["project"])
+    if changed:
+        _mark_dirty(_active_id[0])
+    return jsonify({"success": True, "review": brain.needs_review(),
+                    "regrounded": [d.id for d in changed]})
 
 
 @app.route("/api/feedback", methods=["POST"])

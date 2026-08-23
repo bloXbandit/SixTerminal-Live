@@ -1628,6 +1628,10 @@
       <div id="objective-box" style="border:1px solid var(--border2);border-radius:var(--r-md);
            padding:10px 12px;margin-bottom:14px;background:var(--panel2);"></div>
 
+      <!-- Rules that have stopped earning their place: ones you keep
+           overriding, and ones that quietly match nothing any more. -->
+      <div id="brain-review" style="margin-bottom:14px;"></div>
+
       <div style="display:flex;gap:8px;margin-bottom:6px;">
         <input id="brain-text" type="text" style="flex:1;"
                placeholder="e.g. QA/QC follows terminations in the same room"
@@ -3505,6 +3509,13 @@ function tieOptionsCard(d){
 // Applying a proposal and dismissing one are both judgements about it. Both
 // are reported so the ranker learns what this job actually accepts — quietly,
 // and never blocking the click it is attached to.
+/** Which way a rule went when it actually blocked something. */
+function noteRuleOutcome(ids, overridden){
+  if(!ids || !ids.length) return;
+  fetch('/api/brain/conflict', {method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({directive_ids: ids, overridden: !!overridden})}).catch(() => {});
+}
+
 function noteTieOutcome(rows, accepted){
   const ties = [].concat(rows || []).filter(Boolean).map(r => ({
     predecessor_id: r.predecessor_id, successor_id: r.successor_id,
@@ -5366,7 +5377,15 @@ async function directEdit(commands, label, brainOverride, via){
     // going in quietly. You still get to make it — the rule may have an
     // exception only you know about — but not without seeing which one it is.
     if(d.type === 'brain_conflict'){
-      if(confirm(brainConflictText(d))) return directEdit(commands, label, true);
+      // Which way this goes is evidence about the RULE, not just this edit —
+      // a rule overridden again and again is one worth revisiting, and that
+      // only shows up if both answers are recorded.
+      const ids = [...new Set((d.conflicts || []).map(c => c.directive_id).filter(Boolean))];
+      if(confirm(brainConflictText(d))){
+        noteRuleOutcome(ids, true);
+        return directEdit(commands, label, true);
+      }
+      noteRuleOutcome(ids, false);
       flashSched('Left alone — it contradicts a rule you set', true);
       return d;
     }
@@ -8053,6 +8072,7 @@ function openBrainModal(){
   document.getElementById('brain-check').innerHTML = '';
   brainRefresh();
   refreshObjective();
+  refreshBrainReview();
   openModal('brain-modal');
   setTimeout(() => document.getElementById('brain-text').focus(), 60);
 }
@@ -8118,6 +8138,46 @@ async function setObjective(kind){
 async function clearObjective(){
   await fetch('/api/objective', {method:'DELETE'});
   refreshObjective();
+}
+
+// ── Rules worth a second look ────────────────────────────────────────────────
+// Two ways a rule goes bad and they want different answers: one you keep
+// overriding is probably too broad, one that matches nothing is enforcing
+// nothing while still looking like a rule. Nothing is decided automatically —
+// a rule you meant stays a rule however often it loses an argument.
+
+async function refreshBrainReview(){
+  const box = document.getElementById('brain-review');
+  if(!box) return;
+  let d;
+  try{ d = await fetch('/api/brain/review').then(r => r.json()); }
+  catch(e){ box.innerHTML = ''; return; }
+  const items = (d && d.review) || [];
+  if(!items.length){ box.innerHTML = ''; return; }
+  if(d.regrounded && d.regrounded.length) brainRefresh();   // counts moved
+  box.innerHTML = `<div style="border:1px solid rgba(245,158,11,.45);border-radius:var(--r-md);
+      background:rgba(245,158,11,.06);padding:10px 12px;">
+      <div style="font-size:11.5px;font-weight:600;margin-bottom:7px;">
+        ${items.length} rule${items.length===1?'':'s'} worth a second look</div>
+      ${items.map(r => `<div style="margin-bottom:8px;font-size:11.5px;">
+        <div><b>${escHtml(r.text)}</b></div>
+        <div style="color:var(--text2);">${escHtml(r.why)}</div>
+        <div style="color:var(--text3);font-size:10.5px;margin-top:2px;">
+          ${escHtml(r.suggest)}
+          <button class="btn btn-ghost btn-sm" style="margin-left:6px;"
+            onclick="brainDelete('${escAttr(r.id)}')">Drop it</button>
+          <button class="btn btn-ghost btn-sm"
+            onclick="brainKeepRule('${escAttr(r.id)}', this)">Keep it</button>
+        </div></div>`).join('')}
+    </div>`;
+}
+
+/** "I know — keep it." Silences the prompt without pretending the rule won. */
+async function brainKeepRule(id, btn){
+  btn.disabled = true;
+  await fetch(`/api/brain/${encodeURIComponent(id)}/keep`,
+              {method:'POST'}).catch(() => {});
+  refreshBrainReview();
 }
 
 function brainRender(d){
