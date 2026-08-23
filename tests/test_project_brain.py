@@ -296,10 +296,22 @@ def _score(p, pred, succ, directives=None):
     return score_tie(ctx, a, b, implied_lag(p, a, b))
 
 
-def test_a_stated_rule_lifts_the_tie_it_asks_for():
+def test_a_stated_rule_is_named_in_the_reasons_for_the_tie_it_asks_for():
     p = _rooms()
-    plain, _ = _score(p, "T5", "Q5")
-    told, why = _score(p, "T5", "Q5", [_d("QA/QC inspections follow terminations")])
+    _, why = _score(p, "T5", "Q5", [_d("QA/QC inspections follow terminations")])
+    assert any("you said" in w for w in why)
+
+
+def test_a_stated_rule_lifts_the_tie_it_asks_for():
+    """
+    Measured across two rooms on purpose. Same-room ER 105 Terminations ->
+    ER 105 QA/QC already scores a flat 1.0 on its own merits — dates, subject,
+    area, folder and trade order all agree — so there is no headroom left for
+    a rule to add anything, and "the rule lifted it" cannot be observed there.
+    """
+    p = _rooms()
+    plain, _ = _score(p, "T5", "Q6")
+    told, why = _score(p, "T5", "Q6", [_d("QA/QC inspections follow terminations")])
     assert told > plain
     assert any("you said" in w for w in why)
 

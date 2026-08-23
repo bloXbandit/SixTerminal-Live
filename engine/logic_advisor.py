@@ -426,13 +426,84 @@ def _tokens(text: str) -> frozenset:
     return frozenset(w for w in words if len(w) > 2 and w not in _STOP)
 
 
-def _area_tags(text: str) -> frozenset:
+# Any "<short word> <number>" in a name — the shape every job uses to name a
+# place, whatever the words are. Read on its own this is far too eager ("400 A",
+# "Rev 2", "3 MCM"), so it is only ever used against families the project has
+# been shown to actually number: see learn_area_families().
+_NUMBERED_RE = re.compile(r"(?i)\b([a-z]{1,6})\s*[-#]?\s*(\d{1,4})\b")
+
+# Measurements, revisions and counts get numbered too, and none of them name a
+# place. Two rows pulling different wire sizes are not in different rooms, so
+# letting "MCM 500" become an area would penalise a perfectly good handoff.
+# The last line is places _AREA_RE already reads in its own format — learning
+# them again would tag the same room twice under two names.
+_NOT_A_PLACE = frozenset("""
+mcm awg kv kva kw mw va amp amps a v hz ton tons cfm gpm psi
+in ft mm cm m sf sy cy lf ea qty no num rev revision sht dwg
+type size ga gauge sch lb lbs kg hr hrs wk wks day days
+ph phase l lvl level area zone
+""".split())
+
+# English words that are only a place when they are plainly meant as one.
+# "OR 3" is an operating room on a hospital job; "2 or 3 crews" is a
+# conjunction, and reading it as a room would invent places on every job that
+# writes a range. Capitalisation is what separates them, so these are learned
+# ONLY from an occurrence that was actually written as a code.
+#
+# Deliberately NOT the general stopword list: that one exists for judging
+# shared subject and holds "room", "rm" and "unit" — the most ordinary
+# place-words there are, which a job is perfectly entitled to number.
+_FUNCTION_WORDS = frozenset("""
+a an and or of the to for at in on by with from into onto per is be as it
+""".split())
+
+
+def learn_area_families(project) -> frozenset:
+    """
+    The words THIS job uses to name places, learned from its own naming.
+
+    The built-in list below knows the prefixes this trade uses — MV, UPS,
+    CRAH. That is useful on a data centre and useless on a hospital of OR and
+    ICU rooms, a warehouse of DOCK and BAY, a hotel of numbered floors. Rather
+    than growing the list per sector, the families are read out of the project:
+    a word that appears in front of SEVERAL DIFFERENT numbers is how that job
+    names its places.
+
+    Repetition is what makes this safe. "Pull 3 #400" numbers nothing twice, so
+    it never becomes a family; "OR 3", "OR 4", "OR 7" plainly does.
+    """
+    seen: Dict[str, set] = {}
+    written_as_code: set = set()
+    texts = []
+    for a in (getattr(project, "activities", None) or []):
+        texts.append(a.name or "")
+    for w in (getattr(project, "wbs_nodes", None) or []):
+        texts.append(w.name or "")
+    for text in texts:
+        for m in _NUMBERED_RE.finditer(text):
+            raw = m.group(1)
+            word = raw.lower()
+            if word in _NOT_A_PLACE:
+                continue
+            if raw.isupper():
+                written_as_code.add(word)
+            seen.setdefault(word, set()).add(int(m.group(2)))
+    return frozenset(
+        w for w, nums in seen.items()
+        if len(nums) >= 2 and (w not in _FUNCTION_WORDS or w in written_as_code))
+
+
+def _area_tags(text: str, families: Optional[frozenset] = None) -> frozenset:
     """
     Room / level / area / phase identifiers in a name.
 
     "MV 105", "Level 3", "Area 7", "CUP-01", "PH2" all name a place. Two rows
     that name DIFFERENT places are almost never a handoff, however close their
     dates — that is how work in MV 105 gets tied to work in MV 109.
+
+    `families` are the place-words this particular job uses, from
+    learn_area_families(). Passing them is what makes a job whose rooms are
+    called OR, DOCK or POD read as well as one whose rooms are called MV.
     """
     out = set()
     for m in _AREA_RE.finditer(text or ""):
@@ -444,6 +515,11 @@ def _area_tags(text: str) -> frozenset:
             out.add(f"area{m.group('area').lower()}")
         elif m.group("ph"):
             out.add(f"ph{int(m.group('ph'))}")
+    if families:
+        for m in _NUMBERED_RE.finditer(text or ""):
+            word = m.group(1).lower()
+            if word in families:
+                out.add(f"{word}{int(m.group(2))}")
     return frozenset(out)
 
 
@@ -551,6 +627,10 @@ class _Ctx:
         # ranking below is unchanged when there is nothing to apply.
         self.directives: List[Any] = [d for d in (directives or [])
                                       if getattr(d, "enabled", True)]
+        # How THIS job names its places, read from the job itself — so a
+        # hospital of OR/ICU rooms or a warehouse of DOCK/BAY reads as well as
+        # a data centre of MV/UPS, with nothing configured.
+        self.families = learn_area_families(project)
 
     def tok(self, a: Activity) -> frozenset:
         if a.uid not in self._tok:
@@ -559,8 +639,9 @@ class _Ctx:
 
     def area(self, a: Activity) -> frozenset:
         if a.uid not in self._area:
-            self._area[a.uid] = _area_tags(a.name) or _area_tags(
-                wbs_path(self.project, a))
+            self._area[a.uid] = (_area_tags(a.name, self.families)
+                                 or _area_tags(wbs_path(self.project, a),
+                                               self.families))
         return self._area[a.uid]
 
     def chain(self, a: Activity) -> List[str]:
