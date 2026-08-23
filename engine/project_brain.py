@@ -58,7 +58,8 @@ def project_key(project) -> str:
 # ── Directives ───────────────────────────────────────────────────────────────
 
 ORDER = "order"          # X must come after Y
-SEQUENCE = "sequence"    # a family of areas runs one after another
+SEQUENCE = "sequence"    # a family of areas runs one after another, by number
+ROOM_ORDER = "room_order"  # a family of areas runs in a STATED order
 NOTE = "note"            # prose the agent reads, nothing enforced
 
 
@@ -69,7 +70,8 @@ class Directive:
     kind: str = NOTE
     subject: str = ""               # the thing that comes later (ORDER)
     after: str = ""                 # the thing that comes first (ORDER)
-    family: str = ""                # "ER", "MV" … (SEQUENCE)
+    family: str = ""                # "ER", "MV" … (SEQUENCE, ROOM_ORDER)
+    order: List[int] = field(default_factory=list)   # stated run order (ROOM_ORDER)
     same_area: bool = False         # ORDER only applies within one room/area
     same_phase: bool = False        # ORDER only applies within one phase
     enabled: bool = True
@@ -103,6 +105,22 @@ _BEFORE_RE = re.compile(
 _SEQ_RE = re.compile(
     r"(?i)(?:^|\b)(?P<fam>[A-Za-z][\w&/-]{0,14})\s*(?:rooms?|areas?|lineups?|units?)?"
     r"[^.]{0,24}?\bsequential(?:ly)?\b")
+
+# "MV rooms run 107, 105, 106", "ER room order is 3 -> 1 -> 2",
+# "GEN areas go 2 then 1 then 3".
+#
+# A stated order is the thing "sequential" cannot express. Rooms are rarely
+# built in number order — crane access, energisation order, or which end the
+# GC hands over first decides it — and until this existed there was nowhere to
+# put that. An ordering WORD is required (run / go / order / sequence): a bare
+# "MV rooms 105, 106" is a list of rooms, not a claim about their order, and
+# enforcing it as one would be exactly the half-understood guess this module
+# refuses to make elsewhere.
+_ROOM_ORDER_RE = re.compile(
+    r"(?i)\b(?P<fam>[A-Za-z][\w&/-]{0,14})\s+(?:rooms?|areas?|lineups?|units?)\b"
+    r"[^\d\n]{0,24}?\b(?:run|runs|go|goes|order|ordered|sequence|sequenced)\b"
+    r"[^\d\n]{0,24}?"
+    r"(?P<list>\d{1,4}(?:\s*(?:,|;|->|-+>|→|\bthen\b)\s*\d{1,4})+)")
 
 _SAME_AREA_RE = re.compile(
     r"(?i)\b(?:in|within|for)\s+the\s+same\s+(?:room|area|zone|space|lineup|unit)\b"
@@ -154,6 +172,22 @@ def parse_directive(text: str) -> Directive:
             d.same_area, d.same_phase = same_area, same_phase
             return d
 
+    # A STATED order is tried before "sequential", because it is the more
+    # specific claim: "MV rooms run 107, 105, 106" says everything "MV rooms
+    # run sequential" does and then overrides the number order.
+    m = _ROOM_ORDER_RE.search(body)
+    if m:
+        fam = _clean(m.group("fam"))
+        rooms, seen_rooms = [], set()
+        for n in re.findall(r"\d{1,4}", m.group("list")):
+            v = int(n)
+            if v not in seen_rooms:
+                seen_rooms.add(v)
+                rooms.append(v)
+        if fam and fam.lower() not in _STOP and len(fam) <= 15 and len(rooms) >= 2:
+            d.kind, d.family, d.order, d.same_area = ROOM_ORDER, fam, rooms, same_area
+            return d
+
     m = _SEQ_RE.search(body)
     if m:
         fam = _clean(m.group("fam"))
@@ -194,6 +228,32 @@ def ground(project, d: Directive) -> Directive:
                 f"only {d.matched_subject} activities sit in a numbered "
                 f"'{d.family}' room, so there is no sequence to enforce — "
                 f"kept as guidance")
+    elif d.kind == ROOM_ORDER:
+        # An order over rooms this job does not have is not an order. Both the
+        # activity count AND how many of the named rooms actually exist matter:
+        # a list where only one room is real states no sequence at all.
+        wanted = set(d.order)
+        present = set()
+        for a in acts:
+            n = family_index(d.family, a.name)
+            if n is None:
+                n = family_index(d.family, where_of(project, a))
+            if n is not None and n in wanted:
+                present.add(n)
+                d.matched_subject += 1
+        missing = [n for n in d.order if n not in present]
+        if len(present) < 2:
+            found = f"{d.family} {sorted(present)[0]}" if present else "none of them"
+            d.kind, d.note_reason = NOTE, (
+                f"this schedule has {found} out of the {len(d.order)} "
+                f"'{d.family}' rooms named, so there is no order to enforce — "
+                f"kept as guidance")
+        elif missing:
+            # Enforceable on the rooms that DO exist — but say which ones do
+            # not, because a typo'd room number is silently doing nothing.
+            d.note_reason = (f"no {d.family} "
+                             f"{', '.join(str(n) for n in missing)} in this schedule "
+                             f"— the rest of the order is enforced")
     return d
 
 
@@ -208,6 +268,11 @@ def describe(d: Directive) -> str:
     if d.kind == SEQUENCE:
         seen = f" — {d.matched_subject} activities" if d.matched_subject else ""
         return f"'{d.family}' areas run one after another, in number order{seen}"
+    if d.kind == ROOM_ORDER:
+        run = " → ".join(f"{d.family} {n}" for n in d.order)
+        seen = f" — {d.matched_subject} activities" if d.matched_subject else ""
+        gap = f"; {d.note_reason}" if d.note_reason else ""
+        return f"areas run {run}{seen}{gap}"
     if d.note_reason:
         return f"Guidance only — {d.note_reason}"
     return "Guidance for the agent — nothing enforced"
@@ -388,6 +453,29 @@ def directive_verdict(d: Directive, pred_name: str, succ_name: str,
             return "violates"
         return None
 
+    if d.kind == ROOM_ORDER:
+        i = family_index(d.family, pred_name)
+        j = family_index(d.family, succ_name)
+        if i is None:
+            i = family_index(d.family, pred_where)
+        if j is None:
+            j = family_index(d.family, succ_where)
+        if i is None or j is None:
+            return None
+        # Same reasoning as SEQUENCE: this orders the SAME work across rooms,
+        # not every pair of activities that happen to sit in two of them.
+        if _work_of(d.family, pred_name) != _work_of(d.family, succ_name):
+            return None
+        try:
+            pi, pj = d.order.index(i), d.order.index(j)
+        except ValueError:
+            return None          # a room the order says nothing about
+        if pj == pi + 1:
+            return "supports"
+        if pj < pi:
+            return "violates"
+        return None
+
     return None
 
 
@@ -418,7 +506,8 @@ def check(project, directives: List[Directive], limit: int = 200) -> Dict[str, A
     """
     from .logic_advisor import _parse
 
-    rules = [d for d in directives if d.enabled and d.kind in (ORDER, SEQUENCE)]
+    rules = [d for d in directives
+             if d.enabled and d.kind in (ORDER, SEQUENCE, ROOM_ORDER)]
     if not rules:
         return {"checked": 0, "violations": [], "rules": 0}
 
@@ -544,7 +633,8 @@ class Brain:
     # -- reading ----------------------------------------------------------
     @property
     def rules(self) -> List[Directive]:
-        return [d for d in self.directives if d.enabled and d.kind in (ORDER, SEQUENCE)]
+        return [d for d in self.directives
+                if d.enabled and d.kind in (ORDER, SEQUENCE, ROOM_ORDER)]
 
     @property
     def notes(self) -> List[Directive]:
