@@ -43,6 +43,7 @@ from engine.compare import (compare_projects, copy_wbs_branch,
                             replace_wbs_branch, apply_activity_changes)
 from engine import cloud_store
 from engine import objectives
+from engine import edit_engine as edit_engine_module
 from engine.logic_advisor import (milestone_report, milestone_drivers,
                                   commissioning_ladder, to_commands, find_wbs,
                                   area_digest, area_report, procurement_report,
@@ -271,6 +272,12 @@ def _active_scope():
     """The scope document's flow for the open job, if one has been read."""
     b = _active_brain()
     return b.scope if b else None
+
+
+# read_document needs the job's document library, and the edit engine is
+# handed a project and nothing else by design. Injecting the lookup keeps it
+# from reaching for server globals it should not know about.
+edit_engine_module.set_brain_lookup(_brain_for)
 
 
 def _unique_pid(stem: str) -> str:
@@ -2136,6 +2143,8 @@ def scope_upload():
     project = sess["project"]
     brain = _brain_for(project)
     brain.scope = graph
+    from engine import doc_library as _dl
+    brain.docs().add_text(name, _dl.PDF, report)
     _mark_dirty(_active_id[0])
 
     systems = graph.systems()
@@ -2166,6 +2175,113 @@ def scope_upload():
         "summary": graph.context_block(),
         "chat": sess["chat_history"][-2:],
     })
+
+
+@app.route("/api/documents", methods=["POST"])
+def document_upload():
+    """
+    File a document for this job — PDF, workbook or CSV.
+
+    Every line is extracted deterministically and KEPT, so the agent can go
+    back to it next week without the file being sent again. What rides in the
+    prompt is one catalogue line; the contents are fetched on request with a
+    search term, because carrying a 497-line document every turn would cost
+    more than reading it ever did.
+    """
+    sess = _get_session()
+    if sess is None or sess["project"] is None:
+        return jsonify({"error": "No schedule loaded"}), 400
+    if "file" not in request.files:
+        return jsonify({"error": "No document attached"}), 400
+    f = request.files["file"]
+    blob = f.read()
+    name = f.filename or "document"
+    low = name.lower()
+
+    from engine import doc_library as _dl
+    from engine import scope_reader as _sr
+    if low.endswith((".xlsx", ".xlsm", ".xltx")):
+        kind = _dl.SPREADSHEET
+    elif low.endswith((".csv", ".tsv")):
+        kind = _dl.SPREADSHEET
+    elif low.endswith(".pdf"):
+        kind = _dl.PDF
+    else:
+        return jsonify({"error": "Send a PDF, .xlsx or .csv. An image goes "
+                                 "through the paperclip instead."}), 400
+
+    try:
+        read = _sr.read_any(blob, name)
+    except RuntimeError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        return jsonify({"error": f"Could not read that document: {e}"}), 500
+
+    brain = _brain_for(sess["project"])
+    doc = brain.docs().add_text(name, kind, read)
+    _mark_dirty(_active_id[0])
+
+    where = (f"{len(doc.sheets)} sheets: {', '.join(doc.sheets[:8])}"
+             if doc.sheets else f"{doc.pages} pages")
+    _append_chat("user", f"[uploaded document: {name}]")
+    _append_chat("assistant",
+                 f"Filed {name} — {doc.line_count} lines, {where}",
+                 context=(f"Document filed for this job: {doc.label()}. "
+                          f"Read with: read_document, document=\"{doc.name}\", "
+                          f"query=\"<what you are looking for>\". "
+                          f"Nothing in the schedule changed."))
+    return jsonify({"success": True, "document": {
+        "id": doc.id, "name": doc.name, "kind": doc.kind,
+        "line_count": doc.line_count, "pages": doc.pages,
+        "sheets": doc.sheets, "truncated": doc.truncated,
+        "label": doc.label()},
+        "chat": sess["chat_history"][-2:]})
+
+
+@app.route("/api/documents", methods=["GET"])
+def documents_list():
+    sess = _get_session()
+    if sess is None or sess["project"] is None:
+        return jsonify({"error": "No schedule loaded"}), 400
+    lib = getattr(_brain_for(sess["project"]), "library", None)
+    docs = lib.docs if lib else []
+    return jsonify({"success": True, "documents": [
+        {"id": d.id, "name": d.name, "kind": d.kind, "label": d.label(),
+         "line_count": d.line_count, "pages": d.pages, "sheets": d.sheets,
+         "added_at": d.added_at} for d in reversed(docs)]})
+
+
+@app.route("/api/documents/search", methods=["GET"])
+def documents_search():
+    """The lines of one document that bear on a question — never the file."""
+    sess = _get_session()
+    if sess is None or sess["project"] is None:
+        return jsonify({"error": "No schedule loaded"}), 400
+    lib = getattr(_brain_for(sess["project"]), "library", None)
+    if lib is None or not lib.docs:
+        return jsonify({"error": "No documents have been given for this job yet"}), 404
+    doc = lib.find(request.args.get("document") or "")
+    if doc is None:
+        return jsonify({"error": "No document here by that name",
+                        "have": [d.name for d in lib.docs]}), 404
+    try:
+        limit = int(request.args.get("limit") or 12)
+    except (TypeError, ValueError):
+        limit = 12
+    got = lib.search(doc, request.args.get("q") or "", limit)
+    return jsonify({"success": True, "document": doc.name, **got})
+
+
+@app.route("/api/documents/<doc_id>", methods=["DELETE"])
+def document_delete(doc_id):
+    sess = _get_session()
+    if sess is None or sess["project"] is None:
+        return jsonify({"error": "No schedule loaded"}), 400
+    lib = getattr(_brain_for(sess["project"]), "library", None)
+    if lib is None or not lib.remove(doc_id):
+        return jsonify({"error": "No such document"}), 404
+    _mark_dirty(_active_id[0])
+    return jsonify({"success": True})
 
 
 @app.route("/api/scope", methods=["GET"])
@@ -2508,6 +2624,16 @@ def brain_image():
         parts.append("  Suggested rules (proposed to user, NOT yet confirmed "
                      "unless they appear in the project brain):")
         parts.extend(f"    - {x}" for x in reading["directives"])
+    # Filed so it can be referred back to later. A screenshot's filename is
+    # usually noise and its content is a MODEL's reading rather than extracted
+    # text, so what is kept is the reading and a label — enough to say "the
+    # sheet you sent about MV 105", not enough to pretend it can be searched
+    # like a text document.
+    from engine import doc_library as _dl
+    _brain_for(sess["project"]).docs().add_image(
+        reading.get("sheet_number") or reading.get("sheet_title") or filename,
+        reading.get("summary", ""), reading.get("facts") or [])
+    _mark_dirty(_active_id[0])
     _append_chat("user", f"[uploaded drawing: {filename}]"
                          + (f" — {question}" if question else ""))
     _append_chat("assistant", f"Read sheet {label}: {reading.get('summary', '')}",

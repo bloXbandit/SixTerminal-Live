@@ -179,6 +179,103 @@ def _cluster(words: List[Dict], row_tol: float = 3.0,
     return out
 
 
+def read_excel(source: Any, max_rows: int = 20000) -> Dict[str, Any]:
+    """
+    Every row of every sheet, flattened to a line of text.
+
+    A workbook is a harder shape than a PDF, not an easier one: the useful
+    content is spread over several sheets, the columns differ between them,
+    and a header may sit anywhere. Rather than guessing at a schema per sheet
+    — which breaks on the next workbook — each row becomes one line of text
+    with its sheet name carried alongside, and the words do the work. Same
+    reasoning as the PDF side: what a line MEANS survives any layout.
+
+    Sheet names are kept because they are usually the most informative thing
+    in the file ("Phase 2 Electrical", "Long Lead"), and losing them would
+    throw away the document's own organisation.
+    """
+    try:
+        import openpyxl
+    except ImportError:                                   # pragma: no cover
+        raise RuntimeError("Reading .xlsx needs openpyxl — pip install openpyxl.")
+    try:
+        src = io.BytesIO(bytes(source)) if isinstance(source, (bytes, bytearray)) else source
+        wb = openpyxl.load_workbook(src, read_only=True, data_only=True)
+    except Exception as e:
+        raise RuntimeError(f"That file could not be opened as a workbook: {e}")
+
+    lines: List[ScopeLine] = []
+    sheets: List[str] = []
+    n = 0
+    try:
+        for ws in wb.worksheets:
+            sheets.append(ws.title)
+            for row in ws.iter_rows(values_only=True):
+                if row is None:
+                    continue
+                cells = [_clean(str(c)) for c in row if c is not None and str(c).strip()]
+                if not cells:
+                    continue
+                text = " ".join(cells)
+                if not _is_content(text):
+                    continue
+                n += 1
+                lines.append(ScopeLine(n=n, text=text, page=len(sheets)))
+                if n >= max_rows:
+                    break
+            if n >= max_rows:
+                break
+    finally:
+        wb.close()
+
+    if not lines:
+        raise RuntimeError("That workbook has no rows with readable content in it.")
+    return {"lines": lines, "line_count": len(lines), "pages": len(sheets),
+            "sheets": sheets, "method": "excel", "has_text_layer": True}
+
+
+def read_any(source: Any, filename: str = "") -> Dict[str, Any]:
+    """Lines out of a PDF or a workbook, whichever this is."""
+    low = (filename or "").lower()
+    if low.endswith((".xlsx", ".xlsm", ".xltx")):
+        return read_excel(source)
+    if low.endswith(".csv") or low.endswith(".tsv"):
+        return read_delimited(source)
+    return read_scope(source)
+
+
+def read_delimited(source: Any, max_rows: int = 20000) -> Dict[str, Any]:
+    """CSV/TSV — the same flattening, for the plainest export there is."""
+    import csv as _csv
+    raw = source
+    if isinstance(raw, (bytes, bytearray)):
+        raw = bytes(raw).decode("utf-8", "replace")
+    elif not isinstance(raw, str):
+        with open(raw, encoding="utf-8", errors="replace") as f:
+            raw = f.read()
+    sample = raw[:4096]
+    try:
+        dialect = _csv.Sniffer().sniff(sample, delimiters=",;\t|")
+    except Exception:
+        dialect = _csv.excel
+    lines, n = [], 0
+    for row in _csv.reader(io.StringIO(raw), dialect):
+        cells = [_clean(str(c)) for c in row if str(c).strip()]
+        if not cells:
+            continue
+        text = " ".join(cells)
+        if not _is_content(text):
+            continue
+        n += 1
+        lines.append(ScopeLine(n=n, text=text, page=1))
+        if n >= max_rows:
+            break
+    if not lines:
+        raise RuntimeError("That file has no rows with readable content in it.")
+    return {"lines": lines, "line_count": len(lines), "pages": 1,
+            "sheets": [], "method": "delimited", "has_text_layer": True}
+
+
 def page_window(result: Dict[str, Any], start: int, end: int) -> List[ScopeLine]:
     """
     The lines on a range of pages — the primitive for going back over part of

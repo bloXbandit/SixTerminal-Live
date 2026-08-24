@@ -38,6 +38,7 @@ Supported commands:
   bulk_rename_activities    — Rename activities by explicit from→to list (ID, name, or WBS scope)
   bulk_update_activity_id   — Mass ID updates: resequence, pattern replace, or prefix swap
   normalize_activity_ids    — Put stray activity codes back on the job's own ID pattern
+  read_document             — Look inside a document already given (advisory; changes nothing)
 
 Each command dict must have an "action" key. Other keys depend on the action.
 """
@@ -226,7 +227,7 @@ def _would_create_cycle(project: Project, pred_uid: str, succ_uid: str) -> bool:
 # so counting one as "an edit applied" is how the tool ends up announcing
 # "Applied 5 edits" after running five reports — and how the agent, reading
 # that same record back, tells the user it wired logic it never wired.
-ADVISORY_ACTIONS = frozenset({"recommend_logic"})
+ADVISORY_ACTIONS = frozenset({"recommend_logic", "read_document"})
 
 
 def is_advisory(action: str) -> bool:
@@ -270,6 +271,8 @@ def apply_command(project: Project, command: Dict[str, Any]) -> Tuple[bool, str]
             return _delete_wbs(project, command)
         elif action == "recommend_logic":
             return _recommend_logic(project, command)
+        elif action == "read_document":
+            return _read_document(project, command)
         elif action == "duplicate_wbs":
             return _duplicate_wbs(project, command)
         elif action == "copy_activities":
@@ -2811,6 +2814,72 @@ def _bulk_update_activity_id(project: Project, cmd: Dict) -> Tuple[bool, str]:
 
     else:
         raise EditError(f"Unknown mode '{mode}' for bulk_update_activity_id. Use: resequence, pattern, prefix_swap")
+
+
+def _read_document(project: Project, cmd: Dict) -> Tuple[bool, str]:
+    """
+    Look inside a document already given for this job.
+
+    Advisory — it changes nothing. The lines were extracted when the document
+    arrived, so this costs no model call and no re-upload: it searches what is
+    already held and hands back the matching lines, never the whole file. A
+    497-line scope answers "what does it say about generators" in a dozen
+    lines, and sending the other 485 would cost more than the answer.
+    """
+    from engine import project_brain
+    brain = _BRAIN_FOR(project) if _BRAIN_FOR else None
+    library = getattr(brain, "library", None) if brain else None
+    if library is None or not library.docs:
+        raise EditError("No documents have been given for this job yet — "
+                        "attach the PDF or spreadsheet and I'll read it.")
+
+    name = (cmd.get("document") or cmd.get("name") or "").strip()
+    doc = library.find(name) if name else (library.docs[-1] if library.docs else None)
+    if doc is None:
+        have = ", ".join(d.name for d in library.docs[-6:])
+        raise EditError(f"No document here called '{name}'. What I have: {have}")
+
+    query = (cmd.get("query") or cmd.get("about") or "").strip()
+    try:
+        limit = int(cmd.get("limit") or 12)
+    except (TypeError, ValueError):
+        limit = 12
+
+    if not doc.searchable:
+        lines = [f"{doc.name} (image) — {doc.summary or 'no summary recorded'}"]
+        lines.extend(f"  {f}" for f in doc.facts[:10])
+        return True, "\n".join(lines)
+
+    got = library.search(doc, query, limit)
+    head = (f"{doc.name} — {doc.line_count} lines"
+            + (f", {len(doc.sheets)} sheets" if doc.sheets else
+               f", {doc.pages} pages" if doc.pages else ""))
+    if query:
+        head += f". {got['matched']} line(s) mention '{query}'"
+        if got["matched"] > len(got["lines"]):
+            head += f"; the {len(got['lines'])} strongest follow"
+    else:
+        head += f". {got.get('note', '')}"
+    out = [head + ":"]
+    for row in got["lines"]:
+        where = f"[{row['where']}] " if row["where"] else ""
+        out.append(f"  {where}{row['text']}")
+    if not got["lines"]:
+        out.append("  nothing in this document mentions that.")
+    return True, "\n".join(out)
+
+
+# The edit engine has no session and no brain — it is handed a project and
+# nothing else, deliberately. read_document is the one action that needs the
+# job's document library, so the server injects a lookup rather than this
+# module reaching for global state it should not know about.
+_BRAIN_FOR = None
+
+
+def set_brain_lookup(fn) -> None:
+    """Called once at startup by the server. Tests can point it elsewhere."""
+    global _BRAIN_FOR
+    _BRAIN_FOR = fn
 
 
 def _normalize_activity_ids(project: Project, cmd: Dict) -> Tuple[bool, str]:

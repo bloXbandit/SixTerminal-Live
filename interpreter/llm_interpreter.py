@@ -16,6 +16,7 @@ Supported actions (must match edit_engine.py):
   set_constraint, clear_constraint, set_actual_date, set_progress,
   update_planned_date,
   recommend_logic, update_udf, bulk_rules, normalize_activity_ids,
+  read_document,
   update_labor_units, bulk_clear_constraints, bulk_append_name
 
 Supported models: claude, gpt-4.1-mini, gpt-4.1-nano, gpt-5.4-mini
@@ -749,6 +750,20 @@ bulk_rules:
   {"action": "bulk_rules", "wbs_name": "Phase 1 (Build-Out)", "rules": [
      {"where": {"field": "name", "op": "contains", "value": "Pull LBB"},
       "set": {"field": "name", "mode": "append", "value": "(ER 209)"}}]}
+
+read_document:
+  Look inside a document already given for this job — a scope of work, a
+  submittal log, an equipment schedule. The lines were extracted when it
+  arrived, so this costs nothing and never needs the file again. ADVISORY:
+  it changes nothing.
+  The DOCUMENTS block lists what is available. Always read before answering
+  from a document — never state what one says from memory of the catalogue
+  line, which only carries its name and size.
+  Pass a query: a 497-line scope answers "what does it say about generators"
+  in a dozen lines, and asking for the whole file wastes the turn.
+  {"action": "read_document", "document": "scope-of-work.pdf", "query": "generator"}
+  {"action": "read_document", "document": "equipment log", "query": "switchgear delivery"}
+  {"action": "read_document", "document": "scope-of-work.pdf"}   (opening lines)
 
 normalize_activity_ids:
   Put stray activity codes back on the job's own pattern. The convention is

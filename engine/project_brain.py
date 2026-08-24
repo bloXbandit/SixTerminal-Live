@@ -715,12 +715,16 @@ class Brain:
         # anything the user typed, stronger than a guess from names — see
         # engine/scope_graph.py.
         self.scope: Optional[Any] = None
+        # Every document given for this job, kept so the agent can go back to
+        # one. Only a CATALOGUE rides in the prompt — see engine/doc_library.py.
+        self.library: Optional[Any] = None
 
     def is_empty(self) -> bool:
         """Nothing worth saving — checked before writing a file for a project
         that was never taught anything."""
         return (not self.directives and self.objective is None
-                and not self.feedback and self.scope is None)
+                and not self.feedback and self.scope is None
+                and (self.library is None or not self.library.docs))
 
     def record(self, pred_name: str, succ_name: str, accepted: bool) -> str:
         """Remember how a proposed tie of this shape was received."""
@@ -824,7 +828,8 @@ class Brain:
                 "directives": [d.to_json() for d in self.directives],
                 "objective": self.objective.to_json() if self.objective else None,
                 "feedback": self.feedback,
-                "scope": self.scope.to_json() if self.scope else None}
+                "scope": self.scope.to_json() if self.scope else None,
+                "library": self.library.to_json() if self.library else None}
 
     @classmethod
     def from_json(cls, data: Dict[str, Any]) -> "Brain":
@@ -839,6 +844,8 @@ class Brain:
         b.objective = _obj.from_json((data or {}).get("objective"))
         from . import scope_graph as _sg
         b.scope = _sg.ScopeGraph.from_json((data or {}).get("scope"))
+        from . import doc_library as _dl
+        b.library = _dl.Library.from_json((data or {}).get("library"))
         raw_fb = (data or {}).get("feedback")
         if isinstance(raw_fb, dict):
             for sig, row in raw_fb.items():
@@ -894,6 +901,13 @@ class Brain:
         return [d for d in self.directives
                 if d.enabled and d.kind == NOTE and d.note_reason]
 
+    def docs(self):
+        """The document library, created on first use."""
+        from . import doc_library as _dl
+        if self.library is None:
+            self.library = _dl.Library()
+        return self.library
+
     def set_objective(self, obj) -> None:
         self.objective = obj
 
@@ -925,7 +939,8 @@ class Brain:
         objective = self.objective_line(project)
         rules, notes, questions = self.rules, self.notes, self.open_questions
         scope = self.scope.context_block() if self.scope else ""
-        if not (objective or rules or notes or questions or scope):
+        catalogue = self.library.catalogue_block() if self.library else ""
+        if not (objective or rules or notes or questions or scope or catalogue):
             return ""
 
         def section(title, items, fmt):
@@ -964,6 +979,8 @@ class Brain:
             lambda d: f"  {d.text}   [overridden {d.overridden}×, kept {d.upheld}×]")
         if scope:
             lines.append(scope)
+        if catalogue:
+            lines.append(catalogue)
         if rules:
             lines.append("Rules are enforced in the tie ranking and checked against "
                          "the schedule. Where one contradicts the dates, say so — do "
