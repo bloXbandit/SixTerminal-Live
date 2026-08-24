@@ -773,17 +773,54 @@ def compute_dates(project: "Project", hold_unlinked_dates: bool = True,
         """
         return max(0.0, dur_days - 1.0) if dur_days >= 1.0 else 0.0
 
+    # Holidays arrive as ISO strings. Parsing them on every call would undo
+    # the point of the arithmetic below, and a calendar's holiday list never
+    # changes during a pass — so each distinct list is parsed once.
+    _hol_cache: Dict[Any, tuple] = {}
+
+    def _hol_dates(hol) -> tuple:
+        if not hol:
+            return ()
+        got = _hol_cache.get(hol)
+        if got is None:
+            got = tuple(sorted(x for x in (_parse(h) for h in hol) if x))
+            _hol_cache[hol] = got
+        return got
+
     def _wd_between(d1: _date, d2: _date, wd, hol) -> float:
-        """Working-day count from d1 to d2 (positive when d2 > d1)."""
+        """
+        Working-day count from d1 to d2 (positive when d2 > d1).
+
+        Counted, not walked. This used to step one day at a time, which on a
+        two-year schedule means several hundred iterations per activity —
+        12.9 MILLION calendar checks for a 2,776-activity file, and about
+        eight seconds of solid CPU inside every edit request. On a tenth of a
+        core that is well over a minute, long enough for the proxy to give up
+        on the request and for the health check to conclude the whole service
+        is down.
+
+        Whole weeks are pure multiplication; only the leftover days (at most
+        six) are examined individually, and holidays are subtracted from a
+        pre-parsed sorted list.
+        """
         if d2 == d1:
             return 0.0
         sign = 1 if d2 > d1 else -1
-        count = 0
-        d, end = min(d1, d2), max(d1, d2)
-        while d < end:
-            d += _td(days=1)
-            if _is_work(d, wd, hol):
-                count += 1
+        lo, hi = (d1, d2) if d2 > d1 else (d2, d1)
+        span = (hi - lo).days                 # counting the days in (lo, hi]
+        weeks, rem = divmod(span, 7)
+        count = weeks * len(wd)
+        if rem:
+            edge = lo + _td(days=weeks * 7)
+            for i in range(1, rem + 1):
+                if (edge + _td(days=i)).weekday() in wd:
+                    count += 1
+        if hol:
+            for h in _hol_dates(hol):
+                if h > hi:
+                    break                     # sorted, so nothing later matters
+                if h > lo and h.weekday() in wd:
+                    count -= 1
         return sign * float(count)
 
     # ── Origin date ──────────────────────────────────────────────────────────
