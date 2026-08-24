@@ -10,7 +10,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from engine.schedule_model import (Project, Activity, WBSNode, Calendar,
                                    Relation, compute_dates)
-from engine.edit_engine import apply_command
+from engine.edit_engine import apply_command, apply_commands
 
 
 def _chain():
@@ -348,3 +348,118 @@ def test_progress_keeps_status_consistent():
         apply_command(p, {"action": "update_progress", "activity_id": "A1000",
                           "percent_complete": pct})
         assert p.get_activity(activity_id="A1000").status == status
+
+
+# ── a pin must move the date it pins ─────────────────────────────────────────
+#
+# Reported from real use as "sometimes I can't adjust a date that already has
+# a constraint". Typing a date into the Start cell of a LINKED, UNPINNED row
+# sends set_constraint (a pin is what makes a typed date stick against logic).
+# That set the pin and recomputed early_start, but left planned_start — the
+# column the grid actually shows — untouched, so the typed date did nothing
+# visible. Trying again worked, because by then the row was pinned and took
+# update_planned_date instead. Hence "sometimes".
+
+def _linked_pair():
+    p = Project(uid="1", name="T", id="T", data_date="2026-01-01",
+                planned_start="2026-01-05")
+    p.calendars = [Calendar(uid="1", name="S")]
+    p.wbs_nodes = [WBSNode(uid="w", name="W", code="W")]
+    p.activities = [
+        Activity(uid="1", activity_id="A", name="A", wbs_uid="w", calendar_uid="1",
+                 planned_duration=40, remaining_duration=40, status="Not Started",
+                 planned_start="2026-01-05", planned_finish="2026-01-09"),
+        Activity(uid="2", activity_id="B", name="B", wbs_uid="w", calendar_uid="1",
+                 planned_duration=40, remaining_duration=40, status="Not Started",
+                 planned_start="2026-01-12", planned_finish="2026-01-16"),
+    ]
+    p.relations = [Relation(uid="r", predecessor_uid="1", successor_uid="2",
+                            type="Finish to Start", lag=0.0)]
+    p.build_lookups()
+    return p
+
+
+def test_a_start_pin_moves_the_planned_start_the_grid_shows():
+    p = _linked_pair()
+    apply_commands(p, [{"action": "set_constraint", "activity_id": "B",
+                        "constraint_type": "Start On",
+                        "constraint_date": "2026-02-02"}])
+    b = p.get_activity(activity_id="B")
+    assert b.planned_start == "2026-02-02", (
+        "the pin landed but the date the grid shows did not move — this is the "
+        "'I type a date and nothing happens' report")
+
+
+def test_a_start_pin_carries_the_finish_so_the_duration_still_agrees():
+    p = _linked_pair()
+    apply_commands(p, [{"action": "set_constraint", "activity_id": "B",
+                        "constraint_type": "Start On",
+                        "constraint_date": "2026-02-02"}])
+    b = p.get_activity(activity_id="B")
+    assert b.planned_finish == "2026-02-06", "5 working days from Mon 2 Feb"
+
+
+def test_a_finish_pin_moves_the_finish_and_leaves_the_start():
+    p = _linked_pair()
+    apply_commands(p, [{"action": "set_constraint", "activity_id": "B",
+                        "constraint_type": "Finish On",
+                        "constraint_date": "2026-02-02"}])
+    b = p.get_activity(activity_id="B")
+    assert b.planned_finish == "2026-02-02"
+    assert b.planned_start == "2026-01-12", "a finish pin must not move the start"
+
+
+def test_a_deadline_pins_without_moving_the_work():
+    """Finish On Or Before is a DEADLINE. Scheduling the work onto it would
+    hide the very slip it exists to report as negative float."""
+    for kind in ("Finish On Or Before", "Start On Or Before"):
+        p = _linked_pair()
+        apply_commands(p, [{"action": "set_constraint", "activity_id": "B",
+                            "constraint_type": kind,
+                            "constraint_date": "2026-02-02"}])
+        b = p.get_activity(activity_id="B")
+        assert b.constraint_type == kind
+        assert (b.planned_start, b.planned_finish) == ("2026-01-12", "2026-01-16"), (
+            f"{kind} moved the dates — a deadline is not a pull")
+
+
+def test_move_date_false_pins_without_moving_anything():
+    p = _linked_pair()
+    apply_commands(p, [{"action": "set_constraint", "activity_id": "B",
+                        "constraint_type": "Start On",
+                        "constraint_date": "2026-02-02", "move_date": False}])
+    b = p.get_activity(activity_id="B")
+    assert b.constraint_type == "Start On"
+    assert b.planned_start == "2026-01-12"
+
+
+def test_a_pin_never_overwrites_an_actual_date():
+    p = _linked_pair()
+    b = p.get_activity(activity_id="B")
+    b.status, b.actual_start = "In Progress", "2026-01-12"
+    apply_commands(p, [{"action": "set_constraint", "activity_id": "B",
+                        "constraint_type": "Start On",
+                        "constraint_date": "2026-02-02"}])
+    assert b.actual_start == "2026-01-12"
+    assert b.planned_start == "2026-01-12", "started work is a fact, not a forecast"
+
+
+# ── clearing says what came off ──────────────────────────────────────────────
+
+def test_clearing_names_the_pin_it_removed():
+    """'Cleared constraints on 1 activity/activities' gave the user no way to
+    tell a real removal from a no-op on the wrong row."""
+    p = _linked_pair()
+    b = p.get_activity(activity_id="B")
+    b.constraint_type, b.constraint_date = "Start On", "2026-03-02"
+    ok, msg = apply_command(p, {"action": "clear_constraint", "activity_id": "B"})
+    assert ok
+    assert "Start On" in msg and "2026-03-02" in msg
+    assert "Schedule" in msg, "the user must be told the date stays put"
+    assert b.constraint_type is None and b.constraint_date is None
+
+
+def test_clearing_an_unpinned_row_says_there_was_nothing_to_clear():
+    p = _linked_pair()
+    ok, msg = apply_command(p, {"action": "clear_constraint", "activity_id": "B"})
+    assert ok and "nothing to clear" in msg.lower()

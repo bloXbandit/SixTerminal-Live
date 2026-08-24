@@ -2305,7 +2305,34 @@ def _bulk_update_duration(project: Project, cmd: Dict) -> Tuple[bool, str]:
     return True, f"Updated duration to {new_days}d for {count} activities matching '{pattern}'"
 
 
+# The constraints that DRIVE an early date, and which date each one drives.
+# Deadlines ("start on or before", "finish on or before") are deliberately
+# absent: they cap the LATE date so a slip past them shows as negative float,
+# and moving work onto a deadline would schedule the very problem away.
+# This mirrors compute_dates() exactly — if the two ever disagree, the date
+# shown and the date computed disagree, which is the bug this list prevents.
+_DRIVING_START_CONSTRAINTS = {"start on", "must start on", "mandatory start",
+                              "start on or after"}
+_DRIVING_FINISH_CONSTRAINTS = {"finish on", "must finish on", "mandatory finish",
+                               "finish on or after"}
+
+
 def _set_constraint(project: Project, cmd: Dict) -> Tuple[bool, str]:
+    """
+    Pin a date, and move the date being pinned to match.
+
+    Setting the pin alone was not enough. Edits do not reflow Start / Finish
+    (that is the Schedule button, as in P6), so a pin that drives an early
+    date changed early_start while planned_start — the column the grid
+    actually shows — kept its old value. Typing a date into the Start cell of
+    a linked, unpinned row sends exactly this command, so the visible result
+    was that the date the user typed did nothing at all. Trying again worked,
+    because by then the row was pinned and took a different path: that is the
+    "sometimes I can't adjust a date that has a constraint" report.
+
+    Only a DRIVING constraint moves the date. A deadline is a statement about
+    when work must be finished BY, not an instruction to schedule it then.
+    """
     matches = _find_activity(project, cmd.get("activity_id"), cmd.get("target_name"))
     if not matches:
         raise EditError(_no_activity(project, cmd.get("activity_id") or cmd.get("target_name")))
@@ -2315,19 +2342,64 @@ def _set_constraint(project: Project, cmd: Dict) -> Tuple[bool, str]:
     constraint_date = cmd.get("constraint_date", "").strip()
     if not constraint_type:
         raise EditError("constraint_type is required (e.g. 'Start On Or After', 'Finish On Or Before')")
-    matches[0].constraint_type = constraint_type
-    matches[0].constraint_date = constraint_date or None
-    return True, f"Set constraint '{constraint_type}' on '{matches[0].name}'"
+    a = matches[0]
+    a.constraint_type = constraint_type
+    a.constraint_date = constraint_date or None
+
+    note = ""
+    ct = constraint_type.lower()
+    if a.constraint_date and cmd.get("move_date", True):
+        import datetime as _d
+        try:
+            cd = _d.date.fromisoformat(str(a.constraint_date)[:10])
+        except ValueError:
+            cd = None
+        is_ms = a.activity_type in ("Start Milestone", "Finish Milestone")
+        if cd and ct in _DRIVING_START_CONSTRAINTS and not a.actual_start:
+            wd, hol, hpd = _act_calendar(project, a)
+            dur_d = 0.0 if is_ms else (a.planned_duration or 0.0) / hpd
+            a.planned_start = a.constraint_date
+            a.planned_finish = (a.constraint_date if dur_d <= 0 else
+                                _add_working_days(cd, _span_days(dur_d), wd, hol).isoformat())
+            note = f" — start moved to {a.constraint_date}"
+        elif cd and ct in _DRIVING_FINISH_CONSTRAINTS and not a.actual_finish:
+            a.planned_finish = a.constraint_date
+            if is_ms:
+                a.planned_start = a.constraint_date
+            note = f" — finish moved to {a.constraint_date}"
+    return True, f"Set constraint '{constraint_type}' on '{a.name}'{note}"
 
 
 def _clear_constraint(project: Project, cmd: Dict) -> Tuple[bool, str]:
+    """
+    Unpin. Says what was actually removed, and that the date stays put.
+
+    Removing a pin does not move the work back to where logic would put it —
+    edits never reflow Start / Finish here, the same as in P6 where you press
+    F9. So the row keeps the date the pin had given it and the pin icon
+    disappears, which reads as "the constraint didn't come off" when it did.
+    Naming the removed pin and pointing at Schedule is the difference between
+    that and a silent no-op.
+    """
     matches = _find_activity(project, cmd.get("activity_id"), cmd.get("target_name"))
     if not matches:
         raise EditError(_no_activity(project, cmd.get("activity_id") or cmd.get("target_name")))
+    removed = []
     for a in matches:
+        if a.constraint_type:
+            removed.append(f"{a.activity_id} ({a.constraint_type}"
+                           + (f" {str(a.constraint_date)[:10]}" if a.constraint_date else "")
+                           + ")")
         a.constraint_type = None
         a.constraint_date = None
-    return True, f"Cleared constraints on {len(matches)} activity/activities"
+    if not removed:
+        where = matches[0].activity_id if len(matches) == 1 else f"{len(matches)} activities"
+        return True, f"No constraint was set on {where} — nothing to clear"
+    if len(removed) == 1:
+        return True, (f"Cleared {removed[0]} — the dates stay where they are "
+                      f"until you run Schedule")
+    return True, (f"Cleared constraints on {len(removed)} activities — the dates "
+                  f"stay where they are until you run Schedule")
 
 
 def _resolve_activity_scope(project: Project, cmd: Dict) -> List[Activity]:

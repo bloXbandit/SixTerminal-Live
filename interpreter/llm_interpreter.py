@@ -864,10 +864,29 @@ delete_wbs:
   {"action": "delete_wbs", "wbs_name": "Phase 2", "delete_contents": true}
 
 set_constraint:
+  Pin a date. A DRIVING pin also moves the date it drives, so the row shows
+  the date that was pinned:
+    Start On / Start On Or After / Must Start On   → moves the planned start
+    Finish On / Finish On Or After / Must Finish On → moves the planned finish
+  A DEADLINE pin moves nothing, on purpose — it caps the late date so a slip
+  past it shows up as negative float, and scheduling the work onto the
+  deadline would hide exactly the problem it exists to report:
+    Start On Or Before / Finish On Or Before
+  Pass move_date=false to pin without moving the date at all.
   {"action": "set_constraint", "activity_id": "A1000", "constraint_type": "Start On Or After", "constraint_date": "2026-06-01"}
 
 clear_constraint:
+  Remove the pin. The dates do NOT spring back to what logic says — nothing
+  here reflows Start/Finish, exactly as in P6 where you press F9. So say that
+  the pin is off and the date stays until they run Schedule; a user who is
+  not told this reads the unchanged date as "the constraint never came off".
+  To unpin AND re-date in one go, follow it with update_planned_date.
   {"action": "clear_constraint", "activity_id": "A1000"}
+
+  Changing a pinned date: just set the new date. update_planned_date carries
+  an existing pin along with it, keeping the pin's TYPE — so a deadline stays
+  a deadline instead of being silently converted to a hard pin. Only clear the
+  constraint first when the user actually wants it gone.
 
 set_actual_date:
   Move an actual start or finish date on a started/completed activity — the
