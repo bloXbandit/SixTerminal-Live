@@ -62,12 +62,26 @@ _MAX_PDF_BYTES = 30 * 1024 * 1024
 
 # Rendering is optional: without it a PDF simply needs a provider that takes
 # one natively, which is the behaviour that existed before.
-try:
-    import pypdfium2 as _pdfium
-    from PIL import Image as _PILImage
-    _RASTER_AVAILABLE = True
-except ImportError:                                  # pragma: no cover
-    _RASTER_AVAILABLE = False
+#
+# Imported on FIRST USE, not at module load. pypdfium2 pulls in a native
+# library and Pillow is not small; loading both into the web worker at startup
+# cost tens of megabytes on every deploy, for a path that only runs when a
+# model refuses a PDF outright. On a single-worker instance holding a
+# 2,776-activity schedule that is the difference between comfortable and
+# being killed mid-request — which surfaces to the browser as an empty
+# response and no explanation at all.
+_RASTER: List[Any] = []
+
+
+def _raster_available() -> bool:
+    if not _RASTER:
+        try:
+            import pypdfium2
+            from PIL import Image                    # noqa: F401
+            _RASTER.append(pypdfium2)
+        except ImportError:                          # pragma: no cover
+            _RASTER.append(None)
+    return _RASTER[0] is not None
 
 # A sheet set is sent one sheet at a time, so a PDF here is normally a handful
 # of pages. This is a guard against somebody attaching the whole 400-page
@@ -88,13 +102,13 @@ def rasterize_pdf(file_bytes: bytes, max_pages: int = _MAX_PDF_PAGES,
     refused — a drawing that is slightly softer still reads; one the API
     rejects does not.
     """
-    if not _RASTER_AVAILABLE:
+    if not _raster_available():
         raise RuntimeError(
             "This model cannot read PDFs directly, and PDF rendering is not "
             "installed here. Send a PNG/JPG screenshot of the sheet, or run "
             "`pip install pypdfium2 Pillow`.")
     try:
-        doc = _pdfium.PdfDocument(file_bytes)
+        doc = _RASTER[0].PdfDocument(file_bytes)
     except Exception as e:
         raise RuntimeError(f"That PDF could not be opened: {e}")
     out: List[bytes] = []
@@ -624,7 +638,7 @@ def _ask_model(file_bytes, ext, is_pdf, system_prompt, user_text,
                 "filename": "sheet.pdf",
                 "file_data": f"data:application/pdf;base64,{b64}"}}])
         except Exception as native_error:
-            if not _RASTER_AVAILABLE:
+            if not _raster_available():
                 raise RuntimeError(
                     f"This model would not take the PDF directly "
                     f"({native_error}), and PDF rendering is not installed. "

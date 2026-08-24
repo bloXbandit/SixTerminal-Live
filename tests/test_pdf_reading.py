@@ -151,7 +151,9 @@ def test_the_fallback_still_carries_the_question(monkeypatch):
 def test_without_a_renderer_the_refusal_says_what_to_do(monkeypatch):
     rec = _Recorder(fail_on_pdf=True)
     _openai(monkeypatch, rec)
-    monkeypatch.setattr(vz, "_RASTER_AVAILABLE", False)
+    # The renderer is loaded on first use now, so "not installed" is a
+    # resolved-to-nothing cache rather than a flag set at import.
+    monkeypatch.setattr(vz, "_RASTER", [None])
     with pytest.raises(RuntimeError) as e:
         vz._ask_model(_PDF, ".pdf", True, "sys", "read it", "gpt-4.1-nano", "k")
     assert "screenshot" in str(e.value).lower()
