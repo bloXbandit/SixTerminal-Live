@@ -274,3 +274,83 @@ def test_listing_models_without_a_key_says_so():
     finally:
         if old:
             os.environ["OPENAI_API_KEY"] = old
+
+
+# ── 4. a batch cut off mid-write must not throw the whole thing away ─────────
+#
+# Reported from real use, wiring a whole branch of area folders. A batch of
+# sixty-odd relationship ties overran the reply length limit, so the model
+# stopped in the middle of a token: the array never closed, no balanced span
+# parsed, and the reply fell all the way through to "this was really prose".
+# The user got a screenful of raw JSON printed into the chat and not one tie
+# reached the schedule. Almost all of that batch was well-formed — only the
+# last object was torn.
+
+_TRUNCATED = (
+    '[{"action":"chat","message":"Wiring the area chain now."},'
+    '{"action":"add_relation","predecessor_id":"A1","successor_id":"A2"},'
+    '{"action":"add_relation","predecessor_id":"A2","successor_id":"A3"},'
+    '{"action":"add_relation","predecess'
+)
+
+
+def test_a_batch_cut_off_midway_still_applies_what_survived():
+    cmds = _parse_commands(_TRUNCATED)
+    ties = _edits(cmds)
+    assert len(ties) == 2, "the intact ties were thrown away with the torn one"
+    assert all(c["action"] == "add_relation" for c in ties)
+    assert [c["predecessor_id"] for c in ties] == ["A1", "A2"]
+
+
+def test_the_torn_command_is_not_half_applied():
+    """The object that was cut mid-write must be dropped, not guessed at."""
+    for c in _parse_commands(_TRUNCATED):
+        assert "predecess" not in str(c.get("successor_id", ""))
+        if c.get("action") == "add_relation":
+            assert c.get("predecessor_id") and c.get("successor_id")
+
+
+def test_the_user_is_told_the_batch_was_cut_short():
+    """Silently applying two thirds of a request is the actual harm — the
+    user believed the branch was fully wired when it was not."""
+    cmds = _parse_commands(_TRUNCATED)
+    chat = next(c for c in cmds if c["action"] == "chat")
+    assert "cut off" in chat["message"]
+    assert "keep going" in chat["message"]
+    # and it keeps what the agent had already said
+    assert "Wiring the area chain now." in chat["message"]
+
+
+def test_a_truncated_reply_with_no_chat_still_gets_a_note():
+    raw = ('[{"action":"add_relation","predecessor_id":"A1","successor_id":"A2"},'
+           '{"action":"add_rel')
+    cmds = _parse_commands(raw)
+    assert len(_edits(cmds)) == 1
+    assert any(c["action"] == "chat" and "cut off" in c["message"] for c in cmds)
+
+
+def test_salvage_does_not_double_count_nested_command_objects():
+    """A rule set carries its own actions inside it. Recovering the outer
+    command must not also recover its innards as separate edits."""
+    raw = ('[{"action":"bulk_rules","rules":[{"action":"set","field":"duration"}]},'
+           '{"action":"add_rel')
+    cmds = _parse_commands(raw)
+    assert len(_edits(cmds)) == 1
+    assert _edits(cmds)[0]["action"] == "bulk_rules"
+
+
+def test_a_complete_reply_is_untouched_by_the_salvage_path():
+    """The salvage must never fire on a reply that parsed cleanly — no note,
+    no reordering, nothing."""
+    raw = f'[{{"action":"chat","message":"Done."}},{_TIE}]'
+    cmds = _parse_commands(raw)
+    assert len(_edits(cmds)) == 1
+    chat = next(c for c in cmds if c["action"] == "chat")
+    assert chat["message"] == "Done."
+
+
+def test_real_prose_is_still_treated_as_chat():
+    """The salvage must not turn an ordinary sentence into a phantom edit."""
+    cmds = _parse_commands("Your critical path runs through A1020 and A1030.")
+    assert len(cmds) == 1 and cmds[0]["action"] == "chat"
+    assert "cut off" not in cmds[0]["message"]

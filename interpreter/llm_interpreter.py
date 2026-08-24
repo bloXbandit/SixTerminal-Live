@@ -513,6 +513,45 @@ If a DCMA concern exists, execute the command AND add a "note" key AND mention i
 RULE 5 — ZERO CONFIRMATION REQUESTS:
 Never ask "Are you sure?", "Should I proceed?", "Do you want me to...?", "Would you like me to...?" — you are a tool that acts when instructed. If the instruction is clear enough to understand, it's clear enough to execute.
 
+RULE 6 — NO FLOATING WBS. EVERY FOLDER IS ENTERED AND LEFT THROUGH A REAL ACTIVITY.
+A WBS folder does not connect to anything — only activities carry logic. So
+"connect these folders" always means: pick the activity inside the folder that
+actually STARTS its work and drive it from the activity that finishes the
+predecessor folder's work.
+- Into the folder: the first real activity in a folder must have a predecessor
+  OUTSIDE that folder. A folder whose every activity is driven only by its own
+  siblings is floating — its dates are held up by nothing, and a change
+  upstream will never reach it.
+- Out of the folder: the last real activity must drive something outside it,
+  or the whole branch is a dead end that nothing downstream feels.
+- Never tie folder-to-folder by picking whichever id sorts first. Pick the
+  activity by what it IS: the earliest-dated real work going in, the
+  latest-dated completion coming out. Milestones in the folder are the
+  preferred handoff points when they exist — that is what they are for.
+- Say which two activities you used as the handoff, not just which folders.
+
+RULE 7 — FINISH THE SET, OR SAY EXACTLY WHAT IS LEFT.
+When asked to wire "all", "every", "the rest of" a branch, the job is not done
+when some of them are tied. Before replying, count what you were asked to
+cover and what you actually emitted.
+- If you emitted commands for the whole set, say so with the count.
+- If it does not fit in one reply, do NOT silently do part of it. Emit as much
+  as fits, then end your message with exactly which items remain, by id or
+  folder, and say "say continue and I'll do the rest". A user who is told
+  "42 of 67 tied, remaining: Areas 23, 25, 31" can act on that. A user who is
+  told "wired the branch" when 25 folders are still floating cannot.
+- Never claim a branch is fully connected unless every folder in it satisfies
+  RULE 6 in both directions.
+
+RULE 8 — VERIFY IDS BEFORE EMITTING A BATCH.
+Every activity_id in a batch must be one you have actually SEEN in the
+schedule context or in a report you just ran — never one you assembled by
+pattern ("if A22 exists then A23 must too"). Invented ids are the single
+biggest cause of a batch failing partway: the engine stops at the first bad
+command, so one guessed id can strand every command after it. If you need ids
+you do not have, run the read-only report for that branch FIRST, in its own
+turn, and wire from what it returns.
+
 -------------------------------------
 RESPONSE FORMAT - ALWAYS A JSON ARRAY:
 -------------------------------------
@@ -1070,7 +1109,13 @@ def interpret(
             })
         response = client.messages.create(
             model=model_id,
-            max_tokens=2048,
+            # A batch of relationship ties is ~35 tokens per command, so 2048
+            # — what this was — cut off at roughly fifty. That is exactly the
+            # size of a real "wire this whole branch" request, and the reply
+            # stopped mid-token: the JSON never closed, nothing parsed, and
+            # the raw half-written array was shown to the user as if it were
+            # chat while not one tie reached the schedule.
+            max_tokens=8192,
             system=system_blocks,
             messages=[{"role": "user", "content": dynamic_tail}],
         )
@@ -1108,7 +1153,7 @@ def interpret(
                     "content": 'Reply with a JSON object of the form '
                                '{"commands": [ ...the command objects... ]}. '
                                'No prose outside it.'}],
-                max_completion_tokens=4096,
+                max_completion_tokens=8192,
                 response_format={"type": "json_object"},
             )
             raw_response = response.choices[0].message.content
@@ -1118,7 +1163,7 @@ def interpret(
             raw_response = None
         if raw_response is None:
             response = client.chat.completions.create(
-                model=model_id, messages=msgs, max_completion_tokens=4096)
+                model=model_id, messages=msgs, max_completion_tokens=8192)
             raw_response = response.choices[0].message.content
         return _parse_commands(raw_response), raw_response
 
@@ -1408,6 +1453,64 @@ def _as_commands(value) -> Optional[List[Dict[str, Any]]]:
     return None
 
 
+_ACTION_OBJ_RE = re.compile(r'\{\s*"action"')
+
+# Appended to the agent's own message when a batch was cut off, so the user is
+# told rather than left to notice that a "tie the whole branch" request
+# quietly stopped two thirds of the way through.
+_TRUNCATED_NOTE = ("\n\n⚠ This batch was cut off by the reply length limit — "
+                   "{n} command(s) came through intact and were applied; "
+                   "anything after that was lost mid-write. Say \"keep going\" "
+                   "and I'll continue from where it stopped.")
+
+
+def _salvage_commands(text: str) -> Optional[List[Dict[str, Any]]]:
+    """
+    Recover the intact commands from a reply that was CUT OFF mid-write.
+
+    A batch big enough to hit the model's output limit stops in the middle of
+    a token, so the enclosing array never closes. Every balanced-span parse
+    then fails and the whole reply falls through to "this was really prose" —
+    which is how a 60-tie request came back as raw JSON printed in the chat
+    with not one relationship added. Almost all of that batch is well-formed,
+    though: only the final object is torn. This takes every command object
+    that IS complete and leaves the torn one behind.
+
+    Nested command objects (a rule set carrying its own actions) are skipped
+    rather than double-counted, by not re-matching inside a span already taken.
+    """
+    out: List[Dict[str, Any]] = []
+    consumed_to = 0
+    for m in _ACTION_OBJ_RE.finditer(text):
+        if m.start() < consumed_to:
+            continue                       # already inside a command taken above
+        span = next(iter(_json_spans(text[m.start():])), None)
+        if not span:
+            continue                       # the torn object at the very end
+        obj = _loads(span)
+        if isinstance(obj, dict) and obj.get("action"):
+            out.append(obj)
+            consumed_to = m.start() + len(span)
+    return out or None
+
+
+def _note_truncation(cmds: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """
+    Tell the user the batch was cut short, in the message they actually see.
+
+    The server displays only the FIRST chat action, so a note appended as a
+    second one would never be read — it goes onto the existing message, or
+    becomes the message when the reply was cut off before one was written.
+    """
+    applied = sum(1 for c in cmds if c.get("action") not in ("chat", "clarify"))
+    note = _TRUNCATED_NOTE.format(n=applied)
+    for c in cmds:
+        if c.get("action") == "chat":
+            c["message"] = (c.get("message") or "").rstrip() + note
+            return cmds
+    return [{"action": "chat", "message": note.strip()}] + cmds
+
+
 def _parse_commands(raw: str) -> List[Dict[str, Any]]:
     """
     Pull the edit commands out of whatever the model actually sent.
@@ -1439,6 +1542,13 @@ def _parse_commands(raw: str) -> List[Dict[str, Any]]:
         fallback = fallback or cmds
     if fallback:
         return fallback
+
+    # Nothing balanced parsed. Before concluding the reply was prose, check
+    # whether it was simply CUT OFF — a big batch that overran the output
+    # limit leaves an array that never closes but is full of intact commands.
+    salvaged = _salvage_commands(cleaned)
+    if salvaged:
+        return _note_truncation(salvaged)
 
     # Nothing parseable — the reply really was prose.
     text = cleaned or (raw or "").strip()
