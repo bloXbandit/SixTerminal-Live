@@ -267,6 +267,12 @@ def _active_feedback() -> dict:
     return b.feedback if b else {}
 
 
+def _active_scope():
+    """The scope document's flow for the open job, if one has been read."""
+    b = _active_brain()
+    return b.scope if b else None
+
+
 def _unique_pid(stem: str) -> str:
     if stem not in _projects:
         return stem
@@ -1443,7 +1449,8 @@ def edit():
         if len(matches) == 1:
             opts = _advisor.tie_options(project, matches[0],
                                         directives=_active_directives(),
-                                        feedback=_active_feedback())
+                                        feedback=_active_feedback(),
+                                        scope_graph=_active_scope())
             if opts["predecessors"] or opts["successors"]:
                 lines = [f"Tie options offered for {opts['activity_id']} — {opts['name']}:"]
                 n = 0
@@ -1885,7 +1892,8 @@ def advise_milestones():
     try:
         return jsonify(milestone_report(sess["project"], limit_per_milestone=limit,
                                         directives=_active_directives(),
-                                        feedback=_active_feedback()))
+                                        feedback=_active_feedback(),
+                                        scope_graph=_active_scope()))
     except Exception as e:
         return jsonify({"error": f"Logic advice failed: {e}",
                         "trace": traceback.format_exc()}), 500
@@ -2034,7 +2042,8 @@ def advise_wire():
         return jsonify({"error": "That folder is not in this schedule"}), 404
     out = wire_folder(sess["project"], uid, min_confidence=floor,
                       directives=_active_directives(),
-                      feedback=_active_feedback())
+                      feedback=_active_feedback(),
+                      scope_graph=_active_scope())
     out["wbs_name"] = node.name
     return jsonify(out)
 
@@ -2086,6 +2095,103 @@ def _brain_payload(brain) -> dict:
         "rule_count": len(brain.rules),
         "note_count": len(brain.notes),
     }
+
+
+@app.route("/api/scope", methods=["POST"])
+def scope_upload():
+    """
+    Read a scope-of-work document into the agent's understanding of the job.
+
+    Every line is extracted deterministically — no model, no tokens, and a
+    count you can check — then distilled into the flow it describes: which
+    systems this job actually carries, how far each is taken, and in which
+    phase. The lines themselves are never sent to a model; a few dozen nodes
+    are what the agent reads, and what shifts its tie ranking.
+    """
+    sess = _get_session()
+    if sess is None or sess["project"] is None:
+        return jsonify({"error": "No schedule loaded"}), 400
+    if "file" not in request.files:
+        return jsonify({"error": "No document attached"}), 400
+    f = request.files["file"]
+    blob = f.read()
+    name = f.filename or "scope document"
+    if not name.lower().endswith(".pdf"):
+        return jsonify({"error": "Send the scope of work as a PDF — a text "
+                                 "one, not a scan."}), 400
+
+    from engine import scope_graph as _sg
+    try:
+        graph, report = _sg.read_and_build(blob, name)
+    except RuntimeError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        return jsonify({"error": f"Could not read that document: {e}"}), 500
+
+    if not graph.nodes:
+        return jsonify({"error": f"Read {report['line_count']} lines from "
+                                 f"{name}, but none of them named a system and "
+                                 f"a stage — this may not be a scope of work."}), 400
+
+    project = sess["project"]
+    brain = _brain_for(project)
+    brain.scope = graph
+    _mark_dirty(_active_id[0])
+
+    systems = graph.systems()
+    phases = [p for p in graph.phases() if p]
+    lines = [f"Scope of work read from '{name}': {report['line_count']} lines "
+             f"across {report['pages']} pages, {graph.classified} of them "
+             f"naming a system and a stage.",
+             f"  Systems: {', '.join(systems)}",
+             f"  Phases: {', '.join(str(p) for p in phases) or 'none stated'}",
+             graph.context_block(),
+             "This is now part of what you know about the job. It ranks BELOW "
+             "anything the user told you directly and ABOVE inference from "
+             "names. Nothing has been changed in the schedule."]
+    _append_chat("user", f"[uploaded scope of work: {name}]")
+    _append_chat("assistant",
+                 f"Read {report['line_count']} scope lines — "
+                 f"{len(systems)} systems"
+                 + (f" across {len(phases)} phases" if phases else ""),
+                 context="\n".join(lines))
+
+    return jsonify({
+        "success": True, "filename": name,
+        "line_count": report["line_count"], "pages": report["pages"],
+        "method": report["method"], "classified": graph.classified,
+        "systems": systems, "phases": phases,
+        "nodes": len(graph.nodes),
+        "edges": [{"why": why} for _, _, why in graph.edges()][:60],
+        "summary": graph.context_block(),
+        "chat": sess["chat_history"][-2:],
+    })
+
+
+@app.route("/api/scope", methods=["GET"])
+def scope_get():
+    sess = _get_session()
+    if sess is None or sess["project"] is None:
+        return jsonify({"error": "No schedule loaded"}), 400
+    g = _brain_for(sess["project"]).scope
+    if g is None:
+        return jsonify({"success": True, "scope": None})
+    return jsonify({"success": True, "scope": {
+        "source": g.source, "line_count": g.line_count,
+        "classified": g.classified, "nodes": len(g.nodes),
+        "systems": g.systems(), "phases": [p for p in g.phases() if p],
+        "summary": g.context_block(),
+        "edges": [{"why": why} for _, _, why in g.edges()][:60]}})
+
+
+@app.route("/api/scope", methods=["DELETE"])
+def scope_clear():
+    sess = _get_session()
+    if sess is None or sess["project"] is None:
+        return jsonify({"error": "No schedule loaded"}), 400
+    _brain_for(sess["project"]).scope = None
+    _mark_dirty(_active_id[0])
+    return jsonify({"success": True, "scope": None})
 
 
 @app.route("/api/brain/conflict", methods=["POST"])

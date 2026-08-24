@@ -614,8 +614,13 @@ class _Ctx:
     """Per-call caches so scoring stays cheap over a big pool."""
 
     def __init__(self, project: Project, directives: Optional[List[Any]] = None,
-                 feedback: Optional[Dict[str, Any]] = None):
+                 feedback: Optional[Dict[str, Any]] = None,
+                 scope_graph: Optional[Any] = None):
         self.project = project
+        # The scope document's flow, if one has been read for this job.
+        # Optional everywhere — a project with no scope document ranks exactly
+        # as it did before.
+        self.scope = scope_graph
         # How proposals of each shape have been received on this job. Optional
         # everywhere — a project nobody has clicked through ranks exactly as
         # it did before.
@@ -792,6 +797,7 @@ def score_tie(ctx: _Ctx, pred: Activity, succ: Activity,
     # thing in question, and that contradiction is reported rather than used
     # to quietly bury the tie. A rule the tie runs backwards against returns
     # zero: it is never proposed, at any date fit.
+    told_by_user = False
     if ctx.directives:
         sup, vio = _brain.verdicts(ctx.directives, pred.name, succ.name,
                                    ctx.where(pred), ctx.where(succ))
@@ -801,6 +807,30 @@ def score_tie(ctx: _Ctx, pred: Activity, succ: Activity,
             support = max(support, 0.90)
             date_factor = max(date_factor, 0.55)
             why.insert(0, f"you said: {sup[0].text}")
+            told_by_user = True
+
+    # 10b. What the SCOPE DOCUMENT says — the contract, read once and distilled.
+    #
+    # Deliberately below a stated rule and deliberately above everything
+    # inferred from names: a rule came from somebody who walked the job, this
+    # came from parsing a PDF, and both beat guessing. It is skipped entirely
+    # when a rule already spoke, so the two can never stack into a certainty
+    # neither of them earned — and where the document contradicts a rule, the
+    # rule has already returned above and the disagreement is the user's to
+    # see rather than something resolved here.
+    if ctx.scope is not None and not told_by_user:
+        v = ctx.scope.verdict(pred.name, succ.name,
+                              ctx.where(pred), ctx.where(succ))
+        if v == "violates":
+            return 0.0, why + [
+                "runs backwards to the scope document: "
+                + ctx.scope.explain(pred.name, succ.name,
+                                    ctx.where(pred), ctx.where(succ))]
+        if v == "supports":
+            support = max(support, 0.80)
+            date_factor = max(date_factor, 0.45)
+            why.insert(0, ctx.scope.explain(pred.name, succ.name,
+                                            ctx.where(pred), ctx.where(succ)))
 
     # 11. How ties of this SHAPE have actually been received on this job.
     #
@@ -827,7 +857,8 @@ def score_tie(ctx: _Ctx, pred: Activity, succ: Activity,
 def milestone_drivers(project: Project, milestone: Activity,
                       limit: int = 3, ctx: Optional["_Ctx"] = None,
                       directives: Optional[List[Any]] = None,
-                      feedback: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
+                      feedback: Optional[Dict[str, Any]] = None,
+                      scope_graph: Optional[Any] = None) -> List[Dict[str, Any]]:
     """
     What should drive this milestone's date.
 
@@ -845,7 +876,7 @@ def milestone_drivers(project: Project, milestone: Activity,
         return []
     scope_uid, scope_label = _phase_scope(project, milestone)
     pool = (activities_in(project, scope_uid) if scope_uid else list(project.activities))
-    ctx = ctx or _Ctx(project, directives, feedback)
+    ctx = ctx or _Ctx(project, directives, feedback, scope_graph)
 
     # Everything in scope that finishes by the milestone and is close enough to
     # be a handoff. The calendar-day gate comes before the working-day count,
@@ -997,7 +1028,8 @@ def find_activity_in(project: Project, text: str) -> List[Activity]:
 
 def tie_options(project: Project, act: Activity, limit: int = 4,
                 directives: Optional[List[Any]] = None,
-                feedback: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+                feedback: Optional[Dict[str, Any]] = None,
+                scope_graph: Optional[Any] = None) -> Dict[str, Any]:
     """
     Ranked predecessor and successor candidates for ONE activity, each with the
     confidence and the reasons behind it, ready to be offered as apply buttons.
@@ -1005,7 +1037,7 @@ def tie_options(project: Project, act: Activity, limit: int = 4,
     Same scoring as everywhere else — this is the single-activity view of it,
     for when the user points at a row and asks what it should connect to.
     """
-    ctx = _Ctx(project, directives, feedback)
+    ctx = _Ctx(project, directives, feedback, scope_graph)
     start = _parse(act.actual_start or act.planned_start or act.early_start)
     finish = _parse(act.actual_finish or act.planned_finish or act.early_finish)
     linked_pred = {r.predecessor_uid for r in project.relations if r.successor_uid == act.uid}
@@ -1068,7 +1100,8 @@ def tie_options(project: Project, act: Activity, limit: int = 4,
 def wire_folder(project: Project, root_uid: str, min_confidence: float = 0.45,
                 limit: int = 400,
                 directives: Optional[List[Any]] = None,
-                feedback: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+                feedback: Optional[Dict[str, Any]] = None,
+                scope_graph: Optional[Any] = None) -> Dict[str, Any]:
     """
     Every tie worth making inside one folder, ranked — the bulk answer to open
     ends. The reference schedule has 1,610 activities with no predecessor and
@@ -1092,7 +1125,7 @@ def wire_folder(project: Project, root_uid: str, min_confidence: float = 0.45,
                 "open_starts": 0, "open_finishes": 0}
 
     has_pred, has_succ = _open_ended(project)
-    ctx = _Ctx(project, directives, feedback)
+    ctx = _Ctx(project, directives, feedback, scope_graph)
     by_uid = {a.uid: a for a in acts}
     open_start = [a for a in acts if a.uid not in has_pred
                   and a.activity_type not in ("Start Milestone", "Finish Milestone")
@@ -1142,7 +1175,8 @@ def wire_folder(project: Project, root_uid: str, min_confidence: float = 0.45,
 
 def milestone_report(project: Project, limit_per_milestone: int = 3,
                      directives: Optional[List[Any]] = None,
-                feedback: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+                feedback: Optional[Dict[str, Any]] = None,
+                scope_graph: Optional[Any] = None) -> Dict[str, Any]:
     """
     Every milestone, its logic state, and what could drive it.
 
@@ -1155,7 +1189,7 @@ def milestone_report(project: Project, limit_per_milestone: int = 3,
                   if a.activity_type in ("Start Milestone", "Finish Milestone")]
     milestones.sort(key=lambda a: str(a.planned_start or a.planned_finish or ""))
 
-    ctx = _Ctx(project, directives, feedback)   # one set of caches for every milestone
+    ctx = _Ctx(project, directives, feedback, scope_graph)   # one set of caches for every milestone
     items = []
     for m in milestones:
         drivers = milestone_drivers(project, m, limit=limit_per_milestone, ctx=ctx)

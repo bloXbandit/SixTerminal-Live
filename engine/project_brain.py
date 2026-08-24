@@ -711,11 +711,16 @@ class Brain:
         # signature -> {"accepted": n, "declined": n}. Never sent to the
         # model: it is a scoring input, so it costs nothing per turn.
         self.feedback: Dict[str, Dict[str, int]] = {}
+        # The flow a scope-of-work document describes, distilled. Weaker than
+        # anything the user typed, stronger than a guess from names — see
+        # engine/scope_graph.py.
+        self.scope: Optional[Any] = None
 
     def is_empty(self) -> bool:
         """Nothing worth saving — checked before writing a file for a project
         that was never taught anything."""
-        return not self.directives and self.objective is None and not self.feedback
+        return (not self.directives and self.objective is None
+                and not self.feedback and self.scope is None)
 
     def record(self, pred_name: str, succ_name: str, accepted: bool) -> str:
         """Remember how a proposed tie of this shape was received."""
@@ -818,7 +823,8 @@ class Brain:
         return {"key": self.key,
                 "directives": [d.to_json() for d in self.directives],
                 "objective": self.objective.to_json() if self.objective else None,
-                "feedback": self.feedback}
+                "feedback": self.feedback,
+                "scope": self.scope.to_json() if self.scope else None}
 
     @classmethod
     def from_json(cls, data: Dict[str, Any]) -> "Brain":
@@ -831,6 +837,8 @@ class Brain:
             ds.append(Directive(**fields))
         b = cls((data or {}).get("key", "unknown"), ds)
         b.objective = _obj.from_json((data or {}).get("objective"))
+        from . import scope_graph as _sg
+        b.scope = _sg.ScopeGraph.from_json((data or {}).get("scope"))
         raw_fb = (data or {}).get("feedback")
         if isinstance(raw_fb, dict):
             for sig, row in raw_fb.items():
@@ -916,7 +924,8 @@ class Brain:
         """
         objective = self.objective_line(project)
         rules, notes, questions = self.rules, self.notes, self.open_questions
-        if not (objective or rules or notes or questions):
+        scope = self.scope.context_block() if self.scope else ""
+        if not (objective or rules or notes or questions or scope):
             return ""
 
         def section(title, items, fmt):
@@ -953,6 +962,8 @@ class Brain:
             "ask whether it still holds:",
             contested,
             lambda d: f"  {d.text}   [overridden {d.overridden}×, kept {d.upheld}×]")
+        if scope:
+            lines.append(scope)
         if rules:
             lines.append("Rules are enforced in the tie ranking and checked against "
                          "the schedule. Where one contradicts the dates, say so — do "
