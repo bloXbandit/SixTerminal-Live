@@ -64,6 +64,10 @@ def _install_fake():
     fake = FakeS3()
     cloud_store._client_cache.clear()
     cloud_store._client_cache.append(fake)
+    # A fresh bucket has none of the history the previous one had, so the
+    # record of what was last written to it must go too — otherwise a save is
+    # skipped as "unchanged" against a bucket that never received it.
+    server._last_saved_digest.clear()
     return fake
 
 

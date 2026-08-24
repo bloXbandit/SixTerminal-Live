@@ -13,6 +13,7 @@ import re
 import sys
 import gzip
 import copy
+import hashlib
 import json
 import uuid
 import datetime as _dt
@@ -553,15 +554,35 @@ def _project_to_xml_bytes(project) -> bytes:
             pass
 
 
-def _persist(pid):
+# What was last written for each project, as a digest. A turn can mark a
+# project dirty without changing the schedule at all — a chat reply, a report,
+# a rule taught — and re-uploading an identical file is pure waste on an
+# instance where bandwidth and CPU are both scarce.
+_last_saved_digest: dict = {}
+
+# The exporter mints a fresh random GUID for every element on every run, so
+# two exports of an UNCHANGED schedule are never byte-identical and a plain
+# hash of the output would report "changed" every single time. They are
+# blanked before hashing rather than being made stable in the exporter: what
+# P6 does with a changed GUID on re-import cannot be verified from here, and
+# an export that works today is not worth risking for an optimisation.
+_GUID_RE = re.compile(rb"<GUID>[^<]*</GUID>")
+
+
+def _schedule_digest(xml: bytes) -> str:
+    return hashlib.sha256(_GUID_RE.sub(b"<GUID/>", xml)).hexdigest()
+
+
+def _persist(pid, force=False):
     """Save one project to cloud now. Non-fatal on failure."""
     sess = _projects.get(pid)
     if not sess or not sess["project"]:
         return False, "no project"
     try:
         xml = _project_to_xml_bytes(sess["project"])
+        digest = _schedule_digest(xml)
         brain = _brains.get(project_brain.project_key(sess["project"]))
-        return cloud_store.save(pid, xml, {
+        meta = {
             "source_name": sess.get("source_name"),
             "project_name": sess["project"].name,
             "activity_count": len(sess["project"].activities),
@@ -572,7 +593,19 @@ def _persist(pid):
             # restart that kept the schedule but dropped the record would
             # leave it unable to answer for what it already did.
             "chat": sess["chat_history"][-80:],
-        })
+        }
+        # The schedule is byte-identical to what is already stored, so the
+        # upload would change nothing. The manifest still goes — the chat and
+        # anything newly taught live in there and DO change on a turn that
+        # left the schedule alone, which is most of them.
+        if not force and _last_saved_digest.get(pid) == digest:
+            ok, msg = cloud_store.save_meta(pid, meta)
+            return ok, (f"unchanged, manifest only ({msg})" if ok else msg)
+
+        ok, msg = cloud_store.save(pid, xml, meta)
+        if ok:
+            _last_saved_digest[pid] = digest
+        return ok, msg
     except Exception as e:
         return False, f"serialize failed: {e}"
 
@@ -625,6 +658,10 @@ def _compress(resp):
 
 def _restore_from_cloud():
     """On startup, load every schedule stored in R2 back into memory."""
+    # Our record of what we last wrote describes ONE remote store. Re-reading
+    # the store makes it irrelevant — and if the bucket has changed underneath
+    # us, keeping it would mean skipping a save the new bucket never received.
+    _last_saved_digest.clear()
     if not cloud_store.is_configured():
         return
     try:
