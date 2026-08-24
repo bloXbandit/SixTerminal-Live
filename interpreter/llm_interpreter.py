@@ -747,6 +747,18 @@ update_udf:
   {"action": "update_udf", "activity_id": "A1000", "value": "6"}
   {"action": "update_udf", "activity_id": "A1000", "field": "Number of Electricians", "value": "6"}
 
+set_udf_type:
+  Correct the DataType on a UDF that already exists in the schedule — never
+  invented values, never touches which activities have it. Use when the
+  user reports P6 rejected the import with an "invalid UDF data type" error,
+  or tells you what type a field is ALREADY configured as in P6 (their
+  enterprise UDF setup, which this app cannot see): this app can only guess
+  a field's type from whether the values it was given look numeric, and
+  that guess can conflict with what P6 already has on record for a field of
+  that exact name, which is what actually produced the error. field must
+  match the existing column's title exactly.
+    {"action": "set_udf_type", "field": "Number of Electricians", "data_type": "Text"}
+
 bulk_rules:
   If/then find-and-change across the schedule, or inside one folder. Use this
   instead of emitting hundreds of individual edits when the user describes a

@@ -310,6 +310,45 @@ def test_setting_a_udf_also_defines_it_so_the_export_is_valid():
     assert electricians_field(p) in titles
 
 
+def test_a_new_udf_is_always_declared_text_even_with_a_numeric_value():
+    """
+    A field this app invents (never seen in the schedule before) must not
+    guess "Integer" just because the first value typed into it looks like a
+    number. P6 may already have that exact field name configured at the
+    enterprise level with a type this app cannot see, and a guess that
+    disagrees with it is exactly what produced "invalid UDF data type" on
+    import — the schedule itself was fine, only the guessed DataType wasn't.
+    Text never conflicts: it holds "6" as a string with no type to disagree.
+    """
+    p = _project()
+    apply_command(p, {"action": "update_udf", "activity_id": "A1000",
+                      "field": "Number of Electricians", "value": "6"})
+    field_def = next(u for u in p.udf_types if u.title == "Number of Electricians")
+    assert field_def.data_type == "Text"
+
+
+def test_set_udf_type_corrects_an_existing_field_without_touching_values():
+    """The fix for a field that already exists with the wrong DataType —
+    P6 says what it actually is, and this is how that gets applied without
+    disturbing any activity's value."""
+    p = _project()
+    apply_command(p, {"action": "update_udf", "activity_id": "A1000",
+                      "field": "Crew Size", "value": "6"})
+    ok, msg = apply_command(p, {"action": "set_udf_type", "field": "Crew Size",
+                                "data_type": "Cost"})
+    assert ok, msg
+    field_def = next(u for u in p.udf_types if u.title == "Crew Size")
+    assert field_def.data_type == "Cost"
+    assert p.get_activity(activity_id="A1000").udfs.get("Crew Size") == "6"
+
+
+def test_set_udf_type_refuses_an_unknown_field():
+    p = _project()
+    ok, msg = apply_command(p, {"action": "set_udf_type", "field": "Nope",
+                                "data_type": "Text"})
+    assert not ok and "Nope" in msg
+
+
 def test_udf_survives_export_and_reimport():
     p = _project()
     compute_dates(p)

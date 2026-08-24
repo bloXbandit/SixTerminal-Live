@@ -293,6 +293,8 @@ def apply_command(project: Project, command: Dict[str, Any]) -> Tuple[bool, str]
             return _fill_crew_defaults(project, command)
         elif action == "update_udf":
             return _update_udf(project, command)
+        elif action == "set_udf_type":
+            return _set_udf_type(project, command)
         elif action in ("bulk_rules", "if_then"):
             return _bulk_rules(project, command)
         elif action == "move_activity_wbs":
@@ -2197,11 +2199,18 @@ def _update_udf(project: Project, cmd: Dict) -> Tuple[bool, str]:
     if value and field not in known:
         # A field edited into existence here must also be DEFINED, or the
         # export would carry values referencing a column P6 never heard of.
-        numeric = value.replace(".", "", 1).isdigit()
+        # Always Text, never guessed from the value's shape. P6 itself may
+        # already have this exact field name configured at the enterprise
+        # level with a type this app has no way to see — a schedule that
+        # never carried it before typing "6" into a cell here is not proof
+        # P6 agrees it's numeric. Guessing "Integer" from digits produced
+        # exactly that: P6 rejected the whole field as an "invalid UDF data
+        # type" because its own definition of the field was Text. Text is
+        # never wrong the other way — it holds a number as a string with no
+        # validation on P6's end to conflict with.
         project.udf_types.append(UDFType(
             uid=str(900 + len(project.udf_types)), title=field,
-            subject_area="Activity",
-            data_type="Integer" if numeric else "Text"))
+            subject_area="Activity", data_type="Text"))
 
     for a in matches:
         if value == "":
@@ -2210,6 +2219,29 @@ def _update_udf(project: Project, cmd: Dict) -> Tuple[bool, str]:
             a.udfs[field] = value
     what = f"{field} → {value}" if value else f"cleared {field}"
     return True, f"{what} on {len(matches)} activity/activities"
+
+
+def _set_udf_type(project: Project, cmd: Dict) -> Tuple[bool, str]:
+    """
+    Correct the DataType on an existing UDF definition — e.g. a field this
+    app created by guessing (now always Text) that turns out to need to
+    match what P6 already has on record for that exact field name, such as
+    "invalid UDF data type" on import. Does not touch any value; only the
+    column's declared type.
+    """
+    from engine.xml_writer import normalize_udf_type
+
+    field = (cmd.get("field") or "").strip()
+    if not field:
+        raise EditError("field is required")
+    data_type = normalize_udf_type(cmd.get("data_type") or "")
+    matches = [u for u in (getattr(project, "udf_types", None) or []) if u.title == field]
+    if not matches:
+        raise EditError(f"No UDF field named '{field}' — check the exact title "
+                        f"(see the column header, or the UDFType list).")
+    for u in matches:
+        u.data_type = data_type
+    return True, f"{field} → DataType {data_type}"
 
 
 def _update_labor_units(project: Project, cmd: Dict) -> Tuple[bool, str]:
