@@ -152,6 +152,30 @@ def test_set_and_clear_constraint():
     assert a.constraint_type is None
 
 
+def test_a_batch_that_fails_partway_reports_every_command():
+    """apply_commands stops executing once a command fails — a later command
+    might depend on what the failed one was supposed to create. But it used
+    to also drop the rest of the batch from its return value, and the caller
+    zip()s that against the original command list — so those commands just
+    vanished from what the user was told, instead of showing up as skipped."""
+    p = _make_project()
+    results = apply_commands(p, [
+        {"action": "rename_activity", "activity_id": "A1000", "new_name": "Renamed"},
+        {"action": "rename_activity", "activity_id": "DOES-NOT-EXIST", "new_name": "x"},
+        {"action": "rename_activity", "activity_id": "A1010", "new_name": "Also Renamed"},
+    ])
+    assert len(results) == 3
+    assert results[0][0] is True
+    assert results[1][0] is False
+    ok3, msg3 = results[2]
+    assert ok3 is False
+    assert "not attempted" in msg3
+    # the first command still landed even though the batch stopped
+    assert p.get_activity(activity_id="A1000").name == "Renamed"
+    # the third was never tried — the schedule proves it, not just the message
+    assert p.get_activity(activity_id="A1010").name == "Frame Walls Level 2"
+
+
 if __name__ == "__main__":
     tests = [
         test_rename_activity_by_id, test_rename_activity_by_name,

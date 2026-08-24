@@ -349,13 +349,26 @@ def apply_commands(project: Project, commands: List[Dict[str, Any]]) -> List[Tup
     from engine.schedule_model import compute_dates
     results = []
     any_ok = False
-    for cmd in commands:
+    stopped_at = None
+    for i, cmd in enumerate(commands):
         ok, msg = apply_command(project, cmd)
         results.append((ok, msg))
         if ok:
             any_ok = True
         if not ok:
+            stopped_at = i
             break  # Stop on first failure to avoid cascading bad state
+    if stopped_at is not None and stopped_at + 1 < len(commands):
+        # Commands after the failure are never attempted — one of them may
+        # depend on what the failed command was supposed to create. zip()ing
+        # this against the original command list in the caller used to just
+        # truncate, so the back half of a batch vanished with no explanation:
+        # a request for ten edits would read back as "3 applied" with the
+        # other six never mentioned. Recorded explicitly instead.
+        failed_action = commands[stopped_at].get("action", "?")
+        for cmd in commands[stopped_at + 1:]:
+            results.append((False, f"not attempted — batch stopped after the "
+                            f"'{failed_action}' failure above"))
     if any_ok:
         try:
             compute_dates(project, apply_dates=False)
