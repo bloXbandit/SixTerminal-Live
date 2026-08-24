@@ -18,6 +18,7 @@ import uuid
 import datetime as _dt
 import time
 import tempfile
+import threading
 import traceback
 from pathlib import Path
 from flask import Flask, request, jsonify, send_from_directory, send_file
@@ -455,9 +456,86 @@ _dirty_pids: set = set()          # projects edited since the last cloud flush
 
 
 def _mark_dirty(pid):
-    """Queue a project to be saved to cloud after the request finishes."""
+    """
+    Queue a project to be saved to the cloud. Does NOT block the request.
+
+    This used to add to a set that @after_request drained inline, so the
+    browser waited for the whole save before it saw anything. On a
+    2,776-activity schedule that is 5 seconds of XML serialization and a
+    10MB upload — landing on top of an LLM call the user had already waited
+    30 seconds for, which is how a perfectly successful edit came back as a
+    502 with an empty body.
+
+    The save is real work and still has to happen; it just has no business
+    being between the user and their answer.
+    """
     if pid and cloud_store.is_configured():
-        _dirty_pids.add(pid)
+        with _dirty_lock:
+            _dirty_pids.add(pid)
+        _dirty_wake.set()
+        _ensure_saver()
+
+
+# A burst of edits — the agent applying twelve ties, or a paste — would
+# otherwise serialize and upload the entire schedule once per edit. Waiting a
+# few seconds after the last one collapses that into a single save, which is
+# the difference between one 10MB upload and twelve.
+_SAVE_DEBOUNCE_SECONDS = 3.0
+
+_dirty_lock = threading.Lock()
+_dirty_wake = threading.Event()
+_saver_thread: list = [None]
+
+
+def _saver_loop():
+    while True:
+        _dirty_wake.wait()
+        _dirty_wake.clear()
+        # Anything marked during this pause is already in the set and gets
+        # picked up below; anything marked after the drain re-sets the event
+        # and comes round again.
+        time.sleep(_SAVE_DEBOUNCE_SECONDS)
+        with _dirty_lock:
+            pids = list(_dirty_pids)
+            _dirty_pids.clear()
+        for pid in pids:
+            try:
+                _persist(pid)
+            except Exception:
+                pass          # a failed save must never take the process down
+
+
+def _ensure_saver():
+    """Start the one background saver, once."""
+    if _saver_thread[0] is not None:
+        return
+    with _dirty_lock:
+        if _saver_thread[0] is not None:
+            return
+        t = threading.Thread(target=_saver_loop, name="cloud-saver", daemon=True)
+        _saver_thread[0] = t
+        t.start()
+
+
+def flush_now() -> list:
+    """
+    Save everything outstanding, synchronously.
+
+    For the Save button, where the user is waiting on purpose and wants to be
+    told it worked — and for tests, which cannot wait on a debounce.
+    """
+    with _dirty_lock:
+        pids = list(_dirty_pids)
+        _dirty_pids.clear()
+    done = []
+    for pid in pids:
+        try:
+            ok, _ = _persist(pid)
+            if ok:
+                done.append(pid)
+        except Exception:
+            pass
+    return done
 
 
 def _project_to_xml_bytes(project) -> bytes:
@@ -540,19 +618,9 @@ def _compress(resp):
     return resp
 
 
-@app.after_request
-def _flush_dirty_to_cloud(resp):
-    """Autosave: after any request, persist projects that were edited."""
-    if not _dirty_pids:
-        return resp
-    pids = list(_dirty_pids)
-    _dirty_pids.clear()
-    for pid in pids:
-        try:
-            _persist(pid)
-        except Exception:
-            pass  # never let a cloud save break the response
-    return resp
+# Autosave used to run here, inline, so every response waited for a full
+# serialize-and-upload of the whole schedule. It is a background job now —
+# see _mark_dirty — and nothing is needed on the response path at all.
 
 
 def _restore_from_cloud():
@@ -3158,7 +3226,10 @@ def cloud_save():
     for pid in list(_projects):
         ok, _msg = _persist(pid)
         (saved if ok else failed).append(pid)
-    _dirty_pids.clear()
+    # Everything is on disk now, so anything the background saver was still
+    # holding is redundant. Under the lock, because that thread is live.
+    with _dirty_lock:
+        _dirty_pids.clear()
     if failed:
         return jsonify({"error": f"Saved {len(saved)}, failed {len(failed)}: "
                                  f"{', '.join(failed)}", "saved": saved}), 502
