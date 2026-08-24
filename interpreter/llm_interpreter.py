@@ -654,6 +654,32 @@ set_data_date:
   {"action": "set_data_date", "data_date": "2026-03-02"}
   {"action": "set_data_date", "data_date": "2026-03-02", "also_planned_start": true}
 
+STATUS / ACTUALS TABLE PASTES:
+  The user may paste a block of EXISTING activity rows carrying an "as of"
+  status update — Activity ID, name, and a date with a trailing "A" (P6's
+  actual-date marker), e.g. "MDC1.MIL.1030 Precast Design Complete 0
+  14-Jul-25 A". This is a request to STATUS the matching activities already
+  in the schedule, not to add new ones — never emit add_activity for these
+  rows. For every row whose id matches an activity in SCHEDULE CONTEXT:
+    - A date with a trailing "A" is an ACTUAL. Emit set_progress with that
+      exact date as actual_start/actual_finish (not the row's old planned
+      date) — status "completed" for a milestone or a row showing both an
+      actual start and an actual finish, "in progress" for a row showing
+      only an actual start.
+    - A date with no trailing "A" is still a forecast — leave that row
+      alone. Do not set an actual from it and do not treat it as reached.
+    - If an "A" date is later than the project's current data date, that is
+      inconsistent (an actual cannot be in the future) — skip that row
+      rather than applying it, and say how many you skipped and why.
+    - A line with no id, or an id that matches nothing in the schedule, is a
+      section header ("Milestones", "Milestones (Phase 1)") — ignore it,
+      never invent an activity for it.
+  After statusing every valid row, move the data date to the latest actual
+  date you applied (set_data_date) unless the user says not to, so the
+  schedule reads "as of" the update just given. Report one short summary
+  line: how many activities were actualized, how many were skipped as
+  future-dated, and the new data date — not a line per activity.
+
 copy_activities:
   Copy activities into a folder, carrying the relationships between them.
   Links leaving the selection are not carried.
