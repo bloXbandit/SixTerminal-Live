@@ -619,3 +619,56 @@ def test_edits_that_are_not_ties_are_never_second_guessed():
                             "new_name": "ER 105 QA/QC Inspections and Punch"}],
     }).get_json()
     assert body.get("success")
+
+
+# ── a re-export of the same job keeps what it was taught ─────────────────────
+
+def test_a_reexport_of_the_same_job_keeps_its_brain():
+    """The whole point of keying on P6's project id: rev1.xml and
+    rev2_updated.xml are one job, so the rules taught against the first are
+    still there for the second. Keying on the filename would orphan them
+    within a day."""
+    from engine.project_brain import project_key
+
+    class _P:
+        def __init__(self, pid, name):
+            self.id, self.name, self.uid = pid, name, "1"
+            self.activities, self.wbs_nodes, self.relations = [], [], []
+
+    rev1 = _P("25-1539-INT-1", "MDC1 Exhibit S")
+    rev2 = _P("25-1539-INT-1", "MDC1 Exhibit S")      # re-exported, new file
+    other = _P("99-OTHER-JOB", "Some Other Job")
+
+    assert project_key(rev1) == project_key(rev2)
+    assert project_key(other) != project_key(rev1)
+
+
+def test_the_key_survives_a_project_rename():
+    """P6's Id is what is keyed, so renaming the project in P6 does not
+    orphan the brain — only changing the Id itself would."""
+    from engine.project_brain import project_key
+
+    class _P:
+        def __init__(self, pid, name):
+            self.id, self.name, self.uid = pid, name, "1"
+
+    assert project_key(_P("25-1539-INT-1", "MDC1 Exhibit S")) == \
+           project_key(_P("25-1539-INT-1", "MDC1 — Rev 4 FINAL"))
+
+
+def test_regrounding_retests_rules_against_the_new_schedule():
+    """A rule's match count was true when it was taught. A re-upload is
+    precisely when the schedule has moved on, so the counts must be redone
+    or a rule goes on claiming matches against activities that are gone."""
+    p = _proj()
+    _act(p, "g1", "Set Generator", "2026-02-02", "2026-02-06")
+    _act(p, "w1", "Pull Wire", "2026-02-09", "2026-02-13")
+    b = pb.Brain("k")
+    d = b.add("Set Generator before Pull Wire", p)
+    before = (d.kind, d.matched_after, d.matched_subject)
+    # strip the schedule back to nothing and reground
+    p.activities = []
+    p.build_lookups()
+    b.reground(p)
+    after = (d.kind, d.matched_after, d.matched_subject)
+    assert after != before, "the rule still claims matches that no longer exist"

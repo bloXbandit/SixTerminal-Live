@@ -782,11 +782,31 @@ def upload_file():
         _projects[pid]      = sess
         _active_id[0]       = pid
         _mark_dirty(pid)
+
+        # A re-export of a job already known here keeps what was taught about
+        # it — brains are keyed on P6's own project id, not the filename, so
+        # rev1.xml and rev2.xml are one job. Re-test those rules against the
+        # file that just arrived: the counts were true when the rule was
+        # taught, and the whole reason for re-uploading is that the schedule
+        # has moved on. Without this a rule went on claiming twelve matches
+        # against activities the new export may have renamed or dropped.
+        carried = ""
+        brain = _brain_for(project)
+        if not brain.is_empty():
+            try:
+                brain.reground(project)
+            except Exception:
+                pass
+            n = len(brain.rules)
+            detail = f" ({n} rule{'s' if n != 1 else ''})" if n else ""
+            carried = f" Carried over what you taught me about this job{detail}."
+
         _append_chat("user", f"[uploaded schedule: {filename}]")
         _append_chat("assistant",
                      f"Loaded {project.name} — {len(project.activities)} activities, "
                      f"{len(project.wbs_nodes)} folders, {len(project.relations)} ties"
-                     + (f", data date {str(project.data_date)[:10]}." if project.data_date else "."))
+                     + (f", data date {str(project.data_date)[:10]}." if project.data_date else ".")
+                     + carried)
 
         return jsonify({
             "success":        True,
