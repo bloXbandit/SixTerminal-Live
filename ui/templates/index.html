@@ -4049,6 +4049,7 @@ async function switchProject(pid) {
     // left the PREVIOUS project's rows on screen until a manual refresh.
     resetEditState();
     collapsedWbs.clear();
+    _pendingDefaultFold = true;   // new project → open folded
     scheduleStale = false;
     document.getElementById('sched-stale-notice').classList.remove('show');
     await loadSchedule();
@@ -4257,6 +4258,7 @@ function onProjectLoaded(d) {
   document.getElementById('sched-stale-notice').classList.remove('show');
   resetEditState();
   collapsedWbs.clear();
+  _pendingDefaultFold = true;   // new schedule → open folded
   loadSchedule();
 }
 
@@ -4427,6 +4429,30 @@ const SCHED_COLS = {
 };
 // Track collapsed WBS sections
 const collapsedWbs = new Set();
+
+// A freshly loaded schedule opens folded to its top-level folders rather than
+// fully spread out. On a job with a few hundred folders, "everything open" is
+// a wall of rows you have to scroll past before you have clicked anything.
+// Set only where a NEW schedule is loaded — never on the re-render after an
+// edit, which would throw away the folders the user had opened. Starts true
+// so the first render of the session folds too.
+let _pendingDefaultFold = true;
+
+/**
+ * Fold a newly loaded tree down to its top-level folders.
+ *
+ * EVERY folder is shut, not just the deep ones. Leaving the top level open
+ * would mean the first click on a top folder CLOSES it — the opposite of what
+ * someone reaching for a folder wants — and its children would already be on
+ * screen anyway. Shut, the roots are the only rows showing and the first
+ * click opens one level, which is the whole point.
+ */
+function applyDefaultFold(){
+  const secs = lastSchedData?.wbs_sections || [];
+  if(secs.length < 2) return;                 // nothing worth folding
+  collapsedWbs.clear();
+  secs.forEach(w => collapsedWbs.add(w.uid));
+}
 // ── Direct-edit state ──
 let isEditMode   = false;
 let lastSchedData = null;         // last /api/schedule payload (for WBS lists)
@@ -4486,6 +4512,7 @@ async function loadSchedule() {
 
 function renderSchedule(data) {
   lastSchedData = data;
+  if(_pendingDefaultFold){ applyDefaultFold(); _pendingDefaultFold = false; }
   const tbody = document.getElementById('sched-tbody');
   const rows = [];
   for (const wbs of data.wbs_sections) {
@@ -5010,7 +5037,27 @@ function wbsNameOf(uid){
  * work and moves it up, the other throws it away.
  */
 async function deleteSelectedWbs(){
-  const uids = [...selectedWbs];
+  // Only the OUTERMOST of the selected folders get a command. Deleting a
+  // folder takes its sub-folders with it, so a selection holding both a
+  // parent and its child sent a second command for a folder that no longer
+  // existed: it failed with "WBS folder not found", the engine stops a batch
+  // at the first failure, and every folder after it was never deleted at all
+  // — while the toast blamed a folder the user had watched disappear.
+  const outermost = (() => {
+    const byUid = {};
+    (lastSchedData?.wbs_sections || []).forEach(w => byUid[w.uid] = w);
+    const insideAnotherSelection = (uid) => {
+      let cur = byUid[uid]?.parent_uid, guard = 0;
+      while(cur && guard++ < 200){
+        if(selectedWbs.has(cur)) return true;
+        cur = byUid[cur]?.parent_uid;
+      }
+      return false;
+    };
+    return [...selectedWbs].filter(u => !insideAnotherSelection(u));
+  })();
+
+  const uids = outermost;
   if(!uids.length){ flashSched('Select a folder first', true); return; }
 
   // count what is actually at stake, including everything nested
@@ -5192,8 +5239,74 @@ function endWbsDrag(){
   document.getElementById('wbs-root-drop')?.classList.remove('over');
 }
 
+/** Direct child folders of a uid, in tree order. */
+function childFoldersOf(uid){
+  return (lastSchedData?.wbs_sections || []).filter(w => w.parent_uid === uid);
+}
+
+/** Every descendant folder uid of `uid` (not including uid itself). */
+function descendantFolderUids(uid){
+  const kids = {};
+  (lastSchedData?.wbs_sections || []).forEach(w =>
+    (kids[w.parent_uid] = kids[w.parent_uid] || []).push(w.uid));
+  const out = [], stack = [...(kids[uid] || [])];
+  let guard = 0;
+  while(stack.length && guard++ < 20000){
+    const u = stack.pop();
+    out.push(u);
+    (kids[u] || []).forEach(c => stack.push(c));
+  }
+  return out;
+}
+
+/**
+ * Open a folder ONE level — its direct children appear, still folded.
+ *
+ * Collapsing only tracks what is explicitly shut, so a child that had never
+ * been collapsed sprang open the moment its parent did, and one click could
+ * spill four levels at once. Folding the direct children on every expand
+ * keeps that from happening, and because expanding one of THEM folds its own
+ * children in turn, the rule holds all the way down: you always descend a
+ * level at a time, and nothing outside the folder you clicked moves.
+ */
+function expandOneLevel(uid){
+  collapsedWbs.delete(uid);
+  childFoldersOf(uid).forEach(c => collapsedWbs.add(c.uid));
+}
+
+/** Open a folder and everything under it. */
+function expandBranch(uid){
+  collapsedWbs.delete(uid);
+  descendantFolderUids(uid).forEach(u => collapsedWbs.delete(u));
+  applyWbsVisibility();
+}
+
+/** Shut a folder and everything under it. */
+function collapseBranch(uid){
+  collapsedWbs.add(uid);
+  descendantFolderUids(uid).forEach(u => collapsedWbs.add(u));
+  applyWbsVisibility();
+}
+
+/**
+ * Show this branch and nothing else — every other folder shuts.
+ * The ancestors stay open so the branch is still reachable on screen.
+ */
+function focusBranch(uid){
+  const byUid = {};
+  (lastSchedData?.wbs_sections || []).forEach(w => byUid[w.uid] = w);
+  (lastSchedData?.wbs_sections || []).forEach(w => collapsedWbs.add(w.uid));
+  let cur = uid, guard = 0;
+  while(cur && guard++ < 200){                 // open the path down to it
+    collapsedWbs.delete(cur);
+    cur = byUid[cur]?.parent_uid;
+  }
+  expandOneLevel(uid);
+  applyWbsVisibility();
+}
+
 function toggleWbs(uid) {
-  if (collapsedWbs.has(uid)) collapsedWbs.delete(uid);
+  if (collapsedWbs.has(uid)) expandOneLevel(uid);
   else collapsedWbs.add(uid);
   applyWbsVisibility();
 }
@@ -7289,7 +7402,17 @@ function onSchedContextMenu(e){
   const pasteVerb = isCut ? 'Move' : 'Paste';
   const pasteIcon = isCut ? '✂' : '⎘';
 
+  const _wbsUid = tr.dataset.wbsuid;
+  const _hasKids = isWbs && childFoldersOf(_wbsUid).length > 0;
+
   const items = isWbs ? [
+    ...(_hasKids ? [
+      ['▸ Expand one level',   () => { expandOneLevel(_wbsUid); applyWbsVisibility(); }],
+      ['▾ Expand whole branch', () => expandBranch(_wbsUid)],
+      ['▪ Collapse branch',     () => collapseBranch(_wbsUid)],
+      ['◎ Show only this branch', () => focusBranch(_wbsUid)],
+      ['---'],
+    ] : []),
     ...(cutFolders ? [
       [`✂ Move ${cutFolders === 1 ? `"${_clipWbs.names[0]}"` : cutFolders + ' folders'} in here`,
        () => moveCutWbsInto(tr.dataset.wbsuid)],

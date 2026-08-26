@@ -163,3 +163,76 @@ def test_rename_hits_only_the_chosen_folder_among_identical_names():
     assert by_uid["r2"] == "MV Rooms (Phase 2)"
     assert by_uid["r1"] == "MV Rooms"
     assert by_uid["r3"] == "MV Rooms"
+
+
+# ── deleting a parent takes its children with it ─────────────────────────────
+#
+# Reported as "requests sometimes run through but don't execute". Selecting a
+# parent folder AND one of its children sent a delete command for each. The
+# parent's delete cascades and removes the child, so the child's own command
+# then failed with "WBS folder not found" — and because a batch stops at the
+# first failure, every folder selected AFTER it was never deleted, while the
+# error named a folder the user had just watched disappear. The grid now sends
+# only the outermost selected folders; this pins the engine behaviour that
+# makes that the right fix.
+
+def _nested():
+    p = Project(uid="1", name="T", id="T")
+    p.calendars = [Calendar(uid="1", name="S")]
+    p.wbs_nodes = [
+        WBSNode(uid="P", name="Parent", code="P"),
+        WBSNode(uid="C", name="Child", code="C", parent_uid="P"),
+        WBSNode(uid="O", name="Other", code="O"),
+    ]
+    p.activities = [
+        Activity(uid=str(i), activity_id=f"A{i}", name=f"a{i}", wbs_uid=w,
+                 calendar_uid="1", planned_duration=8, remaining_duration=8,
+                 status="Not Started")
+        for i, w in [(1, "P"), (2, "C"), (3, "O")]]
+    p.build_lookups()
+    return p
+
+
+def test_deleting_a_parent_removes_its_subfolders_and_their_activities():
+    p = _nested()
+    ok, msg = apply_command(p, {"action": "delete_wbs", "wbs_uid": "P",
+                                "delete_contents": True})
+    assert ok, msg
+    assert {w.uid for w in p.wbs_nodes} == {"O"}
+    assert {a.activity_id for a in p.activities} == {"A3"}
+
+
+def test_deleting_the_child_after_its_parent_is_a_failure_not_a_silent_pass():
+    """Which is correct — a uid that names nothing must not report success.
+    It is the grid's job not to ask for it, and it no longer does."""
+    p = _nested()
+    results = apply_commands(p, [
+        {"action": "delete_wbs", "wbs_uid": "P", "delete_contents": True},
+        {"action": "delete_wbs", "wbs_uid": "C", "delete_contents": True},
+        {"action": "delete_wbs", "wbs_uid": "O", "delete_contents": True},
+    ])
+    assert results[0][0] is True
+    assert results[1][0] is False and "not found" in results[1][1].lower()
+    # the third never ran — and says so rather than vanishing from the report
+    assert results[2][0] is False and "not attempted" in results[2][1]
+    assert {w.uid for w in p.wbs_nodes} == {"O"}, "'Other' was never deleted"
+
+
+def test_deleting_only_the_outermost_folders_removes_everything_cleanly():
+    """What the grid sends now: the parent alone, not parent + child."""
+    p = _nested()
+    results = apply_commands(p, [
+        {"action": "delete_wbs", "wbs_uid": "P", "delete_contents": True},
+        {"action": "delete_wbs", "wbs_uid": "O", "delete_contents": True},
+    ])
+    assert all(ok for ok, _ in results), results
+    assert not p.wbs_nodes and not p.activities
+
+
+def test_keeping_the_activities_moves_them_up_instead_of_deleting_them():
+    """The dialog promises this, so it has to be true."""
+    p = _nested()
+    ok, msg = apply_command(p, {"action": "delete_wbs", "wbs_uid": "C",
+                                "delete_contents": False})
+    assert ok, msg
+    assert p.get_activity(activity_id="A2").wbs_uid == "P"
