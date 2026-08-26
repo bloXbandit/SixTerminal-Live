@@ -672,3 +672,86 @@ def test_regrounding_retests_rules_against_the_new_schedule():
     b.reground(p)
     after = (d.kind, d.matched_after, d.matched_subject)
     assert after != before, "the rule still claims matches that no longer exist"
+
+
+# ── the agent can report what it actually knows ──────────────────────────────
+#
+# The block riding in the prompt is capped at 30 a section and ends with
+# "…and N more (ask to see them all)" — but nothing could answer that, and
+# the parts deliberately kept OUT of the prompt (how proposals landed, what
+# documents exist) were invisible however the user asked. describe_brain is
+# read-only and reports the lot, off the real objects.
+
+def _brain_project():
+    p = _proj()
+    _act(p, "g1", "Set Generator 318", "2026-02-02", "2026-02-06")
+    _act(p, "w1", "Pull Wire MV 318", "2026-02-09", "2026-02-13")
+    return p
+
+
+def _with_brain(brain):
+    from engine import edit_engine as ee
+    ee.set_brain_lookup(lambda proj: brain)
+    return ee
+
+
+def test_describe_brain_changes_nothing():
+    from engine import edit_engine as ee
+    assert ee.is_advisory("describe_brain"), (
+        "it must be counted as a report, or the turn claims edits it never made")
+
+
+def test_it_reports_the_real_rules_not_a_sample():
+    p = _brain_project()
+    b = pb.Brain("k")
+    b.add("Set Generator 318 before Pull Wire MV 318", p)
+    ee = _with_brain(b)
+    ok, msg = ee.apply_command(p, {"action": "describe_brain"})
+    assert ok
+    assert "Set Generator 318 before Pull Wire MV 318" in msg
+
+
+def test_it_reports_past_every_prompt_cap():
+    """The exact thing the capped block says to ask for."""
+    p = _brain_project()
+    b = pb.Brain("k")
+    for i in range(pb.Brain._CAP + 12):
+        b.add(f"Note number {i} about this job", p)
+    ee = _with_brain(b)
+    _, msg = ee.apply_command(p, {"action": "describe_brain"})
+    assert f"Note number {pb.Brain._CAP + 11} about this job" in msg, (
+        "it stopped at the prompt cap — the one thing this action exists to do")
+    assert "ask to see them all" not in msg
+
+
+def test_it_surfaces_what_the_prompt_never_carries():
+    p = _brain_project()
+    b = pb.Brain("k")
+    b.add("Set Generator 318 before Pull Wire MV 318", p)
+    b.feedback = {"term->qaqc": {"accepted": 7, "declined": 1}}
+    ee = _with_brain(b)
+    _, msg = ee.apply_command(p, {"action": "describe_brain"})
+    assert "7 accepted" in msg and "1 declined" in msg
+
+
+def test_an_untaught_job_says_so_plainly():
+    """Rather than an empty heading the agent would pad into a fake summary."""
+    p = _brain_project()
+    ee = _with_brain(pb.Brain("fresh"))
+    ok, msg = ee.apply_command(p, {"action": "describe_brain"})
+    assert ok and "Nothing has been taught" in msg
+
+
+def test_enforced_and_unenforced_are_not_mixed_together():
+    """A note quoted as a binding rule is the failure this separation exists
+    to prevent."""
+    p = _brain_project()
+    b = pb.Brain("k")
+    b.add("Set Generator 318 before Pull Wire MV 318", p)   # grounds -> rule
+    b.add("The GC controls the loading dock on Fridays", p)  # nothing to match
+    ee = _with_brain(b)
+    _, msg = ee.apply_command(p, {"action": "describe_brain"})
+    rules_at = msg.index("RULES — ENFORCED")
+    ctx_at = msg.index("CONTEXT — not enforced")
+    assert msg.index("Set Generator 318 before") > rules_at
+    assert msg.index("loading dock") > ctx_at

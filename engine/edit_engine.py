@@ -227,7 +227,7 @@ def _would_create_cycle(project: Project, pred_uid: str, succ_uid: str) -> bool:
 # so counting one as "an edit applied" is how the tool ends up announcing
 # "Applied 5 edits" after running five reports — and how the agent, reading
 # that same record back, tells the user it wired logic it never wired.
-ADVISORY_ACTIONS = frozenset({"recommend_logic", "read_document"})
+ADVISORY_ACTIONS = frozenset({"recommend_logic", "read_document", "describe_brain"})
 
 
 def is_advisory(action: str) -> bool:
@@ -295,6 +295,8 @@ def apply_command(project: Project, command: Dict[str, Any]) -> Tuple[bool, str]
             return _update_udf(project, command)
         elif action == "set_udf_type":
             return _set_udf_type(project, command)
+        elif action in ("describe_brain", "what_do_you_know"):
+            return _describe_brain(project, command)
         elif action in ("bulk_rules", "if_then"):
             return _bulk_rules(project, command)
         elif action == "move_activity_wbs":
@@ -2997,6 +2999,88 @@ def set_brain_lookup(fn) -> None:
     """Called once at startup by the server. Tests can point it elsewhere."""
     global _BRAIN_FOR
     _BRAIN_FOR = fn
+
+
+def _describe_brain(project: Project, cmd: Dict) -> Tuple[bool, str]:
+    """
+    Everything this job has been taught, in full — read-only.
+
+    The block that rides in every prompt is capped at thirty per section and
+    ends with "…and N more (ask to see them all)", but nothing could actually
+    answer that: there was no way to see the rest, and the parts deliberately
+    kept out of the prompt entirely — how proposals have been received, what
+    each document actually is — were invisible to the agent no matter what
+    the user asked. This reports the lot, off the real objects rather than
+    from anything remembered, so a summary of "what do you know about my job"
+    is grounded in what is actually stored.
+    """
+    from engine.project_brain import describe as _describe
+
+    brain = _BRAIN_FOR(project) if _BRAIN_FOR else None
+    if brain is None or brain.is_empty():
+        return True, ("Nothing has been taught about this job yet — no rules, no "
+                      "objective, no documents. Anything you tell me about how it "
+                      "is built I keep against the P6 project id, so it survives "
+                      "the next re-export.")
+
+    out = [f"WHAT I KNOW ABOUT THIS JOB ({brain.key}) — everything stored, "
+           f"not a sample:"]
+
+    obj = brain.objective_line(project)
+    if obj:
+        out.append(f"\nOBJECTIVE (measured off the schedule now):\n  {obj}")
+
+    rules = brain.rules
+    if rules:
+        out.append(f"\nRULES — ENFORCED ({len(rules)}):")
+        for d in rules:
+            bits = [_describe(d)]
+            if d.overridden or d.upheld:
+                bits.append(f"overridden {d.overridden}x, kept {d.upheld}x")
+            out.append(f"  - {d.text}   [{'; '.join(bits)}]")
+
+    notes = brain.notes
+    if notes:
+        out.append(f"\nCONTEXT — not enforced ({len(notes)}):")
+        out.extend(f"  - {d.text}" for d in notes)
+
+    openq = brain.open_questions
+    if openq:
+        out.append(f"\nOPEN — stated but matched to no activity ({len(openq)}). "
+                   f"These are NOT in force:")
+        out.extend(f"  - {d.text}   [{d.note_reason}]" for d in openq)
+
+    disabled = [d for d in brain.directives if not d.enabled]
+    if disabled:
+        out.append(f"\nTURNED OFF ({len(disabled)}):")
+        out.extend(f"  - {d.text}" for d in disabled)
+
+    scope = getattr(brain, "scope", None)
+    if scope is not None:
+        try:
+            out.append("\nSCOPE OF WORK (read from a document):\n"
+                       + scope.context_block())
+        except Exception:
+            pass
+
+    library = getattr(brain, "library", None)
+    docs = list(getattr(library, "docs", None) or []) if library else []
+    if docs:
+        out.append(f"\nDOCUMENTS ON FILE ({len(docs)}) — ask me to read any of "
+                   f"these by name:")
+        for d in docs:
+            kind = getattr(d, "kind", "") or "document"
+            out.append(f"  - {getattr(d, 'name', '?')} ({kind})")
+
+    fb = getattr(brain, "feedback", None) or {}
+    if fb:
+        acc = sum(v.get("accepted", 0) for v in fb.values())
+        dec = sum(v.get("declined", 0) for v in fb.values())
+        out.append(f"\nHOW MY SUGGESTIONS HAVE LANDED: {acc} accepted, "
+                   f"{dec} declined, across {len(fb)} kind(s) of proposal. "
+                   f"This steers ranking; it is not a rule.")
+
+    return True, "\n".join(out)
 
 
 def _normalize_activity_ids(project: Project, cmd: Dict) -> Tuple[bool, str]:

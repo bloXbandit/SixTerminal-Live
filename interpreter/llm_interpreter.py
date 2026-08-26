@@ -786,6 +786,21 @@ update_udf:
   {"action": "update_udf", "activity_id": "A1000", "value": "6"}
   {"action": "update_udf", "activity_id": "A1000", "field": "Number of Electricians", "value": "6"}
 
+describe_brain:
+  Everything this job has been taught, in full — read-only, changes nothing.
+  What rides in your prompt each turn is CAPPED at 30 per section and ends
+  with "…and N more (ask to see them all)"; this is how you see them all. It
+  also carries what never reaches the prompt at all: how your past proposals
+  were received, and what documents are on file.
+  Use it whenever the user asks what you know about the job, what rules are
+  in force, why you keep doing something, or for a summary of the job's
+  setup — and ALWAYS use it rather than reciting from memory or from the
+  capped block, which will silently under-report on a job with many rules.
+  Answer from what it returns: quote the real rules and counts, name the real
+  documents, and say plainly when a section is empty. Never invent a rule
+  that is not in the output.
+    {"action": "describe_brain"}
+
 set_udf_type:
   Correct the DataType on a UDF that already exists in the schedule — never
   invented values, never touches which activities have it. Use when the
