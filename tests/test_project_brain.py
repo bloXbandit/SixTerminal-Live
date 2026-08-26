@@ -755,3 +755,75 @@ def test_enforced_and_unenforced_are_not_mixed_together():
     ctx_at = msg.index("CONTEXT — not enforced")
     assert msg.index("Set Generator 318 before") > rules_at
     assert msg.index("loading dock") > ctx_at
+
+
+# ── the cap must keep the NEWEST, not the oldest ─────────────────────────────
+#
+# The prompt block is bounded so it cannot grow without limit, but it sliced
+# from the front — keeping the first thirty taught and dropping everything
+# after. So the things most recently taught, which are the likeliest to bear
+# on what is being worked on right now, were the first to fall out of view.
+
+def test_the_newest_notes_survive_the_prompt_cap():
+    p = _proj()
+    b = pb.Brain("k")
+    for i in range(pb.Brain._CAP + 5):
+        b.add(f"Note {i:02d} about the job", p)
+    blk = b.context_block(p)
+    assert "Note 00" not in blk, "the oldest note squeezed out a newer one"
+    assert f"Note {pb.Brain._CAP + 4:02d}" in blk, (
+        "the most recently taught note is missing — the one most likely to matter")
+
+
+def test_the_omitted_count_is_honest_and_points_somewhere_useful():
+    p = _proj()
+    b = pb.Brain("k")
+    for i in range(pb.Brain._CAP + 5):
+        b.add(f"Note {i:02d} about the job", p)
+    blk = b.context_block(p)
+    assert "5 older one(s) not shown" in blk
+    assert "describe_brain" in blk, "it must say how to see the rest"
+
+
+def test_notes_stay_in_the_order_they_were_taught():
+    """A sequence read back out of order is a different sequence."""
+    p = _proj()
+    b = pb.Brain("k")
+    for i in range(pb.Brain._CAP + 5):
+        b.add(f"Note {i:02d} about the job", p)
+    blk = b.context_block(p)
+    seen = [blk.index(f"Note {i:02d}") for i in range(5, pb.Brain._CAP + 5)]
+    assert seen == sorted(seen)
+
+
+def test_rules_are_capped_separately_from_notes():
+    """Chat about the job must not push an enforced rule out of view."""
+    p = _rooms()
+    b = pb.Brain("k")
+    b.add("ER 105 Terminations before ER 105 QA/QC Inspections", p)
+    for i in range(pb.Brain._CAP + 10):
+        b.add(f"Filler note {i}", p)
+    assert "ER 105 Terminations before" in b.context_block(p)
+
+
+def test_a_rule_is_still_enforced_when_it_drops_out_of_the_prompt():
+    """The ranker scores against the stored directives, not the prompt text.
+    Falling off the block costs recall, never enforcement — which is why the
+    cap is safe to have at all."""
+    from engine.logic_advisor import _Ctx, score_tie
+
+    # A pair that does NOT already saturate — a textbook same-room
+    # Terminations -> QA/QC handoff scores 1.0 on its own, leaving no room to
+    # see the rule's effect at all.
+    p = _proj()
+    pred = _act(p, "g1", "Set Generator 318", "2026-02-02", "2026-02-06")
+    succ = _act(p, "w1", "Pull Wire MV 318", "2026-02-09", "2026-02-13")
+
+    plain = pb.Brain("k")
+    taught = pb.Brain("k")
+    taught.add("Set Generator 318 before Pull Wire MV 318", p)
+
+    base, _ = score_tie(_Ctx(p, directives=plain.directives), pred, succ, 0)
+    with_rule, why = score_tie(_Ctx(p, directives=taught.directives), pred, succ, 0)
+    assert with_rule > base, "the taught rule did not affect the ranking at all"
+    assert any("you said" in w.lower() for w in why)

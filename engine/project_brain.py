@@ -944,12 +944,26 @@ class Brain:
             return ""
 
         def section(title, items, fmt):
+            """
+            The MOST RECENT items survive the cap, not the first ones taught.
+
+            Slicing from the front kept the oldest thirty and dropped whatever
+            came after — so the things just taught, which are the likeliest to
+            bear on what is being worked on right now, were the first to fall
+            out of view. Rules are still ENFORCED when they drop out (the tie
+            ranker scores against the stored objects, not this text); what was
+            lost was the agent's ability to recall or explain them, which is
+            most of what the block is for. Order within the section is kept as
+            taught, so a sequence still reads in order.
+            """
             if not items:
                 return []
             out = [title]
-            out.extend(fmt(d) for d in items[:self._CAP])
+            shown = items[-self._CAP:] if len(items) > self._CAP else items
+            out.extend(fmt(d) for d in shown)
             if len(items) > self._CAP:
-                out.append(f"  …and {len(items) - self._CAP} more (ask to see them all)")
+                out.append(f"  …and {len(items) - self._CAP} older one(s) not shown "
+                           f"— run describe_brain to see every one")
             return out
 
         lines = [""]
