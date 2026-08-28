@@ -386,6 +386,105 @@ def test_a_schedule_that_would_change_nothing_says_so():
     assert "would move nothing" in sp.report(p)
 
 
+# ── rescheduling to a date the job has not been statused to ──────────────────
+# "Can I choose a future date to reschedule to?" — yes, in two forms. The
+# preview asks where the job would land and commits nothing; the run moves
+# the project's data date for real, which is what P6 does. The distinction
+# only holds if the preview genuinely never writes.
+
+def test_a_preview_as_of_a_future_date_pushes_work_out():
+    from engine import schedule_preview as sp
+    p = _one_task(frozenset({MON, TUE, WED, THU, FRI, SAT}), 10)
+    d = sp.analyse(p, "2026-06-01")
+    assert d["data_date"] == "2026-06-01"
+    assert d["movers"][0]["to"] >= "2026-06-01"
+
+
+def test_a_preview_as_of_a_future_date_still_writes_nothing():
+    """The whole basis for offering it: you can ask about any date safely."""
+    from engine import schedule_preview as sp
+    p = _one_task(frozenset({MON, TUE, WED, THU, FRI, SAT}), 10)
+    before = [(a.uid, a.planned_start, a.planned_finish) for a in p.activities]
+    sp.analyse(p, "2027-06-01")
+    sp.report(p, data_date="2027-06-01")
+    assert p.data_date == "2026-01-05"
+    assert [(a.uid, a.planned_start, a.planned_finish)
+            for a in p.activities] == before
+
+
+def test_the_preview_says_the_date_is_not_the_projects_own():
+    from engine import schedule_preview as sp
+    p = _one_task(frozenset({MON, TUE, WED, THU, FRI, SAT}), 10)
+    txt = sp.report(p, data_date="2026-06-01")
+    assert "PREVIEW AS OF 2026-06-01" in txt and "2026-01-05" in txt
+
+
+def test_a_bad_preview_date_is_refused():
+    from engine import schedule_preview as sp
+    p = _one_task(frozenset({MON, TUE, WED, THU, FRI, SAT}), 10)
+    assert "Not a valid date" in sp.analyse(p, "next june")["error"]
+    assert "Not a valid date" in sp.report(p, data_date="next june")
+
+
+def test_the_preview_endpoint_takes_a_date():
+    c = _client_with(_TWO_TASKS)
+    d = c.get("/api/schedule/preview?data_date=2026-06-01").get_json()
+    assert d["success"] and d["data_date"] == "2026-06-01"
+    p = server._projects[server._active_id[0]]["project"]
+    assert str(p.data_date)[:10] == "2026-01-05", "a preview moved the data date"
+
+
+def test_rescheduling_to_a_future_date_moves_the_data_date_and_the_work():
+    c = _client_with(_TWO_TASKS)
+    r = c.post("/api/schedule/run", json={"data_date": "2026-06-01"}).get_json()
+    assert r["success"] and r["data_date"] == "2026-06-01"
+    assert r["data_date_moved"] and r["data_date_before"] == "2026-01-05"
+    p = server._projects[server._active_id[0]]["project"]
+    for a in p.activities:
+        assert a.planned_start >= "2026-06-01", (
+            f"{a.activity_id} was left behind the new data date")
+
+
+def test_a_run_that_does_not_move_the_data_date_says_so():
+    c = _client_with(_TWO_TASKS)
+    r = c.post("/api/schedule/run", json={}).get_json()
+    assert r["data_date_moved"] is False
+
+
+def test_rescheduling_to_a_future_date_is_revertable():
+    """It is a real change to the whole job, so undo has to put back the data
+    date as well as the dates it drove."""
+    c = _client_with(_TWO_TASKS)
+    p = server._projects[server._active_id[0]]["project"]
+    before = {a.activity_id: a.planned_start for a in p.activities}
+    c.post("/api/schedule/run", json={"data_date": "2026-06-01"})
+    c.post("/api/undo", json={})
+    p = server._projects[server._active_id[0]]["project"]
+    assert str(p.data_date)[:10] == "2026-01-05"
+    assert {a.activity_id: a.planned_start for a in p.activities} == before
+
+
+def test_a_bad_reschedule_date_is_refused_before_anything_moves():
+    c = _client_with(_TWO_TASKS)
+    p = server._projects[server._active_id[0]]["project"]
+    before = {a.activity_id: a.planned_start for a in p.activities}
+    r = c.post("/api/schedule/run", json={"data_date": "june"})
+    assert r.status_code == 400 and "Not a valid date" in r.get_json()["error"]
+    p = server._projects[server._active_id[0]]["project"]
+    assert str(p.data_date)[:10] == "2026-01-05"
+    assert {a.activity_id: a.planned_start for a in p.activities} == before
+
+
+def test_the_log_records_that_the_data_date_was_moved():
+    """Otherwise the log shows an unexplained jump and the run that caused it
+    looks like a routine reflow."""
+    c = _client_with(_TWO_TASKS)
+    c.post("/api/schedule/run", json={"data_date": "2026-06-01"})
+    run = c.get("/api/schedule/log").get_json()["runs"][0]
+    assert run["data_date_moved"] and run["data_date_before"] == "2026-01-05"
+    assert run["data_date"] == "2026-06-01"
+
+
 def test_the_preview_endpoint_changes_nothing():
     c = _client_with(_TWO_TASKS)
     p = server._projects[server._active_id[0]]["project"]

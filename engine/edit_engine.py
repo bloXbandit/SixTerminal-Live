@@ -2690,16 +2690,23 @@ def _ripple(project: Project, cmd: Dict, apply_it: bool) -> Tuple[bool, str]:
                 "planned_finish", "duration_days", "status")
                if cmd.get(k) is not None}
     back = bool(cmd.get("include_predecessors"))
+    # "Where does this path land if we are standing on 1 March" — a projection
+    # date for the trial. It never moves the project's own data date; that is
+    # a whole-job property and the Schedule button owns it.
+    as_of = cmd.get("data_date") or cmd.get("as_of")
 
     if not apply_it:
-        return True, _rp.report(project, aid, changes, back)
+        return True, _rp.report(project, aid, changes, back, data_date=as_of)
 
-    r = _rp.apply_ripple(project, aid, changes, back)
+    r = _rp.apply_ripple(project, aid, changes, back, data_date=as_of)
     if r.get("error"):
         raise EditError(r["error"])
     msg = [f"Rippled from {r['activity_id']} — {r['moved_on_path']} activity"
            f"{'' if r['moved_on_path'] == 1 else 'ies'} on its path moved "
            f"({r['written']} rows written)."]
+    if r.get("as_of_override"):
+        msg.append(f"  Projected as of {r['as_of']}. The project data date "
+                   f"({r['project_data_date'] or 'not set'}) was left alone.")
     if r["would_move_off_path"]:
         msg.append(f"  {r['would_move_off_path']} elsewhere were left alone — "
                    f"they would only have moved because a full Schedule run "

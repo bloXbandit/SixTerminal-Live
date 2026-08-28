@@ -2164,6 +2164,10 @@
               <button class="tb-chip" onclick="showScheduleLog()" title="Every time Schedule was run this session, and what each run moved">⏱ Schedule log</button>
             </div>
             <div class="tb-row">
+              <button class="tb-chip" onclick="previewScheduleAsOf()" title="Where the job lands if you status it to a future date — commits nothing">◔ Preview as of date…</button>
+              <button class="tb-chip" onclick="runScheduleAsOf()" title="Move the data date to a future date and reschedule — a real change, undoable">⏩ Reschedule as of date…</button>
+            </div>
+            <div class="tb-row">
               <span class="tb-row-label">Show levels</span>
               <button class="tb-chip" onclick="collapseToLevel(1)" title="Top-level folders only">1</button>
               <button class="tb-chip" onclick="collapseToLevel(2)" title="Two levels">2</button>
@@ -3973,7 +3977,16 @@ async function setCalendar(name) {
 // ═══════════════════════════════════════════════════
 //  Run the scheduler (CPM) — the P6 "F9" action
 // ═══════════════════════════════════════════════════
-async function runSchedule() {
+/**
+ * Run the CPM.
+ *
+ * `asOf` reschedules to a data date the job has not been statused to yet —
+ * the P6 "move the data date and press F9" move. It is a real change to the
+ * project, not a what-if: remaining work cannot be scheduled before the data
+ * date, so moving it forward pushes not-started work out. Undo reverts it,
+ * and "Preview as of…" answers the same question without committing.
+ */
+async function runSchedule(asOf) {
   if (!lastSchedData) { flashSched('Load a schedule first', true); return; }
 
   // Count logic coverage from what's on screen. An activity with no links at
@@ -4000,9 +4013,11 @@ async function runSchedule() {
   const label = btn ? btn.innerHTML : '';
   if (btn) { btn.disabled = true; btn.textContent = '⚡ Scheduling…'; }
   try {
+    const body = { reorder: true };
+    if (asOf) body.data_date = asOf;
     const d = await fetch('/api/schedule/run', {
       method: 'POST', headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({ reorder: true })
+      body: JSON.stringify(body)
     }).then(_readJson);
     if (d.error) { flashSched(d.error, true); return; }
 
@@ -4018,8 +4033,16 @@ async function runSchedule() {
 
     let msg = `<strong>Scheduled.</strong> Project finish <strong>${escHtml(d.project_finish || 'n/a')}</strong>`
             + ` · ${d.critical_count} critical activit${d.critical_count === 1 ? 'y' : 'ies'}`
-            + ` · data date ${escHtml(d.data_date || 'n/a')}`
+            + (d.data_date_moved
+                ? ` · <strong>data date ${escHtml(d.data_date_before || 'unset')} → ${escHtml(d.data_date || '')}</strong>`
+                : ` · data date ${escHtml(d.data_date || 'n/a')}`)
             + (d.reordered ? ' · rows re-ordered into run sequence' : '');
+    if (d.data_date_moved) {
+      msg += `<br><span style="color:var(--text3)">The data date is now `
+           + `${escHtml(d.data_date || '')} — remaining work cannot be scheduled `
+           + `before it, so not-started activities were pushed forward. Undo `
+           + `restores both the dates and the old data date.</span>`;
+    }
     if (d.unlinked_count > 0) {
       msg += `<br><span style="color:var(--orange)">⚠ ${d.unlinked_count} activit`
            + `${d.unlinked_count === 1 ? 'y has' : 'ies have'} no logic links — `
@@ -4656,16 +4679,65 @@ function toggleFlowView(){
  * job that is still being wired, where an F9 drives every unlinked activity
  * to the data date.
  */
-async function showSchedulePreview(){
+async function showSchedulePreview(asOf){
   try{
-    const d = await fetch('/api/schedule/preview').then(_readJson);
+    const q = asOf ? '?data_date=' + encodeURIComponent(asOf) : '';
+    const d = await fetch('/api/schedule/preview' + q).then(_readJson);
     if(d.error){ flashSched(d.error, true); return; }
     addMsg('system', `<pre style="white-space:pre-wrap;font-size:11px;margin:0;">${escHtml(d.report)}</pre>`);
     switchTab('chat');
     flashSched(d.moved
-      ? `${d.moved} of ${d.total} would move — nothing changed`
+      ? `${d.moved} of ${d.total} would move${asOf ? ' as of ' + asOf : ''} — nothing changed`
       : 'Schedule would change nothing', false);
   }catch(e){ flashSched(e.message, true); }
+}
+
+/**
+ * Ask for the date to schedule from.
+ *
+ * Two different things, deliberately kept apart. The preview answers "where
+ * would the job land if we statused it to this date" and commits nothing —
+ * that is the one to reach for first. The run actually moves the project's
+ * data date, which is what P6 does when you reschedule forward, and it is
+ * what pushes remaining work out. Both are undoable; only one of them needs
+ * to be.
+ */
+function _askAsOfDate(verb){
+  const cur = (lastSchedData && lastSchedData.data_date)
+    ? String(lastSchedData.data_date).slice(0,10) : '';
+  const v = prompt(
+    `${verb} as of which date?\n\n` +
+    `The project's data date is currently ${cur || 'not set'}.\n` +
+    `Remaining work cannot be scheduled before the data date, so a later ` +
+    `date pushes not-started activities forward.\n\nFormat: YYYY-MM-DD`, cur);
+  if(v === null) return null;
+  const s = v.trim();
+  if(!/^\d{4}-\d{2}-\d{2}$/.test(s)){
+    flashSched('Enter the date as YYYY-MM-DD', true);
+    return null;
+  }
+  return s;
+}
+
+/** What a reschedule to a future date would do — commits nothing. */
+function previewScheduleAsOf(){
+  const d = _askAsOfDate('Preview the schedule');
+  if(d) showSchedulePreview(d);
+}
+
+/** Move the data date and reschedule — a real change, undoable. */
+function runScheduleAsOf(){
+  const d = _askAsOfDate('Reschedule');
+  if(!d) return;
+  const cur = (lastSchedData && lastSchedData.data_date)
+    ? String(lastSchedData.data_date).slice(0,10) : '';
+  if(!confirm(
+      `Reschedule from ${d}?\n\n` +
+      `This moves the project's data date${cur ? ' from ' + cur : ''} to ${d} ` +
+      `and recalculates every date. Remaining work will be pushed to ${d} or ` +
+      `later.\n\nThis is a real change to the schedule, not a preview. ` +
+      `Undo restores both the dates and the old data date.`)) return;
+  runSchedule(d);
 }
 
 /**
@@ -4701,8 +4773,13 @@ async function showScheduleLog(){
       });
       const more = r.moved > (r.samples || []).length
         ? [`       …and ${r.moved - r.samples.length} more`] : [];
+      // A run that MOVED the data date is the one that explains a big jump,
+      // so it reads differently from a routine reflow.
+      const dd = r.data_date_moved
+        ? `data date ${r.data_date_before || 'unset'} → ${r.data_date || '—'} (moved)`
+        : `data date ${r.data_date || '—'}`;
       return [head, moved, fin, ...samp, ...more,
-              `     data date ${r.data_date || '—'} · ${r.critical} critical · ${r.unlinked} unlinked`
+              `     ${dd} · ${r.critical} critical · ${r.unlinked} unlinked`
              ].join('\n');
     }).join('\n\n');
     addMsg('system', `<pre style="white-space:pre-wrap;font-size:11px;margin:0;">`

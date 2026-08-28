@@ -230,6 +230,65 @@ def test_the_ripple_action_applies_only_with_apply():
     assert "Undo reverts" in msg
 
 
+# ── the data date ────────────────────────────────────────────────────────────
+
+def test_by_default_the_ripple_runs_from_the_projects_own_data_date():
+    """The projection it shows must be the projection the schedule is really
+    making, or the number is a fiction."""
+    p = _chain_and_bystander()
+    r = ripple.simulate(p, "A", {})
+    assert r["as_of"] == "2026-01-05"
+    assert r["as_of_override"] is False
+
+
+def test_a_future_data_date_pushes_the_path_out():
+    """Remaining work cannot be scheduled before the data date — that floor is
+    the whole reason to ask 'where does this land if we start in June'."""
+    p = _chain_and_bystander()
+    before = p.get_activity(activity_id="C").planned_start
+    ripple.apply_ripple(p, "A", {}, data_date="2026-06-01")
+    assert p.get_activity(activity_id="A").planned_start >= "2026-06-01"
+    assert p.get_activity(activity_id="C").planned_start > before
+
+
+def test_a_future_data_date_does_not_move_the_projects_data_date():
+    """The one that matters. A ripple leaves everything it did not touch as it
+    was, and the data date belongs to the whole job — moving it is what the
+    Schedule button does, deliberately and with a confirmation."""
+    p = _chain_and_bystander()
+    ripple.apply_ripple(p, "A", {}, data_date="2026-06-01")
+    assert p.data_date == "2026-01-05"
+
+
+def test_a_future_data_date_still_leaves_off_path_work_alone():
+    p = _chain_and_bystander()
+    before = p.get_activity(activity_id="X").planned_start
+    ripple.apply_ripple(p, "A", {}, data_date="2026-06-01")
+    assert p.get_activity(activity_id="X").planned_start == before
+
+
+def test_a_bad_data_date_is_refused_rather_than_written():
+    p = _chain_and_bystander()
+    r = ripple.simulate(p, "A", {}, data_date="june-ish")
+    assert "Not a valid date" in r["error"]
+    assert p.data_date == "2026-01-05"
+
+
+def test_the_report_says_the_projection_date_is_not_the_projects():
+    p = _chain_and_bystander()
+    txt = ripple.report(p, "A", {}, data_date="2026-06-01")
+    assert "2026-06-01" in txt and "not moved" in txt.lower()
+
+
+def test_the_action_passes_the_data_date_through():
+    p = _chain_and_bystander()
+    ok, msg = apply_command(p, {"action": "ripple", "activity_id": "A",
+                                "data_date": "2026-06-01", "apply": True})
+    assert ok
+    assert p.get_activity(activity_id="A").planned_start >= "2026-06-01"
+    assert p.data_date == "2026-01-05", "the action moved the project data date"
+
+
 def test_float_is_refreshed_after_a_ripple():
     """The derived columns have to agree with the dates that just changed."""
     p = _chain_and_bystander()

@@ -943,6 +943,15 @@ ripple_preview / ripple:
   moved — say that number, it is the reason for doing it this way.
   include_predecessors=true also walks backward, but leave it off unless
   asked: moving an activity's start does not move what came before it.
+  data_date projects the path from a date other than the project's own —
+  "if we are standing on 1 March, where does this land":
+    {"action": "ripple_preview", "activity_id": "A1000",
+     "data_date": "2027-03-01"}
+  The override applies to the CALCULATION ONLY. A ripple never moves the
+  project's data date — that is a property of the whole job, and moving it
+  for real is the Schedule button ("Reschedule as of date…" in View). Say
+  which of the two the user means before doing either. Without data_date the
+  ripple runs from the project's actual data date, which is the normal case.
 
 procurement_report:
   Long-lead and material lines matched to the work they feed, and tied.

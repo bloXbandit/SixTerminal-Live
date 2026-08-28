@@ -1274,8 +1274,18 @@ def run_schedule():
 
     data      = request.get_json() or {}
     reorder   = data.get("reorder", True)
-    override  = data.get("data_date")
+    override  = (str(data.get("data_date") or "").strip() or None)
     project   = sess["project"]
+
+    # A bad date used to be written straight onto the project, where it either
+    # broke the CPM origin or silently did nothing. Reject it here instead.
+    if override:
+        try:
+            override = _dt.date.fromisoformat(override[:10]).isoformat()
+        except ValueError:
+            return jsonify({"error": f"Not a valid date: {data.get('data_date')!r}"}), 400
+
+    dd_before = str(project.data_date)[:10] if project.data_date else None
 
     try:
         _push_undo("Schedule (CPM)")
@@ -1336,6 +1346,11 @@ def run_schedule():
         entry = {
             "at": _dt.datetime.now().isoformat(timespec="seconds"),
             "data_date": str(project.data_date)[:10] if project.data_date else None,
+            # A run to a NEW data date is a different animal from a routine
+            # reflow — it is the one that pushes remaining work forward — so
+            # the log has to say so rather than showing an unexplained jump.
+            "data_date_before": dd_before,
+            "data_date_moved": bool(override and override != dd_before),
             "finish_before": _finish_before,
             "finish_after": project_finish,
             "moved": len(moved),
@@ -1368,8 +1383,14 @@ def run_schedule():
             "system_result",
             f"Schedule run — {len(moved)} activities moved",
             context=(f"The user pressed Schedule (F9) at {entry['at']}.\n"
-                     f"  data date {entry['data_date']}\n"
-                     f"  project finish {_finish_before} -> {project_finish}\n"
+                     + (f"  THE DATA DATE WAS MOVED {dd_before or 'unset'} -> "
+                        f"{entry['data_date']} as part of this run. Remaining "
+                        f"work cannot be scheduled before the data date, so a "
+                        f"forward move pushes not-started work out. That is "
+                        f"the reason for most of what moved.\n"
+                        if entry["data_date_moved"] else
+                        f"  data date {entry['data_date']}\n")
+                     + f"  project finish {_finish_before} -> {project_finish}\n"
                      f"  {len(moved)} of {len(project.activities)} activities moved"
                      + (f"\n  e.g. {_sample}" if _sample else "")
                      + f"\n  {len(unlinked)} activities still have no logic.\n"
@@ -1381,6 +1402,8 @@ def run_schedule():
         return jsonify({
             "success": True,
             "data_date": str(project.data_date)[:10] if project.data_date else None,
+            "data_date_before": dd_before,
+            "data_date_moved": entry["data_date_moved"],
             "project_finish": project_finish,
             "activity_count": len(project.activities),
             "relation_count": len(project.relations),
@@ -3233,8 +3256,14 @@ def schedule_preview_route():
     if sess is None or sess["project"] is None:
         return jsonify({"error": "No schedule loaded"}), 400
     from engine import schedule_preview as sp
-    data = sp.analyse(sess["project"])
-    data["report"] = sp.report(sess["project"])
+    # ?data_date= previews a run from a date the project has not been statused
+    # to yet — "if we schedule as of 1 March, where does the job land". Safe
+    # precisely because the preview never writes.
+    as_of = (request.args.get("data_date") or "").strip() or None
+    data = sp.analyse(sess["project"], as_of)
+    if data.get("error"):
+        return jsonify({"error": data["error"]}), 400
+    data["report"] = sp.report(sess["project"], data_date=as_of)
     data["success"] = True
     # Only the top movers travel — the full list is thousands of rows.
     data["movers"] = data["movers"][:60]

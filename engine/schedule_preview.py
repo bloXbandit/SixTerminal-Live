@@ -70,12 +70,14 @@ def _reason(act, has_pred: bool, data_date: Optional[str]) -> str:
     return DRIVEN
 
 
-def analyse(project) -> Dict[str, Any]:
+def analyse(project, data_date: Optional[str] = None) -> Dict[str, Any]:
     """
     Run the Schedule pass on a copy and report the difference.
 
     The live project is never touched — verified by a test, because a preview
-    that quietly reschedules is worse than no preview at all.
+    that quietly reschedules is worse than no preview at all. That is also
+    what makes `data_date` safe here: it previews a run from a date the
+    project has not been statused to yet, without committing to it.
     """
     from engine.schedule_model import compute_dates
 
@@ -85,6 +87,13 @@ def analyse(project) -> Dict[str, Any]:
     finish_before = max([v[1] for v in before.values() if v[1]] or [""]) or None
 
     trial = _snapshot(project)
+    if data_date:
+        import datetime as _dd
+        try:
+            trial.data_date = _dd.date.fromisoformat(
+                str(data_date)[:10]).isoformat()
+        except ValueError:
+            return {"error": f"Not a valid date: {data_date!r}"}
     compute_dates(trial, hold_unlinked_dates=False, apply_dates=True)
 
     has_pred = {a.uid: False for a in trial.activities}
@@ -133,19 +142,32 @@ def analyse(project) -> Dict[str, Any]:
         "by_reason": by_reason,
         "movers": sorted(moved, key=lambda m: -abs(m["shift_days"])),
         "data_date": str(trial.data_date)[:10] if trial.data_date else None,
+        "project_data_date": (str(project.data_date)[:10]
+                              if project.data_date else None),
+        "data_date_override": bool(data_date),
     }
 
 
-def report(project, max_rows: int = 15) -> str:
+def report(project, max_rows: int = 15, data_date: Optional[str] = None) -> str:
     """The preview as prose, for the chat and for the agent to reason from."""
-    d = analyse(project)
+    d = analyse(project, data_date)
+    if d.get("error"):
+        return d["error"]
+    if d.get("data_date_override"):
+        head = (f"PREVIEW AS OF {d['data_date']} — a date the project has not "
+                f"been statused to (its data date is still "
+                f"{d['project_data_date'] or 'not set'}). Nothing here is "
+                f"committed; remaining work is simply floored at "
+                f"{d['data_date']} for the trial.\n")
+    else:
+        head = ""
     if not d["moved"]:
-        return ("Pressing Schedule would move nothing — every date already "
-                "agrees with the logic driving it. Safe to run, but it will "
-                "not change anything.")
+        return head + ("Pressing Schedule would move nothing — every date "
+                       "already agrees with the logic driving it. Safe to run, "
+                       "but it will not change anything.")
 
-    out = [f"IF YOU PRESS SCHEDULE — {d['moved']} of {d['total']} activities "
-           f"would move. Nothing has been changed by this check."]
+    out = [head + f"IF YOU PRESS SCHEDULE — {d['moved']} of {d['total']} "
+           f"activities would move. Nothing has been changed by this check."]
     if d["finish_before"] != d["finish_after"]:
         out.append(f"  Project finish {d['finish_before'] or '—'} → "
                    f"{d['finish_after'] or '—'}")

@@ -31,6 +31,16 @@ WHAT COUNTS AS THE PATH
   change can legitimately affect. Predecessors are not included by default:
   moving an activity's start does not move what came before it, and pulling
   predecessors in would let an actualisation quietly rewrite history.
+
+THE DATA DATE
+  By default the pass runs from the project's own data date, so the projection
+  it shows is the projection the schedule is actually making today. A future
+  date can be supplied instead — "if we are standing here on 1 March, where
+  does this path land" — and that override applies to the TRIAL ONLY. The
+  project's data date is not moved: a ripple is meant to leave everything it
+  did not touch exactly as it was, and the data date is a property of the
+  whole job, not of one activity's path. Moving it for real is what the
+  Schedule button does.
 """
 
 from typing import Any, Dict, List, Optional, Set
@@ -74,13 +84,18 @@ def _snapshot(project):
 
 
 def simulate(project, activity_id: str, changes: Optional[Dict[str, Any]] = None,
-             include_predecessors: bool = False) -> Dict[str, Any]:
+             include_predecessors: bool = False,
+             data_date: Optional[str] = None) -> Dict[str, Any]:
     """
     What a change to one activity would do to the work that depends on it.
 
     `changes` takes the same fields the edit actions do — actual_start,
     actual_finish, planned_start, duration_days, status. Nothing is written:
     the trial runs on a copy and the report says what WOULD move.
+
+    `data_date` projects from a different date than the project is statused
+    from — "if today were 1 March, where does this path land". It applies to
+    the trial only; the project's own data date is never moved by a ripple.
     """
     from engine.edit_engine import apply_commands
     from engine.schedule_model import compute_dates
@@ -89,10 +104,22 @@ def simulate(project, activity_id: str, changes: Optional[Dict[str, Any]] = None
     if act is None:
         return {"error": f"No activity {activity_id}"}
 
+    as_of = _d(project.data_date) or None
+    if data_date:
+        import datetime as _dt0
+        try:
+            as_of = _dt0.date.fromisoformat(str(data_date)[:10]).isoformat()
+        except ValueError:
+            return {"error": f"Not a valid date: {data_date!r}"}
+
     before = {a.uid: (_d(a.planned_start), _d(a.planned_finish))
               for a in project.activities}
 
     trial = _snapshot(project)
+    # Trial only. The real project keeps the data date it had — see the module
+    # docstring: a ripple must not change a property of the whole job.
+    if data_date:
+        trial.data_date = as_of
     changes = changes or {}
     cmds: List[Dict[str, Any]] = []
     if changes.get("actual_start"):
@@ -183,6 +210,9 @@ def simulate(project, activity_id: str, changes: Optional[Dict[str, Any]] = None
     return {
         "activity_id": activity_id, "name": act.name,
         "changes": changes,
+        "as_of": as_of,
+        "as_of_override": bool(data_date),
+        "project_data_date": _d(project.data_date) or None,
         "path_size": len(path),
         "moved_on_path": len(on_path),
         "would_move_off_path": off_path,
@@ -193,12 +223,16 @@ def simulate(project, activity_id: str, changes: Optional[Dict[str, Any]] = None
 
 def apply_ripple(project, activity_id: str,
                  changes: Optional[Dict[str, Any]] = None,
-                 include_predecessors: bool = False) -> Dict[str, Any]:
+                 include_predecessors: bool = False,
+                 data_date: Optional[str] = None) -> Dict[str, Any]:
     """
     Make the change and let it flow down its own path — writing back ONLY the
     activities on that path, so everything else keeps the dates it had.
+
+    A `data_date` projects the path from that date instead of the project's
+    own. The dates it produces are written; the project's data date is not.
     """
-    sim = simulate(project, activity_id, changes, include_predecessors)
+    sim = simulate(project, activity_id, changes, include_predecessors, data_date)
     if sim.get("error"):
         return sim
 
@@ -241,17 +275,25 @@ def apply_ripple(project, activity_id: str,
 
 
 def report(project, activity_id: str, changes: Optional[Dict[str, Any]] = None,
-           include_predecessors: bool = False, max_rows: int = 20) -> str:
+           include_predecessors: bool = False, max_rows: int = 20,
+           data_date: Optional[str] = None) -> str:
     """The simulation as prose. Changes nothing."""
-    r = simulate(project, activity_id, changes, include_predecessors)
+    r = simulate(project, activity_id, changes, include_predecessors, data_date)
     if r.get("error"):
         return r["error"]
 
     what = ", ".join(f"{k} → {v}" for k, v in (r["changes"] or {}).items())
     head = [f"RIPPLE from {r['activity_id']} — {r['name']}",
-            f"  Change: {what or 'none, just reflowing its path'}",
-            f"  Its path is {r['path_size']} activities "
-            f"(itself plus everything downstream)."]
+            f"  Change: {what or 'none, just reflowing its path'}"]
+    if r["as_of_override"]:
+        head.append(f"  Projected as of {r['as_of']} — the project's own data "
+                    f"date ({r['project_data_date'] or 'not set'}) is NOT moved "
+                    f"by this; remaining work simply cannot land before "
+                    f"{r['as_of']} in the projection.")
+    else:
+        head.append(f"  As of the project data date {r['as_of'] or 'not set'}.")
+    head.append(f"  Its path is {r['path_size']} activities "
+                f"(itself plus everything downstream).")
 
     if not r["moved_on_path"]:
         head.append("\n  Nothing on the path would move — the dates already "
