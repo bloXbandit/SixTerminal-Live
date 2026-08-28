@@ -718,11 +718,17 @@ class Brain:
         # Every document given for this job, kept so the agent can go back to
         # one. Only a CATALOGUE rides in the prompt — see engine/doc_library.py.
         self.library: Optional[Any] = None
+        # Testable statements about the job: contract dates, what must lead to
+        # what, what must follow what. Unlike a directive these are CHECKED
+        # against the network rather than read as prose, so they can be
+        # re-verified after every change. See engine/requirements.py.
+        self.requirements: List[Dict[str, Any]] = []
 
     def is_empty(self) -> bool:
         """Nothing worth saving — checked before writing a file for a project
         that was never taught anything."""
         return (not self.directives and self.objective is None
+                and not self.requirements
                 and not self.feedback and self.scope is None
                 and (self.library is None or not self.library.docs))
 
@@ -829,7 +835,8 @@ class Brain:
                 "objective": self.objective.to_json() if self.objective else None,
                 "feedback": self.feedback,
                 "scope": self.scope.to_json() if self.scope else None,
-                "library": self.library.to_json() if self.library else None}
+                "library": self.library.to_json() if self.library else None,
+                "requirements": list(self.requirements)}
 
     @classmethod
     def from_json(cls, data: Dict[str, Any]) -> "Brain":
@@ -846,6 +853,9 @@ class Brain:
         b.scope = _sg.ScopeGraph.from_json((data or {}).get("scope"))
         from . import doc_library as _dl
         b.library = _dl.Library.from_json((data or {}).get("library"))
+        reqs = (data or {}).get("requirements")
+        if isinstance(reqs, list):
+            b.requirements = [r for r in reqs if isinstance(r, dict)]
         raw_fb = (data or {}).get("feedback")
         if isinstance(raw_fb, dict):
             for sig, row in raw_fb.items():

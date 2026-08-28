@@ -229,7 +229,7 @@ def _would_create_cycle(project: Project, pred_uid: str, succ_uid: str) -> bool:
 # that same record back, tells the user it wired logic it never wired.
 ADVISORY_ACTIONS = frozenset({"recommend_logic", "read_document", "describe_brain",
                               "wbs_flow_report", "find_duplicates",
-                              "schedule_preview"})
+                              "schedule_preview", "normalize_plan"})
 
 
 def is_advisory(action: str) -> bool:
@@ -310,6 +310,13 @@ def apply_command(project: Project, command: Dict[str, Any]) -> Tuple[bool, str]
         elif action in ("schedule_preview", "what_if_schedule", "preview_schedule"):
             from engine import schedule_preview as _sp
             return True, _sp.report(project)
+        elif action in ("normalize_plan", "diagnose_schedule", "health_plan"):
+            from engine import normalize as _nz
+            return True, _nz.plan(project, _BRAIN_FOR(project) if _BRAIN_FOR else None)
+        elif action in ("normalize_logic", "normalize_schedule", "wire_all"):
+            return _normalize_logic(project, command)
+        elif action in ("requirements", "requirement", "check_requirements"):
+            return _requirements(project, command)
         elif action in ("bulk_rules", "if_then"):
             return _bulk_rules(project, command)
         elif action == "move_activity_wbs":
@@ -2436,6 +2443,174 @@ def _update_udf(project: Project, cmd: Dict) -> Tuple[bool, str]:
             a.udfs[field] = value
     what = f"{field} → {value}" if value else f"cleared {field}"
     return True, f"{what} on {len(matches)} activity/activities"
+
+
+def _requirements(project: Project, cmd: Dict) -> Tuple[bool, str]:
+    """
+    Contract dates and structural promises, checked against the network.
+
+    A requirement is the checkable half of what the user says in one line —
+    "PH1 substantial completion is 15 March 27", "every generator termination
+    leads to commissioning". Kept on the brain so they survive a re-export
+    and are re-verified after every change, rather than being a sentence the
+    agent might remember.
+
+      add     : store one and check it
+      check   : verify all stored (or the ones passed in)
+      enforce : propose the ties/pins that would satisfy the failures;
+                applies only with apply=true
+      list / remove
+    """
+    from engine import requirements as _rq
+
+    brain = _BRAIN_FOR(project) if _BRAIN_FOR else None
+    if brain is None:
+        raise EditError("No project brain available for requirements")
+    store = getattr(brain, "requirements", None)
+    if store is None:
+        store = brain.requirements = []
+
+    op = (cmd.get("op") or cmd.get("mode") or "check").strip().lower()
+    spec = cmd.get("requirement") or cmd.get("spec")
+    specs = cmd.get("requirements") or ([spec] if spec else None)
+
+    if op == "list":
+        if not store:
+            return True, "No requirements stored for this job yet."
+        lines = [f"{len(store)} requirement(s) on this job:"]
+        for i, s in enumerate(store, 1):
+            lines.append(f"  {i}. {s.get('label') or s.get('kind')}")
+        return True, "\n".join(lines)
+
+    if op == "remove":
+        label = (cmd.get("label") or "").strip().lower()
+        if not label:
+            raise EditError("remove needs the requirement's label")
+        keep = [s for s in store
+                if label not in str(s.get("label") or "").lower()]
+        n = len(store) - len(keep)
+        brain.requirements = keep
+        return True, (f"Removed {n} requirement(s)." if n
+                      else f"Nothing matched '{label}'.")
+
+    if op == "add":
+        if not specs:
+            raise EditError("add needs a requirement")
+        added = 0
+        for s in specs:
+            if not isinstance(s, dict) or not s.get("kind"):
+                raise EditError("each requirement needs a 'kind' "
+                                "(deadline, reaches or follows)")
+            labels = {str(x.get("label") or "").lower() for x in store}
+            if str(s.get("label") or "").lower() not in labels:
+                store.append(s)
+                added += 1
+        return True, (f"Stored {added} requirement(s); now checking all "
+                      f"{len(store)}.\n" + _rq.report(project, store))
+
+    to_check = specs or store
+    if not to_check:
+        return True, ("No requirements stored yet. Add one with "
+                      "op='add' — e.g. a phase contract date, or that "
+                      "burn-ins must lead to commissioning.")
+
+    if op == "enforce":
+        all_cmds, checks = [], []
+        for s in to_check:
+            r = _rq.enforce(project, s)
+            checks.append((s, r["check"]))
+            all_cmds.extend(r["commands"])
+        if not all_cmds:
+            return True, ("Nothing to enforce — every requirement already "
+                          "holds, or the ones that fail name activities that "
+                          "do not exist.\n" + _rq.report(project, to_check))
+        if not cmd.get("apply"):
+            lines = [f"{len(all_cmds)} change(s) would satisfy the failing "
+                     f"requirements. Nothing applied."]
+            for c in all_cmds[:20]:
+                if c["action"] == "add_relation":
+                    lines.append(f"  tie {c['predecessor_id']} → {c['successor_id']}")
+                else:
+                    lines.append(f"  pin {c['activity_id']} "
+                                 f"{c['constraint_type']} {c['constraint_date']}")
+            if len(all_cmds) > 20:
+                lines.append(f"  …and {len(all_cmds) - 20} more")
+            lines.append("Pass apply=true to make these changes.")
+            return True, "\n".join(lines)
+        results = apply_commands(project, all_cmds)
+        ok = sum(1 for good, _ in results if good)
+        return True, (f"Applied {ok} of {len(all_cmds)} change(s). "
+                      f"Nothing was deleted; undo reverts the batch.\n"
+                      + _rq.report(project, to_check))
+
+    return True, _rq.report(project, to_check)
+
+
+def _normalize_logic(project: Project, cmd: Dict) -> Tuple[bool, str]:
+    """
+    Close the open ends the ranker is confident about — the bulk repair pass.
+
+    Reports by default. It only APPLIES when explicitly told to, because a
+    batch of a couple of hundred relationships is not something to emit on a
+    maybe. Every rail is in the engine, not in the caller's good intentions:
+    only ends already open, nothing ever deleted, folders holding duplicated
+    rows skipped rather than wired, ties contradicting the dates dropped, a
+    confidence floor, and a cap so the result stays reviewable.
+    """
+    from engine import normalize as _nz
+
+    brain = _BRAIN_FOR(project) if _BRAIN_FOR else None
+    try:
+        conf = float(cmd.get("min_confidence", 0.55))
+    except (TypeError, ValueError):
+        conf = 0.55
+    try:
+        limit = max(1, min(400, int(cmd.get("limit", 150))))
+    except (TypeError, ValueError):
+        limit = 150
+    folders = cmd.get("folders") or cmd.get("wbs") or None
+    if isinstance(folders, str):
+        folders = [folders]
+
+    if not cmd.get("apply"):
+        return True, _nz.normalize_report(project, brain, conf, limit)
+
+    r = _nz.normalize_logic(project, brain, conf, limit, folders)
+    cmds = r["commands"]
+    if not cmds:
+        return True, ("Nothing met the confidence bar — no ties applied. "
+                      + (f"{len(r['skipped_for_duplicates'])} folder(s) were "
+                         f"skipped for holding duplicated rows. "
+                         if r["skipped_for_duplicates"] else "")
+                      + f"{r['unresolved']} open row(s) need a human.")
+
+    v = _nz.verify(project, cmds, brain)
+    if v["folders_improved"] == 0 and v["floating_removed"] == 0:
+        return True, ("Held back — the trial run showed no measurable "
+                      "improvement, so nothing was applied. The remaining "
+                      "open ends need a decision the ranker cannot make.")
+
+    results = apply_commands(project, cmds)
+    ok = sum(1 for good, _ in results if good)
+    bad = len(results) - ok
+    after = _nz.measure(project)
+    msg = [f"Normalized: {ok} command(s) applied"
+           + (f", {bad} failed" if bad else "") + ".",
+           f"  activities with no logic: {r['before']['floating_activities']} "
+           f"→ {after['floating_activities']}",
+           f"  isolated folders: {r['before']['isolated']} → {after['isolated']}",
+           f"  fully connected folders: {r['before']['connected']} → "
+           f"{after['connected']}"]
+    if r["skipped_for_duplicates"]:
+        msg.append(f"  {len(r['skipped_for_duplicates'])} folder(s) skipped for "
+                   f"duplicated rows: {', '.join(r['skipped_for_duplicates'][:5])}")
+    if r["unresolved"]:
+        msg.append(f"  {r['unresolved']} open row(s) had no candidate above the "
+                   f"bar and were left alone")
+    if r["capped"]:
+        msg.append("  Capped for reviewability — run again to continue.")
+    msg.append("  Nothing was deleted. Undo reverts the whole batch.")
+    return True, "\n".join(msg)
 
 
 def _set_udf_type(project: Project, cmd: Dict) -> Tuple[bool, str]:

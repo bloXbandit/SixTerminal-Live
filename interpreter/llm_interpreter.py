@@ -856,6 +856,70 @@ find_duplicates:
   other. Never delete one without being told which; report and ask.
     {"action": "find_duplicates"}
 
+requirements:
+  Contract dates and structural promises, CHECKED against the real network
+  and kept on the brain so they survive a re-export and are re-verified after
+  every change. This is how a one-line statement becomes something enforced
+  rather than something you hope to remember.
+
+  YOUR job is turning the sentence into a requirement; the engine walks the
+  graph. Three kinds:
+    deadline  — {"kind":"deadline","what":"Substantial Completion",
+                 "scope":"PH1","date":"2027-03-15"}
+    reaches   — every X must have a forward PATH to some Y (not a direct tie;
+                work reaches a milestone through a chain)
+                {"kind":"reaches","from":"Burn","to":"Commissioning","scope":"PH2"}
+    follows   — every X must be driven, directly or not, by some Y
+                {"kind":"follows","from":"MV","driver":"Energization"}
+  `scope` narrows by folder or id fragment, which is how "for each phase"
+  works — add one requirement per phase with scope PH1 / PH2 / PH3.
+  Always give a `label` so it reads back as the user said it.
+
+  Operations:
+    {"action":"requirements","op":"add","requirements":[ ... ]}   store + check
+    {"action":"requirements","op":"check"}                        verify all
+    {"action":"requirements","op":"enforce"}                      what would fix it
+    {"action":"requirements","op":"enforce","apply":true}         fix it
+    {"action":"requirements","op":"list"} / op="remove" with a label
+
+  When the user states a contract date, a "must lead to", or a "must follow",
+  STORE IT as a requirement — do not just reply that you noted it. Report
+  which activities break it by name; "3 of 4 hold" with the failures listed
+  is the answer, not "looks good". enforce reports by default and only
+  changes anything with apply=true.
+
+normalize_plan:
+  Read-only. The whole schedule diagnosed at once, in the order the work
+  should actually be done: duplicates first (wiring a folder that holds
+  duplicated rows ties one twin and leaves the other floating), then folders
+  attached to nothing, then rows with no logic, then dead ends, backward
+  ties and constraint load. Each finding says what it costs and what fixes it.
+  Use it for "what's wrong with my schedule", "clean this up", "make it
+  green", "where do I start" — ALWAYS run this before normalize_logic, and
+  lead with what it says rather than jumping to wiring.
+    {"action": "normalize_plan"}
+
+normalize_logic:
+  The bulk repair pass — closes the open ends the ranker is confident about,
+  folder by folder, worst first. Rails are in the engine: only ends already
+  open (logic the user set is never touched), nothing is ever deleted,
+  folders holding duplicated rows are SKIPPED not wired, ties contradicting
+  the dates are dropped, there is a confidence floor and a cap.
+  REPORTS BY DEFAULT. It applies only with apply=true, and you may only pass
+  apply=true when the user has actually told you to make the change. Show
+  them the report first; a couple of hundred relationships is not a batch to
+  emit on a maybe.
+    {"action": "normalize_logic"}                     ← report what it would do
+    {"action": "normalize_logic", "apply": true}      ← only when told to
+    {"action": "normalize_logic", "apply": true, "folders": ["MV 101"]}
+  min_confidence (default 0.55) and limit (default 150, max 400) are
+  adjustable; raise the confidence if the user says a batch was too loose.
+  It measures itself on a copy first and REFUSES to apply a pass that shows
+  no improvement. Report the before/after numbers it returns — do not
+  describe it as "greened" unless the connected count actually rose. Reaching
+  fully connected needs nothing floating AND a tie in and out, so expect
+  several rounds rather than one.
+
 schedule_preview:
   What pressing Schedule (F9) WOULD do — read-only, runs the pass on a copy
   and changes absolutely nothing. Reports how many activities would move, the
