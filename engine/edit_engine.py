@@ -15,6 +15,7 @@ Supported commands:
   add_relation              — Add a predecessor/successor link
   delete_relation           — Remove a predecessor/successor link
   rename_wbs                — Rename a WBS node
+  match_subfolder_numbers   — Renumber subfolders to match their parent folder's number
   add_wbs                   — Add a new WBS node
   move_activity_wbs         — Move an activity to a different WBS node
   move_activities           — Move a set of activities into a folder (cut & paste)
@@ -309,6 +310,9 @@ def apply_command(project: Project, command: Dict[str, Any]) -> Tuple[bool, str]
             return True, _wf.duplicates(project)
         elif action in ("fill_folder_from_template", "fill_folder", "match_folder"):
             return _fill_folder_from_template(project, command)
+        elif action in ("match_subfolder_numbers", "renumber_subfolders",
+                        "align_subfolders"):
+            return _match_subfolder_numbers(project, command)
         elif action in ("schedule_preview", "what_if_schedule", "preview_schedule"):
             from engine import schedule_preview as _sp
             return True, _sp.report(project)
@@ -783,6 +787,92 @@ def _rename_wbs(project: Project, cmd: Dict) -> Tuple[bool, str]:
     if new_code:
         wbs.code = new_code
     return True, f"Renamed WBS '{old}' → '{wbs.name}'"
+
+
+def _match_subfolder_numbers(project: Project, cmd: Dict) -> Tuple[bool, str]:
+    """
+    Renumber child folders so their number matches their parent's.
+
+    A copied phase carries subfolder names from the area it was copied from —
+    Gen 312's children still saying "Gen 311 - JER". The PARENT numbers are
+    the ones the user trusts, so each child's number is replaced with its
+    parent's, the separator after the number is normalised to " - ", and
+    everything else in the child's name is kept exactly as it was.
+
+    Nothing is guessed: a child with more than one number in its name, or a
+    child that shares the parent's prefix but has no number at all, is left
+    alone and NAMED in the report so the user can decide. Parents without
+    exactly one number ("Generators", "Phase 2") are containers, not part of
+    the pattern, and are walked through rather than matched.
+    """
+    import re as _re
+
+    scope = _find_wbs(project, cmd.get("wbs_code"),
+                      cmd.get("wbs_name") or cmd.get("scope"), cmd.get("wbs_uid"))
+    if not scope:
+        raise EditError(_no_wbs(project, cmd.get("wbs_name") or cmd.get("scope")
+                                or cmd.get("wbs_code")))
+
+    by_parent: Dict[str, List[WBSNode]] = {}
+    for w in project.wbs_nodes:
+        by_parent.setdefault(w.parent_uid, []).append(w)
+
+    # the scope's whole subtree — the pattern holds at every level under it
+    subtree = [scope]
+    i = 0
+    while i < len(subtree):
+        subtree.extend(by_parent.get(subtree[i].uid, []))
+        i += 1
+
+    _num = _re.compile(r"\d+")
+    renamed, skipped = [], []
+    for parent in subtree:
+        children = by_parent.get(parent.uid, [])
+        if not children:
+            continue
+        pnums = _num.findall(parent.name)
+        if len(pnums) != 1:
+            continue                     # a container folder — walk through it
+        pnum = pnums[0]
+        prefix = (parent.name.split() or [""])[0].lower()
+        for ch in children:
+            cnums = _num.findall(ch.name)
+            if len(cnums) > 1:
+                skipped.append(f"'{ch.name}' — more than one number in its "
+                               f"name, left alone")
+                continue
+            if not cnums:
+                # "Commissioning" under Gen 312 is not part of the pattern;
+                # "Gen - JER" is — it shares the parent's prefix and lost its
+                # number — so it is reported rather than silently passed over.
+                if prefix and ch.name.lower().startswith(prefix):
+                    skipped.append(f"'{ch.name}' — no number in its name, "
+                                   f"left alone")
+                continue
+            new = _num.sub(pnum, ch.name, count=1)
+            # normalise the separator after the number — "-JER", " -JER" and
+            # "  -  JER" all become " - JER"; hyphens elsewhere are untouched
+            new = _re.sub(rf"({_re.escape(pnum)})\s*-\s*", r"\1 - ", new,
+                          count=1)
+            if new == ch.name:
+                continue
+            renamed.append(f"'{ch.name}' → '{new}'  (under '{parent.name}')")
+            ch.name = new
+
+    project.build_lookups()
+    if not renamed and not skipped:
+        return True, (f"Checked every folder under '{scope.name}' — all "
+                      f"subfolder numbers already match their parent.")
+    lines = [f"Matched subfolder numbering under '{scope.name}' — "
+             f"{len(renamed)} folder{'s' if len(renamed) != 1 else ''} renamed."]
+    lines += [f"  {r}" for r in renamed[:40]]
+    if len(renamed) > 40:
+        lines.append(f"  …and {len(renamed) - 40} more")
+    if skipped:
+        lines.append("Left alone — tell me the number to use and I'll rename "
+                     "them:")
+        lines += [f"  {s}" for s in skipped[:10]]
+    return True, "\n".join(lines)
 
 
 def _add_wbs(project: Project, cmd: Dict) -> Tuple[bool, str]:
