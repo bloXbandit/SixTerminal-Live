@@ -315,3 +315,107 @@ def test_an_edit_that_changes_no_folder_verdict_reports_none():
         {"action": "rename_activity", "activity_id": "A1",
          "new_name": "Work A revised"}], "label": "rename"}).get_json()
     assert r["changed_folders"] == []
+
+
+# ── previewing a Schedule run without running it ─────────────────────────────
+#
+# Schedule is the one action that rewrites Start/Finish across the whole job.
+# The honest way to find out what it would do used to be: press it, look, undo.
+# That works but churns the project, spends an undo step, and leaves the agent
+# reasoning about a change it has already made. The same pass on a copy answers
+# the question with none of that — and the WHY is the part that matters, since
+# "2,077 activities would move" is not actionable but "592 of them have no
+# predecessor and are being driven to the data date" is.
+
+def test_preview_does_not_touch_the_live_project():
+    """A preview that quietly reschedules is worse than no preview."""
+    from engine import schedule_preview as sp
+    p = _one_task(frozenset({MON, TUE, WED, THU, FRI, SAT}), 10)
+    p.activities[0].planned_start = "2026-03-02"
+    p.activities[0].planned_finish = "2026-03-02"
+    before = [(a.uid, a.planned_start, a.planned_finish) for a in p.activities]
+    sp.report(p)
+    sp.analyse(p)
+    assert [(a.uid, a.planned_start, a.planned_finish)
+            for a in p.activities] == before
+
+
+def test_preview_reports_what_would_move():
+    from engine import schedule_preview as sp
+    p = _one_task(frozenset({MON, TUE, WED, THU, FRI, SAT}), 10)
+    p.activities[0].planned_finish = "2099-01-01"      # plainly wrong
+    d = sp.analyse(p)
+    assert d["moved"] == 1
+    assert d["movers"][0]["activity_id"] == "A"
+
+
+def test_an_unlinked_activity_is_reported_as_no_logic():
+    """The single most important finding: an explicit Schedule drives work
+    with no predecessor to the data date, which on a half-wired job is most
+    of the movement and would wreck dates the user typed."""
+    from engine import schedule_preview as sp
+    p = _one_task(frozenset({MON, TUE, WED, THU, FRI, SAT}), 10)
+    p.activities[0].planned_start = "2027-06-01"
+    p.activities[0].planned_finish = "2027-06-10"
+    d = sp.analyse(p)
+    assert d["by_reason"].get(sp.NO_LOGIC) == 1
+    assert "NO PREDECESSOR" in sp.report(p)
+
+
+def test_a_driven_activity_is_not_blamed_on_missing_logic():
+    from engine import schedule_preview as sp
+    p = _one_task(frozenset({MON, TUE, WED, THU, FRI, SAT}), 10)
+    p.activities.append(Activity(
+        uid="a2", activity_id="B", name="B", wbs_uid="w", calendar_uid="1",
+        activity_type="Task Dependent", status="Not Started",
+        planned_duration=10, remaining_duration=10,
+        planned_start="2099-01-01", planned_finish="2099-01-01"))
+    p.relations.append(Relation(uid="r1", predecessor_uid="a1",
+                                successor_uid="a2",
+                                type="Finish to Start", lag=0.0))
+    p.build_lookups()
+    d = sp.analyse(p)
+    b = next(m for m in d["movers"] if m["activity_id"] == "B")
+    assert b["reason"] == sp.DRIVEN
+
+
+def test_a_schedule_that_would_change_nothing_says_so():
+    from engine import schedule_preview as sp
+    p = _one_task(frozenset({MON, TUE, WED, THU, FRI, SAT}), 10)
+    compute_dates(p, hold_unlinked_dates=False, apply_dates=True)
+    assert "would move nothing" in sp.report(p)
+
+
+def test_the_preview_endpoint_changes_nothing():
+    c = _client_with(_TWO_TASKS)
+    p = server._projects[server._active_id[0]]["project"]
+    before = [(a.uid, a.planned_start, a.planned_finish) for a in p.activities]
+    r = c.get("/api/schedule/preview").get_json()
+    assert r["success"]
+    p = server._projects[server._active_id[0]]["project"]
+    assert [(a.uid, a.planned_start, a.planned_finish)
+            for a in p.activities] == before
+    # and it did not consume an undo step
+    assert c.get("/api/schedule/log").get_json()["count"] == 0
+
+
+def test_preview_is_advisory_so_a_turn_does_not_claim_edits():
+    from engine.edit_engine import apply_command, is_advisory
+    assert is_advisory("schedule_preview")
+    p = _one_task(frozenset({MON, TUE, WED, THU, FRI, SAT}), 10)
+    ok, msg = apply_command(p, {"action": "schedule_preview"})
+    assert ok and ("SCHEDULE" in msg.upper() or "move nothing" in msg)
+
+
+def test_a_schedule_run_is_put_into_the_record_the_agent_reads():
+    """The agent could not see that Schedule had run at all, so asked why a
+    date changed it reasoned as though the user had typed it."""
+    c = _client_with(_TWO_TASKS)
+    c.post("/api/direct", json={"commands": [
+        {"action": "update_duration", "activity_id": "A1000",
+         "new_duration_days": 20}], "label": "stretch"})
+    c.post("/api/schedule/run", json={})
+    chat = server._projects[server._active_id[0]]["chat_history"]
+    entry = next(m for m in reversed(chat) if "Schedule run" in (m.get("text") or ""))
+    assert "pressed Schedule" in (entry.get("context") or "")
+    assert "Undo reverts it" in (entry.get("context") or "")

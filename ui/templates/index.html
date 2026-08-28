@@ -2149,6 +2149,7 @@
             <div class="tb-pop-sep"></div>
             <div class="tb-pop-label">Schedule runs</div>
             <div class="tb-row">
+              <button class="tb-chip" onclick="showSchedulePreview()" title="What pressing Schedule would move, and why — changes nothing">◔ Preview schedule</button>
               <button class="tb-chip" onclick="showScheduleLog()" title="Every time Schedule was run this session, and what each run moved">⏱ Schedule log</button>
             </div>
             <div class="tb-row">
@@ -4634,6 +4635,26 @@ function toggleFlowView(){
   flashSched(_flowOn
     ? 'Folder flow: green = work enters and leaves with nothing loose · amber = one-way · yellow = loose activities · red = isolated'
     : 'Folder flow view off');
+}
+
+/**
+ * What Schedule would do, without doing it.
+ *
+ * Safe to run at any time — the pass runs on a copy server-side, so the
+ * project is untouched. This is the one to reach for before scheduling a
+ * job that is still being wired, where an F9 drives every unlinked activity
+ * to the data date.
+ */
+async function showSchedulePreview(){
+  try{
+    const d = await fetch('/api/schedule/preview').then(_readJson);
+    if(d.error){ flashSched(d.error, true); return; }
+    addMsg('system', `<pre style="white-space:pre-wrap;font-size:11px;margin:0;">${escHtml(d.report)}</pre>`);
+    switchTab('chat');
+    flashSched(d.moved
+      ? `${d.moved} of ${d.total} would move — nothing changed`
+      : 'Schedule would change nothing', false);
+  }catch(e){ flashSched(e.message, true); }
 }
 
 /**

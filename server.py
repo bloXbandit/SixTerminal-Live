@@ -1358,6 +1358,26 @@ def run_schedule():
         sess.setdefault("schedule_log", []).append(entry)
         del sess["schedule_log"][:-40]          # keep the last 40 runs
 
+        # The agent could not see that Schedule had run at all — so asked
+        # afterwards why a date changed, it had no idea a reflow had happened
+        # and reasoned from the dates as if the user had typed them. This puts
+        # the run, and what it moved, into the record it reads.
+        _sample = "; ".join(
+            f"{s['activity_id']} {s['from']}->{s['to']}" for s in entry["samples"][:6])
+        _append_chat(
+            "system_result",
+            f"Schedule run — {len(moved)} activities moved",
+            context=(f"The user pressed Schedule (F9) at {entry['at']}.\n"
+                     f"  data date {entry['data_date']}\n"
+                     f"  project finish {_finish_before} -> {project_finish}\n"
+                     f"  {len(moved)} of {len(project.activities)} activities moved"
+                     + (f"\n  e.g. {_sample}" if _sample else "")
+                     + f"\n  {len(unlinked)} activities still have no logic.\n"
+                     "This rewrote Start/Finish across the job. Undo reverts it. "
+                     "If the user asks why a date changed, this run is the "
+                     "likely reason — do not describe these dates as though "
+                     "they were typed by hand."))
+
         return jsonify({
             "success": True,
             "data_date": str(project.data_date)[:10] if project.data_date else None,
@@ -3187,6 +3207,28 @@ def download():
         return send_file(tmp.name, as_attachment=True, download_name=output_name, mimetype="application/xml")
     except Exception as e:
         return jsonify({"error": f"Export failed: {str(e)}"}), 500
+
+
+@app.route("/api/schedule/preview", methods=["GET"])
+def schedule_preview_route():
+    """
+    What Schedule would do, without doing it.
+
+    Runs the same CPM pass on a copy, so the live project is untouched and
+    this is safe to call as often as you like. The point is the WHY: a count
+    of two thousand moved rows is not actionable, but "1,650 of them have no
+    predecessor and are being driven to the data date" is.
+    """
+    sess = _get_session()
+    if sess is None or sess["project"] is None:
+        return jsonify({"error": "No schedule loaded"}), 400
+    from engine import schedule_preview as sp
+    data = sp.analyse(sess["project"])
+    data["report"] = sp.report(sess["project"])
+    data["success"] = True
+    # Only the top movers travel — the full list is thousands of rows.
+    data["movers"] = data["movers"][:60]
+    return jsonify(data)
 
 
 @app.route("/api/schedule/log", methods=["GET"])

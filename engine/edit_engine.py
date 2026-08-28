@@ -228,7 +228,8 @@ def _would_create_cycle(project: Project, pred_uid: str, succ_uid: str) -> bool:
 # "Applied 5 edits" after running five reports — and how the agent, reading
 # that same record back, tells the user it wired logic it never wired.
 ADVISORY_ACTIONS = frozenset({"recommend_logic", "read_document", "describe_brain",
-                              "wbs_flow_report", "find_duplicates"})
+                              "wbs_flow_report", "find_duplicates",
+                              "schedule_preview"})
 
 
 def is_advisory(action: str) -> bool:
@@ -306,6 +307,9 @@ def apply_command(project: Project, command: Dict[str, Any]) -> Tuple[bool, str]
             return True, _wf.duplicates(project)
         elif action in ("fill_folder_from_template", "fill_folder", "match_folder"):
             return _fill_folder_from_template(project, command)
+        elif action in ("schedule_preview", "what_if_schedule", "preview_schedule"):
+            from engine import schedule_preview as _sp
+            return True, _sp.report(project)
         elif action in ("bulk_rules", "if_then"):
             return _bulk_rules(project, command)
         elif action == "move_activity_wbs":

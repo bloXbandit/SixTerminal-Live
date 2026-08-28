@@ -856,6 +856,24 @@ find_duplicates:
   other. Never delete one without being told which; report and ask.
     {"action": "find_duplicates"}
 
+schedule_preview:
+  What pressing Schedule (F9) WOULD do — read-only, runs the pass on a copy
+  and changes absolutely nothing. Reports how many activities would move, the
+  project finish before and after, the biggest movers, and WHY each moves:
+  no logic / driven by a predecessor / held by a constraint / pulled to the
+  data date.
+  Use it BEFORE telling the user to schedule, whenever they ask "what happens
+  if I schedule", "is it safe to reschedule", "why did my dates change", or
+  after wiring logic when you want to know whether the dates now behave.
+  Its most important finding: activities with NO PREDECESSOR are driven to
+  the data date by an explicit F9. On a schedule still being wired that is
+  most of the movement, and it means scheduling now would wreck dates the
+  user typed. If the preview shows a large "no logic" count, SAY SO and
+  recommend wiring those first rather than scheduling.
+  This is the honest way to answer "should I press Schedule" — never guess,
+  and never press it just to look.
+    {"action": "schedule_preview"}
+
 wbs_flow_report:
   Which FOLDERS are wired into the job and which are islands — read-only.
   Per-activity open-end counts cannot show this: a branch can have every
