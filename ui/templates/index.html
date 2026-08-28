@@ -5171,13 +5171,16 @@ function beginWbsRename(tr){
   input.addEventListener('mousedown', swallow);
 
   let done = false;
-  const commit = () => {
+  const commit = async () => {
     if(done) return;
     done = true;
     const val = (input.value || '').trim();
     if(!val || val === orig){ span.innerHTML = restore; return; }
-    directEdit([{action:'rename_wbs', wbs_uid:uid, new_name:val}],
-               `Rename folder "${orig}" → "${val}"`);
+    await directEdit([{action:'rename_wbs', wbs_uid:uid, new_name:val}],
+                     `Rename folder "${orig}" → "${val}"`);
+    // Success repaints the span via renamed_folders; if the editor is still
+    // sitting in it the edit failed (or was declined) — put the name back.
+    if(span.querySelector('input')) span.innerHTML = restore;
   };
   const cancel = () => { if(done) return; done = true; span.innerHTML = restore; };
   input.addEventListener('keydown', ev => {
@@ -5847,6 +5850,11 @@ async function directEdit(commands, label, brainOverride, via){
     if(Array.isArray(d.changed_folders) && d.changed_folders.length){
       patchFolderFlow(d.changed_folders);
     }
+    // A folder rename is a text edit, not a shape change — repaint just the
+    // header instead of rebuilding the grid (which lost scroll and focus).
+    if(Array.isArray(d.renamed_folders) && d.renamed_folders.length){
+      patchFolderNames(d.renamed_folders);
+    }
     if(d.success && !d.structural && Array.isArray(d.changed_rows)){
       // Patch in place — no refetch, no full rebuild. Adds and deletes come
       // through here too now, so inserting a row costs the same as editing one.
@@ -5895,6 +5903,24 @@ function patchRows(rows){
   if(_traceState) renderTrace();
   if(_pickState)  markPickTargets();
   refreshBulkBar();
+}
+
+/**
+ * Repaint renamed folder headers in place — the span, the dataset the context
+ * menu and bulk actions read, and the folder dropdowns. Keeps lastSchedData in
+ * step so a later re-render from cached data does not put the old name back.
+ */
+function patchFolderNames(renamed){
+  for(const f of renamed){
+    const w = (lastSchedData?.wbs_sections || []).find(s => s.uid === f.uid);
+    if(w) w.name = f.name;
+    const tr = document.getElementById('wbs-hdr-' + f.uid);
+    if(!tr) continue;
+    tr.dataset.wbsname = f.name;
+    const span = tr.querySelector('.wbs-name');
+    if(span) span.textContent = f.name;   // also clears the inline editor
+  }
+  populateWbsSelects(lastSchedData || {wbs_sections:[]});
 }
 
 // ── Transient feedback toast ──
@@ -7108,6 +7134,10 @@ function addActivityDraft(wbsUid, wbsName){
  */
 async function quickAddActivity(wbsUid, wbsName){
   if(!isEditMode) toggleEditMode();
+  // The name baked into the header's onclick goes stale after an in-place
+  // rename — and the add command targets the folder BY NAME. Read it fresh.
+  const hdr = document.getElementById('wbs-hdr-' + wbsUid);
+  if(hdr?.dataset.wbsname) wbsName = hdr.dataset.wbsname;
   lastActWbs = wbsName;
   const d = await directEdit(
     [{action:'add_activity', wbs_name:wbsName, name:'New Activity',

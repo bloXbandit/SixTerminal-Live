@@ -2007,6 +2007,7 @@ def _apply_direct(commands, label):
         before = _flat_rows(project)
         before_order = list(before.keys())
         before_wbs = None if tree_changing else _wbs_signature(project)
+        before_names = _wbs_names(project)
         before_flow = _flow_signature(project)
 
         _push_undo(label)
@@ -2056,9 +2057,18 @@ def _apply_direct(commands, label):
              "flow_floating": v[3], "flow_backward": v[4]}
             for uid, v in after_flow.items() if before_flow.get(uid) != v]
 
+        # Folder headers whose NAME changed — patched in place like a cell
+        # edit, so a rename no longer rebuilds the grid. Sent on structural
+        # edits too, harmlessly: the reload repaints the headers anyway.
+        renamed_folders = [
+            {"uid": uid, "name": name}
+            for uid, name in _wbs_names(project).items()
+            if uid in before_names and before_names[uid] != name]
+
         return jsonify({
             "type":             "result",
             "changed_folders":  changed_folders,
+            "renamed_folders":  renamed_folders,
             "success":          fail_count == 0,
             "commands_applied": success_count,
             "commands_failed":  fail_count,
@@ -3707,9 +3717,20 @@ _MILESTONE_TYPES = {"Start Milestone", "Finish Milestone"}
 _ORPHAN_WBS_UID = "__unassigned__"
 
 def _wbs_signature(project):
-    """Cheap fingerprint of the folder tree — order, nesting and names."""
-    return [(w.uid, w.parent_uid, w.name, w.sequence_num)
+    """Cheap fingerprint of the folder tree — order and nesting only.
+
+    Names are deliberately excluded: renaming a folder changes a header's
+    text and nothing about row placement, so it must not read as a shape
+    change — that is what forced a full grid rebuild (and the scroll /
+    collapse recalibration that comes with it) on every folder rename.
+    Name changes travel separately as renamed_folders."""
+    return [(w.uid, w.parent_uid, w.sequence_num)
             for w in _ordered_wbs(project)]
+
+
+def _wbs_names(project):
+    """uid -> name, diffed across an edit to report renames for in-place patching."""
+    return {w.uid: w.name for w in project.wbs_nodes}
 
 
 def _flow_signature(project) -> dict:
@@ -3755,8 +3776,11 @@ def _out_of_date_count(project) -> int:
     )
 
 
+# rename_wbs is deliberately NOT here: a rename changes a header's text and
+# nothing about row placement, so it is patched in place like a cell edit —
+# the response carries renamed_folders and the client repaints just the header.
 _TREE_ACTIONS = {
-    "add_wbs", "rename_wbs", "bulk_create_wbs", "add_wbs_for_each",
+    "add_wbs", "bulk_create_wbs", "add_wbs_for_each",
     "bulk_create_wbs_for_each", "move_wbs", "reorder_wbs",
     "delete_wbs", "duplicate_wbs", "move_activity_wbs", "move_activities",
     "copy_activities", "bulk_rules",
