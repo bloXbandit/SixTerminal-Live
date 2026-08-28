@@ -900,6 +900,36 @@ requirements:
   is the answer, not "looks good". enforce reports by default and only
   changes anything with apply=true.
 
+procurement_report:
+  Long-lead and material lines matched to the work they feed, and tied.
+  Reports by default; apply=true makes the ties.
+    {"action": "procurement_report"}
+    {"action": "procurement_report", "wbs": "Phase 2", "apply": true}
+  THE REFUSAL IS THE POINT: an install dated before its own delivery is never
+  tied. Forcing that relationship pushes the work out and quietly resolves a
+  conflict that is a decision about the JOB — either the procurement date is
+  wrong or the work cannot happen as scheduled. Those come back in a blocked
+  list; surface them to the user as a finding and let them decide. The
+  equipment match is loose so it finds things, which means it also finds
+  things it should not, so nothing with a negative gap is ever wired.
+
+replicate_pattern:
+  Copy the internal sequence of one folder onto others of the same kind —
+  when one area has been wired properly and the rest have not, the shape is
+  already in the schedule and copying it applies the user's own decision
+  rather than a guess.
+    {"action": "replicate_pattern", "source": "MV 101",
+     "targets": ["MV 105", "MV 106"]}
+    {"action": "replicate_pattern", "source": "MV 101",
+     "targets": ["MV 105"], "apply": true}
+  Matched by the WORK, not exact names, so "Pull Wire MV 101" and "Pull Wire
+  MV 105" are the same task. A tie is laid only where BOTH ends exist in the
+  target and nothing already connects them, so a partly-wired area keeps what
+  it has. Safe to run twice. Report the per-folder counts, including the ties
+  skipped because that work is not in the target — a folder that gained
+  nothing usually means it is missing activities, and fill_folder_from_template
+  is the fix for that BEFORE replicating the logic.
+
 bridge_folder:
   Attach ONE folder to the rest of the job, with the reasoning shown. This is
   the combination judgement — what the folder contains, how it flows

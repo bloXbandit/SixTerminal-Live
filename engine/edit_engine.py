@@ -230,7 +230,8 @@ def _would_create_cycle(project: Project, pred_uid: str, succ_uid: str) -> bool:
 ADVISORY_ACTIONS = frozenset({"recommend_logic", "read_document", "describe_brain",
                               "wbs_flow_report", "find_duplicates",
                               "schedule_preview", "normalize_plan",
-                              "bridge_folder", "backward_report"})
+                              "bridge_folder", "backward_report",
+                              "procurement_report"})
 
 
 def is_advisory(action: str) -> bool:
@@ -325,6 +326,10 @@ def apply_command(project: Project, command: Dict[str, Any]) -> Tuple[bool, str]
             return True, _br.backward_report(project)
         elif action in ("fix_backward", "clear_backward"):
             return _fix_backward(project, command)
+        elif action in ("procurement_report", "wire_procurement", "link_lle"):
+            return _wire_procurement(project, command)
+        elif action in ("replicate_pattern", "copy_logic_pattern"):
+            return _replicate_pattern(project, command)
         elif action in ("bulk_rules", "if_then"):
             return _bulk_rules(project, command)
         elif action == "move_activity_wbs":
@@ -2552,6 +2557,70 @@ def _requirements(project: Project, cmd: Dict) -> Tuple[bool, str]:
                       + _rq.report(project, to_check))
 
     return True, _rq.report(project, to_check)
+
+
+def _wire_procurement(project: Project, cmd: Dict) -> Tuple[bool, str]:
+    """
+    Tie each long-lead delivery to the work it feeds.
+
+    Reports by default. An install dated BEFORE its own delivery is never
+    tied — forcing that would push the work out and hide a conflict only the
+    user can resolve.
+    """
+    from engine import procurement_wire as _pw
+
+    needle = cmd.get("wbs") or cmd.get("scope") or None
+    if not cmd.get("apply"):
+        return True, _pw.procurement_report_text(project, needle)
+
+    r = _pw.wire_procurement(project, needle)
+    if not r["commands"]:
+        return True, ("Nothing to tie.\n"
+                      + _pw.procurement_report_text(project, needle))
+    results = apply_commands(project, r["commands"])
+    ok = sum(1 for good, _ in results if good)
+    msg = [f"Tied {ok} delivery→install relationship(s)."]
+    if r["blocked"]:
+        msg.append(f"  {len(r['blocked'])} left alone — the install is dated "
+                   f"before its own delivery, which is a decision for you, not "
+                   f"a tie. Run the report to see them.")
+    msg.append("  Nothing was deleted; undo reverts the batch.")
+    return True, "\n".join(msg)
+
+
+def _replicate_pattern(project: Project, cmd: Dict) -> Tuple[bool, str]:
+    """
+    Put the sequence of one folder onto others of the same kind.
+
+    Only where both ends of a tie exist in the target and nothing already
+    connects them, so a partly-wired area keeps its own logic.
+    """
+    from engine import procurement_wire as _pw
+
+    src = cmd.get("source") or cmd.get("from_wbs") or cmd.get("template_wbs")
+    if not src:
+        raise EditError("replicate_pattern needs a source folder")
+    targets = cmd.get("targets") or cmd.get("to_wbs") or cmd.get("target_wbs")
+    if isinstance(targets, str):
+        targets = [targets]
+    if not targets:
+        raise EditError("replicate_pattern needs targets")
+
+    brain = _BRAIN_FOR(project) if _BRAIN_FOR else None
+    if not cmd.get("apply"):
+        return True, _pw.replicate_report(project, src, targets, brain)
+
+    r = _pw.replicate_pattern(project, src, targets, brain)
+    if r.get("error"):
+        raise EditError(r["error"])
+    if not r["commands"]:
+        return True, ("Nothing to add.\n"
+                      + _pw.replicate_report(project, src, targets, brain))
+    results = apply_commands(project, r["commands"])
+    ok = sum(1 for good, _ in results if good)
+    per = "; ".join(f"{f['folder']} +{f['ties']}" for f in r["per_folder"][:8])
+    return True, (f"Replicated '{r['source']}' — {ok} tie(s) added. {per}. "
+                  f"Existing logic untouched; undo reverts the batch.")
 
 
 def _bridge_folder(project: Project, cmd: Dict) -> Tuple[bool, str]:
