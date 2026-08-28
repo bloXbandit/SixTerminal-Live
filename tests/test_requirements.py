@@ -276,3 +276,72 @@ def test_the_report_says_how_many_hold():
     ])
     assert "1 of 2 hold" in txt
     assert "Nothing has been changed" in txt
+
+
+# ── the gate flag: is ANYTHING scheduled past a checkpoint ───────────────────
+#
+# A deadline on "Final Completion" only ever looks at that one row. Work that
+# drifted past a phase gate is invisible until something else moves it, which
+# is how a job reports every named milestone green while being months over.
+# This asks the other question, and it is the one that finds the cause: on the
+# reference schedule only 6 of 2,428 activities breach the contract date, and
+# the worst of them is dragging the milestones out behind it.
+
+def _gate_job():
+    p = _p()
+    _act(p, "OK1", "Inside the gate", "P1", "2027-01-04", "2027-03-01")
+    _act(p, "LATE1", "Final Paint", "P1", "2027-06-01", "2027-10-26")
+    _act(p, "LATE2", "Building Finals", "P1", "2027-06-01", "2027-03-20")
+    return p
+
+
+def test_it_flags_work_past_the_gate_not_just_the_milestone():
+    r = rq.check(_gate_job(), {"kind": "not_after", "scope": "PH1",
+                               "date": "2027-03-15"})
+    assert not r["passed"]
+    assert r["violations"] == 2
+    assert {d["activity_id"] for d in r["detail"]} == {"LATE1", "LATE2"}
+
+
+def test_it_checks_everything_in_scope_not_a_named_subset():
+    r = rq.check(_gate_job(), {"kind": "not_after", "scope": "PH1",
+                               "date": "2027-03-15"})
+    assert r["matched"] == 3, "every activity in scope is the subject"
+
+
+def test_the_worst_overrun_is_reported_first_and_measured():
+    r = rq.check(_gate_job(), {"kind": "not_after", "scope": "PH1",
+                               "date": "2027-03-15"})
+    assert r["detail"][0]["activity_id"] == "LATE1"
+    assert r["detail"][0]["days_over"] == 225
+    assert r["worst_days_over"] == 225
+
+
+def test_a_clean_gate_passes():
+    p = _p()
+    _act(p, "OK1", "Early work", "P1", "2027-01-04", "2027-03-01")
+    assert rq.check(p, {"kind": "not_after", "scope": "PH1",
+                        "date": "2027-03-15"})["passed"]
+
+
+def test_the_report_says_how_many_days_over():
+    txt = rq.report(_gate_job(), [{"label": "PH1 gate", "kind": "not_after",
+                                   "scope": "PH1", "date": "2027-03-15"}])
+    assert "225 days over" in txt
+    assert "Final Paint" in txt
+
+
+def test_a_gate_overrun_is_never_auto_pinned():
+    """Pinning every overrunning row would add hundreds of constraints and
+    bury the overrun under exactly the pins that hide whether the network is
+    right. The fix is shortening or re-sequencing, not a constraint."""
+    r = rq.enforce(_gate_job(), {"kind": "not_after", "scope": "PH1",
+                                 "date": "2027-03-15"})
+    assert r["commands"] == []
+    assert "not something to auto-fix" in r["note"]
+
+
+def test_it_can_be_narrowed_to_a_kind_of_work():
+    r = rq.check(_gate_job(), {"kind": "not_after", "scope": "PH1",
+                               "what": "Paint", "date": "2027-03-15"})
+    assert r["matched"] == 1 and r["violations"] == 1

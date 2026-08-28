@@ -33,11 +33,13 @@ WHY REACHABILITY AND NOT A DIRECT LINK
   reaches the milestone, which is the whole point of asking.
 """
 
+from datetime import date as _date
 from typing import Any, Dict, List, Optional
 
 DEADLINE = "deadline"      # X must finish on or before DATE
 REACHES = "reaches"        # every X must have a forward path to some Y
 FOLLOWS = "follows"        # every X must be driven (directly or not) by some Y
+NOT_AFTER = "not_after"    # the GATE flag: nothing in scope may finish after DATE
 
 
 def _matches(act, pattern: str) -> bool:
@@ -129,6 +131,47 @@ def check(project, spec: Dict[str, Any]) -> Dict[str, Any]:
             "statement": f"{spec.get('what')} must finish on or before {date}",
         }
 
+    if kind == NOT_AFTER:
+        # The gate flag, and the question a deadline cannot answer. A deadline
+        # on "Final Completion" only ever looks at that one row, so work that
+        # drifted past a phase gate stays invisible while every named
+        # milestone still reports green. This asks whether ANYTHING in scope
+        # is scheduled past the date, and reports the worst overrun first,
+        # measured in days — which is what finds the cause.
+        date = str(spec.get("date") or "")[:10]
+        if not date:
+            return {"error": "not_after needs a date"}
+        what = spec.get("what") or ""
+        subject = [a for a in project.activities
+                   if _in_scope(project, a, scope)
+                   and (not what or _matches(a, what))]
+
+        def _days_over(a) -> int:
+            f = str(a.planned_finish or a.early_finish or "")[:10]
+            if not f or f <= date:
+                return 0
+            try:
+                return (_date.fromisoformat(f)
+                        - _date.fromisoformat(date)).days
+            except ValueError:
+                return 0
+
+        bad = sorted((a for a in subject if _days_over(a) > 0),
+                     key=_days_over, reverse=True)
+        return {
+            "kind": kind, "passed": not bad,
+            "matched": len(subject), "violations": len(bad),
+            "worst_days_over": _days_over(bad[0]) if bad else 0,
+            "detail": [{"activity_id": a.activity_id, "name": a.name,
+                        "folder": folder_of.get(a.wbs_uid, ""),
+                        "finish": str(a.planned_finish or a.early_finish or "")[:10],
+                        "days_over": _days_over(a)}
+                       for a in bad[:20]],
+            "statement": ("nothing" + (f" in '{scope}'" if scope else "")
+                          + (f" matching '{what}'" if what else "")
+                          + f" may finish after {date}"),
+        }
+
     if kind in (REACHES, FOLLOWS):
         a_pat = spec.get("from") or spec.get("what") or ""
         b_pat = spec.get("to") or spec.get("driver") or ""
@@ -167,7 +210,7 @@ def check(project, spec: Dict[str, Any]) -> Dict[str, Any]:
         }
 
     return {"error": f"Unknown requirement kind '{kind}' — "
-                     f"use deadline, reaches or follows"}
+                     f"use deadline, not_after, reaches or follows"}
 
 
 def enforce(project, spec: Dict[str, Any]) -> Dict[str, Any]:
@@ -185,6 +228,15 @@ def enforce(project, spec: Dict[str, Any]) -> Dict[str, Any]:
     kind = res["kind"]
     scope = spec.get("scope")
     cmds: List[Dict[str, Any]] = []
+
+    if kind == NOT_AFTER:
+        # Pinning every overrunning row would add hundreds of constraints and
+        # bury the overrun under exactly the pins that hide whether the
+        # network is right. The fix is shortening or re-sequencing the work.
+        return {"check": res, "commands": [],
+                "note": ("A gate overrun is not something to auto-fix — "
+                         "pinning every late activity would hide the problem. "
+                         "Shorten or re-sequence the work that drives it.")}
 
     if kind == DEADLINE:
         date = str(spec.get("date") or "")[:10]
@@ -256,6 +308,17 @@ def report(project, specs: List[Dict[str, Any]]) -> str:
             out.append(f"  OK  {label}  ({r['matched']} activities checked)")
             continue
         failed += 1
+        if r["kind"] == NOT_AFTER:
+            out.append(f"  ✗  {label}"
+                       f"\n       {r['violations']} of {r['matched']} break "
+                       f"this — worst is {r['worst_days_over']} days over:")
+            for d in r["detail"][:6]:
+                out.append(f"       · {d['activity_id']}  {d['name']}"
+                           f"  [{d['folder']}] — {d['finish']}, "
+                           f"{d['days_over']}d over")
+            if r["violations"] > 6:
+                out.append(f"       · …and {r['violations'] - 6} more")
+            continue
         out.append(f"  ✗  {label}"
                    f"\n       {r['violations']} of {r['matched']} break this:")
         for d in r["detail"][:6]:

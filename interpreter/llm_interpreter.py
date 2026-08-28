@@ -863,7 +863,7 @@ requirements:
   rather than something you hope to remember.
 
   YOUR job is turning the sentence into a requirement; the engine walks the
-  graph. Three kinds:
+  graph. Four kinds:
     deadline  — {"kind":"deadline","what":"Substantial Completion",
                  "scope":"PH1","date":"2027-03-15"}
     reaches   — every X must have a forward PATH to some Y (not a direct tie;
@@ -871,6 +871,18 @@ requirements:
                 {"kind":"reaches","from":"Burn","to":"Commissioning","scope":"PH2"}
     follows   — every X must be driven, directly or not, by some Y
                 {"kind":"follows","from":"MV","driver":"Energization"}
+    not_after — the GATE flag: nothing in scope may finish after DATE.
+                {"kind":"not_after","scope":"PH1","date":"2027-03-15"}
+                Different from deadline, and usually the more useful of the
+                two: a deadline on "Final Completion" only looks at that one
+                row, so work that drifted past a phase gate stays invisible
+                while every named milestone still reports green. This asks
+                whether ANYTHING is scheduled past the date, reports the worst
+                overrun first with how many days over, and is REPORT ONLY —
+                pinning every overrunning row would add hundreds of
+                constraints and bury the problem. When the user gives you a
+                phase or contract date, add BOTH: the deadline on the
+                milestone and the not_after gate on the scope.
   `scope` narrows by folder or id fragment, which is how "for each phase"
   works — add one requirement per phase with scope PH1 / PH2 / PH3.
   Always give a `label` so it reads back as the user said it.
