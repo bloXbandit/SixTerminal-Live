@@ -3132,6 +3132,29 @@ def download():
         return jsonify({"error": f"Export failed: {str(e)}"}), 500
 
 
+@app.route("/api/wbs-flow", methods=["GET"])
+def wbs_flow_route():
+    """
+    Which folders are actually wired into the job, and which are islands.
+
+    Read-only. Backs both the grid's flow tint and the Folder flow report —
+    one analysis, so the colour and the text can never disagree.
+    """
+    sess = _get_session()
+    if sess is None or sess["project"] is None:
+        return jsonify({"error": "No schedule loaded"}), 400
+    from engine import wbs_flow
+    data = wbs_flow.analyse(sess["project"])
+    return jsonify({
+        "success": True,
+        "totals": data["totals"],
+        "folders": list(data["folders"].values()),
+        "edges": data["edges"],
+        "backward": data["backward"],
+        "report": wbs_flow.report(sess["project"]),
+    })
+
+
 @app.route("/api/history", methods=["GET"])
 def history():
     sess = _get_session()
@@ -3818,6 +3841,24 @@ def _schedule_view_inner():
     for w in wbs_sections:
         w["activity_count_direct"] = len(w["activities"])
         w["activity_count_total"] = totals[w["uid"]]
+
+    # Whether each folder is actually wired into the rest of the job, for the
+    # grid's flow tint. Cheap — one pass over relations — and it travels with
+    # the rows so the colour cannot disagree with what is on screen.
+    try:
+        from engine import wbs_flow
+        _flow = wbs_flow.analyse(project)
+        for w in wbs_sections:
+            f = _flow["folders"].get(w["uid"])
+            if f:
+                w["flow"] = f["verdict"]
+                w["flow_in"] = f["links_in"]
+                w["flow_out"] = f["links_out"]
+                w["flow_floating"] = f["floating_count"]
+                if f.get("backward_out"):
+                    w["flow_backward"] = f["backward_out"]
+    except Exception:
+        pass          # the tint is a nicety; never let it cost the grid
 
     from engine.edit_engine import electricians_field
     return jsonify({

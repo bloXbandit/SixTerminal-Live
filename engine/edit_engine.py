@@ -227,7 +227,8 @@ def _would_create_cycle(project: Project, pred_uid: str, succ_uid: str) -> bool:
 # so counting one as "an edit applied" is how the tool ends up announcing
 # "Applied 5 edits" after running five reports — and how the agent, reading
 # that same record back, tells the user it wired logic it never wired.
-ADVISORY_ACTIONS = frozenset({"recommend_logic", "read_document", "describe_brain"})
+ADVISORY_ACTIONS = frozenset({"recommend_logic", "read_document", "describe_brain",
+                              "wbs_flow_report", "find_duplicates"})
 
 
 def is_advisory(action: str) -> bool:
@@ -297,6 +298,12 @@ def apply_command(project: Project, command: Dict[str, Any]) -> Tuple[bool, str]
             return _set_udf_type(project, command)
         elif action in ("describe_brain", "what_do_you_know"):
             return _describe_brain(project, command)
+        elif action in ("wbs_flow_report", "folder_flow"):
+            from engine import wbs_flow as _wf
+            return True, _wf.report(project)
+        elif action in ("find_duplicates", "duplicate_report"):
+            from engine import wbs_flow as _wf
+            return True, _wf.duplicates(project)
         elif action in ("bulk_rules", "if_then"):
             return _bulk_rules(project, command)
         elif action == "move_activity_wbs":

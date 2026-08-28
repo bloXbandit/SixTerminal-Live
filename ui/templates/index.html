@@ -1057,6 +1057,49 @@
       font-family:var(--mono);font-size:10px;color:var(--text3);
       max-width:160px;overflow:hidden;text-overflow:ellipsis;
     }
+    /* An activity with six predecessors rendered all six and then clipped the
+       cell at 160px, so five of them were in the DOM but unreachable — there
+       was no way to know they existed, let alone see them. The count pill says
+       how many there are and unclips the cell when clicked. */
+    .sched-links.links-open{
+      max-width:none;overflow:visible;text-overflow:clip;white-space:normal;
+    }
+    .links-more{
+      display:inline-block;cursor:pointer;user-select:none;
+      background:var(--accent);color:#fff;border-radius:3px;
+      padding:0 4px;margin:1px 3px 1px 0;font-size:9px;font-weight:600;
+      font-family:var(--mono);line-height:15px;vertical-align:middle;
+    }
+    .links-more:hover{filter:brightness(1.15);}
+
+    /* ── WBS flow tint ──────────────────────────────────────────────────
+       Off until switched on, so the grid looks exactly as it did. A folder
+       only goes green when NOTHING in it floats AND work both enters and
+       leaves it — one stray tie is not "connected". */
+    body.flow-on .sched-wbs-row.flow-connected{
+      box-shadow: inset 3px 0 0 var(--green);
+    }
+    body.flow-on .sched-wbs-row.flow-one_way{
+      box-shadow: inset 3px 0 0 var(--orange);
+    }
+    body.flow-on .sched-wbs-row.flow-dangling{
+      box-shadow: inset 3px 0 0 #eab308;
+    }
+    body.flow-on .sched-wbs-row.flow-isolated{
+      box-shadow: inset 3px 0 0 var(--red);
+      background: rgba(239,68,68,.06);
+    }
+    .flow-badge{
+      display:none;font-family:var(--mono);font-size:9px;
+      padding:0 4px;border-radius:3px;margin-left:6px;vertical-align:middle;
+      border:1px solid var(--border);color:var(--text3);
+    }
+    body.flow-on .flow-badge{display:inline-block;}
+    .flow-badge.b-connected{color:var(--green);border-color:var(--green);}
+    .flow-badge.b-one_way{color:var(--orange);border-color:var(--orange);}
+    .flow-badge.b-dangling{color:#eab308;border-color:#eab308;}
+    .flow-badge.b-isolated{color:var(--red);border-color:var(--red);}
+    .flow-badge.b-backward{color:#fff;background:var(--red);border-color:var(--red);}
     .sched-links .link-chip{
       display:inline-flex;align-items:center;gap:3px;background:var(--surface3);
       border:1px solid var(--border);border-radius:3px;
@@ -2093,6 +2136,15 @@
             <div class="tb-row">
               <button class="tb-chip" onclick="collapseAllWbs(true)" title="Collapse every WBS folder">⊟ Collapse all</button>
               <button class="tb-chip" onclick="collapseAllWbs(false)" title="Expand every WBS folder">⊞ Expand all</button>
+            </div>
+            <div class="tb-row">
+              <button class="tb-chip" onclick="toggleAllLinks()" title="Show every predecessor and successor on every row, instead of clipping to the first">⇄ All relationships</button>
+            </div>
+            <div class="tb-pop-sep"></div>
+            <div class="tb-pop-label">Folder flow</div>
+            <div class="tb-row">
+              <button class="tb-chip" onclick="toggleFlowView()" title="Colour folders by whether work flows in and out of them">◧ Flow colours</button>
+              <button class="tb-chip" onclick="showFlowReport()" title="List every folder that is isolated, one-way, or holds loose activities">▤ Flow report</button>
             </div>
             <div class="tb-row">
               <span class="tb-row-label">Show levels</span>
@@ -4510,6 +4562,48 @@ async function loadSchedule() {
   }
 }
 
+/**
+ * The flow verdict shown on a folder row, with the numbers behind it.
+ * Hidden by CSS until the flow view is switched on.
+ */
+const FLOW_TEXT = {
+  connected: 'flows through',
+  one_way:   'one-way',
+  dangling:  'loose work inside',
+  isolated:  'isolated',
+};
+function flowBadge(wbs){
+  if(!wbs.flow || wbs.flow === 'empty') return '';
+  const why = [];
+  why.push(`${wbs.flow_in || 0} link(s) in, ${wbs.flow_out || 0} out`);
+  if(wbs.flow_floating) why.push(`${wbs.flow_floating} activity(ies) with no logic at all`);
+  const back = wbs.flow_backward
+    ? `<span class="flow-badge b-backward" title="Feeds a folder that starts EARLIER than this one">↩ backward</span>`
+    : '';
+  return `<span class="flow-badge b-${wbs.flow}" title="${escAttr(why.join(' · '))}">`
+       + `${FLOW_TEXT[wbs.flow] || wbs.flow}</span>${back}`;
+}
+
+/** Switch the folder flow colouring on or off. */
+let _flowOn = false;
+function toggleFlowView(){
+  _flowOn = !_flowOn;
+  document.body.classList.toggle('flow-on', _flowOn);
+  flashSched(_flowOn
+    ? 'Folder flow: green = work enters and leaves with nothing loose · amber = one-way · yellow = loose activities · red = isolated'
+    : 'Folder flow view off');
+}
+
+/** The same analysis as a readable report. */
+async function showFlowReport(){
+  try{
+    const d = await fetch('/api/wbs-flow').then(_readJson);
+    if(d.error){ flashSched(d.error, true); return; }
+    addMsg('system', `<pre style="white-space:pre-wrap;font-size:11px;margin:0;">${escHtml(d.report)}</pre>`);
+    switchTab('chat');
+  }catch(e){ flashSched(e.message, true); }
+}
+
 function renderSchedule(data) {
   lastSchedData = data;
   if(_pendingDefaultFold){ applyDefaultFold(); _pendingDefaultFold = false; }
@@ -4520,7 +4614,7 @@ function renderSchedule(data) {
     const indent = ' '.repeat(wbs.depth * 4);
     const isCollapsed = collapsedWbs.has(wbs.uid);
     rows.push(`
-      <tr class="sched-wbs-row${isCollapsed ? ' collapsed' : ''}${selectedWbs.has(wbs.uid) ? ' wbs-selected' : ''}"
+      <tr class="sched-wbs-row${isCollapsed ? ' collapsed' : ''}${selectedWbs.has(wbs.uid) ? ' wbs-selected' : ''}${wbs.flow ? ' flow-' + wbs.flow : ''}"
           id="wbs-hdr-${wbs.uid}" data-wbsuid="${escAttr(wbs.uid)}"
           data-wbsname="${escAttr(wbs.name)}" data-depth="${wbs.depth || 0}"
           draggable="true" onclick="onWbsRowClick(event, '${wbs.uid}')">
@@ -4531,7 +4625,7 @@ function renderSchedule(data) {
             <span class="sched-wbs-code">${escHtml(wbs.code)}</span>
             <span class="sched-wbs-count"
                   title="${wbs.activity_count_direct ?? wbs.activities.length} directly in this folder">
-              ${wbs.activity_count_total ?? wbs.activities.length} act.</span>
+              ${wbs.activity_count_total ?? wbs.activities.length} act.</span>${flowBadge(wbs)}
           </span>
           <span class="wbs-tools">
             <span class="wbs-move" title="Move this folder up"
@@ -4733,6 +4827,13 @@ function renderActivityRow(a, wbsUid, hidden) {
   };
   const predChips = (a.predecessors || []).map(p => linkChip(p, p.activity_id, aid, 'pred')).join('');
   const succChips = (a.successors   || []).map(s => linkChip(s, aid, s.activity_id, 'succ')).join('');
+  // How many links this cell holds, and a way to actually see them. Without
+  // it a row with several predecessors looked identical to one with a single
+  // predecessor — the rest were rendered but clipped out of sight.
+  const linksMore = (n) => n > 1
+    ? `<span class="links-more" title="${n} links — click to show all"
+             onclick="toggleLinksCell(this);event.stopPropagation();">${n}</span>`
+    : '';
   const predAdd = `<span class="row-add-link" title="Add predecessor" onclick="addLink(${escAttrJs(aid)}, 'pred')">+</span>`;
   const succAdd = `<span class="row-add-link" title="Add successor" onclick="addLink(${escAttrJs(aid)}, 'succ')">+</span>`;
 
@@ -4780,8 +4881,8 @@ function renderActivityRow(a, wbsUid, hidden) {
       <td class="sched-date col-earlyfinish">${fmtDate(a.early_finish)}</td>
       <td class="sched-date col-latestart">${fmtDate(a.late_start)}</td>
       <td class="sched-date col-latefinish">${fmtDate(a.late_finish)}</td>
-      <td class="sched-links">${predChips || (isEditMode ? '' : '<span style="color:var(--text3)">—</span>')}${predAdd}</td>
-      <td class="sched-links">${succChips || (isEditMode ? '' : '<span style="color:var(--text3)">—</span>')}${succAdd}</td>
+      <td class="sched-links">${linksMore((a.predecessors || []).length)}${predAdd}${predChips || (isEditMode ? '' : '<span style="color:var(--text3)">—</span>')}</td>
+      <td class="sched-links">${linksMore((a.successors || []).length)}${succAdd}${succChips || (isEditMode ? '' : '<span style="color:var(--text3)">—</span>')}</td>
       <td class="col-status editable" data-actid="${escAttr(aid)}" data-edit="status"
           data-val="${escAttr(a.status)}"
           title="Double-click to status this activity"><span class="sched-status ${stCls}">${escHtml(a.status)}</span></td>
@@ -5303,6 +5404,25 @@ function focusBranch(uid){
   }
   expandOneLevel(uid);
   applyWbsVisibility();
+}
+
+/** Unclip one links cell so every chip in it is visible. */
+function toggleLinksCell(el){
+  const td = el.closest('td');
+  if(td) td.classList.toggle('links-open');
+}
+
+/**
+ * Show every link on every row at once, or clip them all back.
+ * Handy before wiring a branch, when what you need to see is which rows
+ * already carry logic rather than any one row's detail.
+ */
+let _allLinksOpen = false;
+function toggleAllLinks(){
+  _allLinksOpen = !_allLinksOpen;
+  document.querySelectorAll('td.sched-links').forEach(td =>
+    td.classList.toggle('links-open', _allLinksOpen));
+  flashSched(_allLinksOpen ? 'Showing every relationship' : 'Relationships collapsed');
 }
 
 function toggleWbs(uid) {
@@ -6407,6 +6527,15 @@ function reachableFrom(startId, adj){
  */
 function startPick(actId, dir, repoint){
   if(!isEditMode) toggleEditMode();
+  // Back to FS unless this is a repoint, which carries the link's own type in
+  // just below. The select keeps whatever was chosen last, so one SS tie made
+  // every later link SS until it was noticed — and the overwhelming majority
+  // of ties on a construction schedule are FS, so the sticky value was wrong
+  // far more often than it was right.
+  if(!repoint){
+    const pt = document.getElementById('pick-type'); if(pt) pt.value = 'fs';
+    const pl = document.getElementById('pick-lag');  if(pl) pl.value = '';
+  }
   _pickState = { actId, dir, repoint: repoint || null, added: 0,
                  invalid: new Set(), linked: new Set() };
   document.body.classList.add('pick-on');
