@@ -208,6 +208,66 @@ def _read_udfs(el, udf_titles):
     return out
 
 
+_DAY_NUM = {"monday": 0, "tuesday": 1, "wednesday": 2, "thursday": 3,
+            "friday": 4, "saturday": 5, "sunday": 6}
+
+
+def _read_work_pattern(cal_el):
+    """
+    The days a calendar actually works, and the days it does not.
+
+    P6 states this in <StandardWorkWeek>: one <StandardWorkHours> per day, and
+    a day is worked when it carries at least one <WorkTime> with a <Start>.
+    A non-working day is written as an empty, xsi:nil WorkTime.
+
+    None of this was read. Every imported calendar therefore fell back to the
+    dataclass default — Monday to Friday, no holidays — no matter what the
+    file said, which is why a six-day job kept coming back as five-day and
+    Saturdays were scheduled as if they were weekends. Holidays went the same
+    way: <HolidayOrException> was ignored, so a calendar named for its holiday
+    set observed none of them.
+
+    Returns (work_days, holidays) or (None, None) when the file says nothing,
+    so a calendar with no <StandardWorkWeek> keeps the existing default rather
+    than being silently emptied.
+    """
+    week_el = _child(cal_el, "StandardWorkWeek")
+    days = None
+    if week_el is not None:
+        found = set()
+        for sh in _children(week_el, "StandardWorkHours"):
+            name = (_text(sh, "DayOfWeek") or "").strip().lower()
+            num = _DAY_NUM.get(name)
+            if num is None:
+                continue
+            # worked when any WorkTime carries a real Start
+            for wt in _children(sh, "WorkTime"):
+                if _is_nil(wt):
+                    continue
+                if (_text(wt, "Start") or "").strip():
+                    found.add(num)
+                    break
+        # An entirely non-working week is a parse failure, not a real
+        # calendar — fall back rather than freeze the whole schedule.
+        if found:
+            days = frozenset(found)
+
+    hol = set()
+    for holder in list(_descendants(cal_el, "HolidayOrException")):
+        raw = _text(holder, "Date") or ""
+        iso = _iso_date(raw)
+        if not iso:
+            continue
+        # An exception CARRYING work time is a working exception (a Saturday
+        # brought in), not a day off. Only the non-working ones are holidays.
+        works = any((_text(wt, "Start") or "").strip()
+                    for wt in _descendants(holder, "WorkTime") if not _is_nil(wt))
+        if not works:
+            hol.add(iso)
+
+    return days, (frozenset(hol) if hol else None)
+
+
 def load_xml(path: str) -> Project:
     """
     Parse a P6 XML file and return a Project object.
@@ -269,7 +329,7 @@ def load_xml(path: str) -> Project:
         uid = _text(cal_el, "ObjectId")
         if not uid:
             continue
-        project.calendars.append(Calendar(
+        cal = Calendar(
             uid=uid,
             name=_text(cal_el, "Name") or f"Calendar {uid}",
             hours_per_day=_float(cal_el, "HoursPerDay", 8.0),
@@ -277,7 +337,15 @@ def load_xml(path: str) -> Project:
             hours_per_month=_float(cal_el, "HoursPerMonth", 172.0),
             hours_per_year=_float(cal_el, "HoursPerYear", 2000.0),
             type=_text(cal_el, "Type", "Global"),
-        ))
+        )
+        # The working pattern the file actually states. Left at the dataclass
+        # default when the file says nothing, so nothing regresses.
+        days, hol = _read_work_pattern(cal_el)
+        if days:
+            cal.work_days = days
+        if hol:
+            cal.holidays = hol
+        project.calendars.append(cal)
 
     if not project.calendars:
         project.calendars.append(Calendar(uid="1", name="Standard"))

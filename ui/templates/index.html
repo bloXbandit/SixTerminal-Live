@@ -2146,6 +2146,11 @@
               <button class="tb-chip" onclick="toggleFlowView()" title="Colour folders by whether work flows in and out of them">◧ Flow colours</button>
               <button class="tb-chip" onclick="showFlowReport()" title="List every folder that is isolated, one-way, or holds loose activities">▤ Flow report</button>
             </div>
+            <div class="tb-pop-sep"></div>
+            <div class="tb-pop-label">Schedule runs</div>
+            <div class="tb-row">
+              <button class="tb-chip" onclick="showScheduleLog()" title="Every time Schedule was run this session, and what each run moved">⏱ Schedule log</button>
+            </div>
             <div class="tb-row">
               <span class="tb-row-label">Show levels</span>
               <button class="tb-chip" onclick="collapseToLevel(1)" title="Top-level folders only">1</button>
@@ -3910,6 +3915,9 @@ async function doUndo() {
         </div></div></div>`
     );
     // Reload the grid — flagging it stale left the un-undone rows on screen.
+    // Undoing a Schedule run puts thousands of dates back, so land on the
+    // grid where that is visible rather than leaving the user in the chat.
+    if (/schedule/i.test(d.undone_label || '')) switchTab('schedule');
     await refreshAfterHistory(`Undid: ${d.undone_label}`);
   } catch(e) { addMsg('system', errorCard(e.message)); }
 }
@@ -3989,8 +3997,12 @@ async function runSchedule() {
     undoCount = d.undo_count; redoCount = d.redo_count;
     updateUndoBtn();
     resetEditState();
+    switchTab('schedule');          // land on the dates you just changed
     await loadSchedule();
-    flashSched(`Scheduled — finish ${d.project_finish || 'n/a'} · ${d.critical_count} critical`, false);
+    const movedTxt = (d.moved_count === 0)
+      ? 'nothing moved — the dates already agreed with the logic'
+      : `${d.moved_count} activit${d.moved_count === 1 ? 'y' : 'ies'} moved`;
+    flashSched(`Scheduled — ${movedTxt} · finish ${d.project_finish || 'n/a'}`, false);
 
     let msg = `<strong>Scheduled.</strong> Project finish <strong>${escHtml(d.project_finish || 'n/a')}</strong>`
             + ` · ${d.critical_count} critical activit${d.critical_count === 1 ? 'y' : 'ies'}`
@@ -4584,6 +4596,36 @@ function flowBadge(wbs){
        + `${FLOW_TEXT[wbs.flow] || wbs.flow}</span>${back}`;
 }
 
+/**
+ * Repaint folder headers whose connection verdict changed, in place.
+ *
+ * Keeps lastSchedData in step too, so a later re-render from cached data
+ * does not put the old colour back.
+ */
+function patchFolderFlow(changed){
+  const byUid = {};
+  (lastSchedData?.wbs_sections || []).forEach(w => byUid[w.uid] = w);
+  for(const f of changed){
+    const w = byUid[f.uid];
+    if(w){
+      w.flow = f.flow; w.flow_in = f.flow_in; w.flow_out = f.flow_out;
+      w.flow_floating = f.flow_floating; w.flow_backward = f.flow_backward;
+    }
+    const tr = document.getElementById('wbs-hdr-' + f.uid);
+    if(!tr) continue;
+    tr.classList.remove('flow-connected','flow-one_way','flow-dangling',
+                        'flow-isolated','flow-empty');
+    if(f.flow) tr.classList.add('flow-' + f.flow);
+    const old = tr.querySelector('.flow-badge');
+    if(old){
+      // rebuild the badge(s) from the folder record we just refreshed
+      const holder = old.parentElement;
+      tr.querySelectorAll('.flow-badge').forEach(b => b.remove());
+      holder.insertAdjacentHTML('beforeend', flowBadge(w || f));
+    }
+  }
+}
+
 /** Switch the folder flow colouring on or off. */
 let _flowOn = false;
 function toggleFlowView(){
@@ -4592,6 +4634,50 @@ function toggleFlowView(){
   flashSched(_flowOn
     ? 'Folder flow: green = work enters and leaves with nothing loose · amber = one-way · yellow = loose activities · red = isolated'
     : 'Folder flow view off');
+}
+
+/**
+ * Every Schedule run this session and what each one moved.
+ *
+ * Scheduling is the one action that rewrites Start/Finish across the whole
+ * job, so "what did that do, and should I put it back" needs an answer that
+ * is not memory. Undo reverts the most recent one.
+ */
+async function showScheduleLog(){
+  try{
+    const d = await fetch('/api/schedule/log').then(_readJson);
+    if(d.error){ flashSched(d.error, true); return; }
+    if(!d.count){
+      addMsg('system', 'Schedule has not been run yet this session.');
+      switchTab('chat');
+      return;
+    }
+    const lines = d.runs.map((r, i) => {
+      const when = (r.at || '').replace('T', ' ');
+      const head = `${i === 0 ? '▶ most recent' : '  '}  ${when}`;
+      const moved = r.moved === 0
+        ? '     nothing moved — the dates already agreed with the logic'
+        : `     ${r.moved} activit${r.moved === 1 ? 'y' : 'ies'} moved`;
+      const fin = (r.finish_before !== r.finish_after)
+        ? `     project finish ${r.finish_before || '—'} → ${r.finish_after || '—'}`
+        : `     project finish unchanged (${r.finish_after || '—'})`;
+      const samp = (r.samples || []).map(s => {
+        const moved = [];
+        if(s.from !== s.to) moved.push(`start ${s.from || '—'} → ${s.to || '—'}`);
+        if(s.from_finish !== s.to_finish) moved.push(`finish ${s.from_finish || '—'} → ${s.to_finish || '—'}`);
+        return `       ${s.activity_id}  ${moved.join(', ')}  ${s.name || ''}`;
+      });
+      const more = r.moved > (r.samples || []).length
+        ? [`       …and ${r.moved - r.samples.length} more`] : [];
+      return [head, moved, fin, ...samp, ...more,
+              `     data date ${r.data_date || '—'} · ${r.critical} critical · ${r.unlinked} unlinked`
+             ].join('\n');
+    }).join('\n\n');
+    addMsg('system', `<pre style="white-space:pre-wrap;font-size:11px;margin:0;">`
+      + escHtml(`SCHEDULE RUNS (${d.count} this session)\n\n${lines}\n\n`
+                + `Undo reverts the most recent run.`) + `</pre>`);
+    switchTab('chat');
+  }catch(e){ flashSched(e.message, true); }
 }
 
 /** The same analysis as a readable report. */
@@ -5723,6 +5809,12 @@ async function directEdit(commands, label, brainOverride, via){
     }
     // Value-only edit → patch just the changed rows in place. Structural edits
     // (add/delete/move/id-change) still do a full reload.
+    // A relationship edit can flip a folder from isolated to connected, and
+    // the folder header is not one of the rows patched below — so without
+    // this the flow colour keeps showing the state before the edit.
+    if(Array.isArray(d.changed_folders) && d.changed_folders.length){
+      patchFolderFlow(d.changed_folders);
+    }
     if(d.success && !d.structural && Array.isArray(d.changed_rows)){
       // Patch in place — no refetch, no full rebuild. Adds and deletes come
       // through here too now, so inserting a row costs the same as editing one.

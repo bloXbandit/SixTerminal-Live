@@ -221,6 +221,11 @@ def _make_session(pid: str, source_name: str) -> dict:
         "redo_stack":   [],
         "chat_history": [],
         "last_undone":  None,
+        # Every explicit Schedule (F9) run: when, and what it actually moved.
+        # Scheduling is the one action that rewrites Start/Finish wholesale,
+        # so "what did that just do, and can I put it back" needs an answer
+        # that is not the user's memory.
+        "schedule_log": [],
     }
 
 
@@ -1275,6 +1280,17 @@ def run_schedule():
     try:
         _push_undo("Schedule (CPM)")
 
+        # What the dates were BEFORE, so the log can say what this run moved
+        # rather than only that it ran. Scheduling is the one action that
+        # rewrites Start/Finish across the whole job, so "what did that do"
+        # has to be answerable without trusting memory.
+        _before = {a.uid: (str(a.planned_start or "")[:10],
+                           str(a.planned_finish or "")[:10])
+                   for a in project.activities}
+        _finish_before = max(
+            [str(a.planned_finish)[:10] for a in project.activities
+             if a.planned_finish] or [""]) or None
+
         # CPM needs an origin. Prefer an explicit data date, then the project
         # start, then the earliest date already on the schedule, then today.
         if override:
@@ -1314,6 +1330,34 @@ def run_schedule():
             linked.add(r.predecessor_uid); linked.add(r.successor_uid)
         unlinked = [a.activity_id for a in project.activities if a.uid not in linked]
 
+        moved = [a for a in project.activities
+                 if _before.get(a.uid, ("", "")) !=
+                 (str(a.planned_start or "")[:10], str(a.planned_finish or "")[:10])]
+        entry = {
+            "at": _dt.datetime.now().isoformat(timespec="seconds"),
+            "data_date": str(project.data_date)[:10] if project.data_date else None,
+            "finish_before": _finish_before,
+            "finish_after": project_finish,
+            "moved": len(moved),
+            "activities": len(project.activities),
+            "critical": len(critical),
+            "unlinked": len(unlinked),
+            # The examples make the number checkable instead of asking for
+            # trust — and are what you look at before deciding to undo.
+            # Start AND finish: a reflow often moves only the finish (a
+            # duration change, or a predecessor slipping), and a sample
+            # showing just the start would then look like nothing happened.
+            "samples": [
+                {"activity_id": a.activity_id, "name": a.name,
+                 "from": _before.get(a.uid, ("", ""))[0],
+                 "to": str(a.planned_start or "")[:10],
+                 "from_finish": _before.get(a.uid, ("", ""))[1],
+                 "to_finish": str(a.planned_finish or "")[:10]}
+                for a in moved[:12]],
+        }
+        sess.setdefault("schedule_log", []).append(entry)
+        del sess["schedule_log"][:-40]          # keep the last 40 runs
+
         return jsonify({
             "success": True,
             "data_date": str(project.data_date)[:10] if project.data_date else None,
@@ -1323,6 +1367,8 @@ def run_schedule():
             "critical_count": len(critical),
             "unlinked_count": len(unlinked),
             "reordered": bool(reorder),
+            "moved_count": len(moved),
+            "finish_before": _finish_before,
             "undo_count": len(sess["undo_stack"]),
             "redo_count": len(sess["redo_stack"]),
         })
@@ -1941,6 +1987,7 @@ def _apply_direct(commands, label):
         before = _flat_rows(project)
         before_order = list(before.keys())
         before_wbs = None if tree_changing else _wbs_signature(project)
+        before_flow = _flow_signature(project)
 
         _push_undo(label)
         results = apply_commands(project, commands)
@@ -1980,8 +2027,18 @@ def _apply_direct(commands, label):
         if structural:
             changed_rows = added_rows = removed_ids = None
 
+        # Folder headers whose connection verdict moved because of this edit.
+        # Sent even on a structural edit — harmless there, since the reload
+        # repaints them anyway — so the client never has to reason about it.
+        after_flow = _flow_signature(project)
+        changed_folders = [
+            {"uid": uid, "flow": v[0], "flow_in": v[1], "flow_out": v[2],
+             "flow_floating": v[3], "flow_backward": v[4]}
+            for uid, v in after_flow.items() if before_flow.get(uid) != v]
+
         return jsonify({
             "type":             "result",
+            "changed_folders":  changed_folders,
             "success":          fail_count == 0,
             "commands_applied": success_count,
             "commands_failed":  fail_count,
@@ -3132,6 +3189,28 @@ def download():
         return jsonify({"error": f"Export failed: {str(e)}"}), 500
 
 
+@app.route("/api/schedule/log", methods=["GET"])
+def schedule_log_route():
+    """
+    Every Schedule (F9) run this session and what it moved.
+
+    Scheduling is the one action that rewrites Start/Finish across the whole
+    job, so it is the one most worth being able to look at and undo. Each
+    entry carries the finish date before and after, how many activities moved,
+    and a sample of them by name.
+    """
+    sess = _get_session()
+    if sess is None:
+        return jsonify({"error": "No schedule loaded"}), 400
+    log = sess.get("schedule_log", [])
+    return jsonify({
+        "success": True,
+        "runs": list(reversed(log)),          # most recent first
+        "count": len(log),
+        "undo_count": len(sess.get("undo_stack", [])),
+    })
+
+
 @app.route("/api/wbs-flow", methods=["GET"])
 def wbs_flow_route():
     """
@@ -3589,6 +3668,26 @@ def _wbs_signature(project):
     """Cheap fingerprint of the folder tree — order, nesting and names."""
     return [(w.uid, w.parent_uid, w.name, w.sequence_num)
             for w in _ordered_wbs(project)]
+
+
+def _flow_signature(project) -> dict:
+    """
+    Each folder's connection verdict, for the grid's flow tint.
+
+    Adding one relationship can flip a folder from isolated to connected, but
+    a relationship edit patches only the ACTIVITY rows in place — the folder
+    header is not among them, so its colour would keep saying "isolated" until
+    something else forced a full reload. Comparing this before and after an
+    edit says exactly which headers need repainting, without paying for a
+    reload of a few thousand rows to repaint four of them.
+    """
+    try:
+        from engine import wbs_flow
+        return {uid: (f["verdict"], f["links_in"], f["links_out"],
+                      f["floating_count"], f.get("backward_out", 0))
+                for uid, f in wbs_flow.analyse(project)["folders"].items()}
+    except Exception:
+        return {}
 
 
 # Actions that reshape the WBS tree itself. Rows can be patched in place for
