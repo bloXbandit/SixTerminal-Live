@@ -229,7 +229,8 @@ def _would_create_cycle(project: Project, pred_uid: str, succ_uid: str) -> bool:
 # that same record back, tells the user it wired logic it never wired.
 ADVISORY_ACTIONS = frozenset({"recommend_logic", "read_document", "describe_brain",
                               "wbs_flow_report", "find_duplicates",
-                              "schedule_preview", "normalize_plan"})
+                              "schedule_preview", "normalize_plan",
+                              "bridge_folder", "backward_report"})
 
 
 def is_advisory(action: str) -> bool:
@@ -317,6 +318,13 @@ def apply_command(project: Project, command: Dict[str, Any]) -> Tuple[bool, str]
             return _normalize_logic(project, command)
         elif action in ("requirements", "requirement", "check_requirements"):
             return _requirements(project, command)
+        elif action in ("bridge_folder", "bridge"):
+            return _bridge_folder(project, command)
+        elif action in ("backward_report", "backward_flow"):
+            from engine import bridge as _br
+            return True, _br.backward_report(project)
+        elif action in ("fix_backward", "clear_backward"):
+            return _fix_backward(project, command)
         elif action in ("bulk_rules", "if_then"):
             return _bulk_rules(project, command)
         elif action == "move_activity_wbs":
@@ -2544,6 +2552,65 @@ def _requirements(project: Project, cmd: Dict) -> Tuple[bool, str]:
                       + _rq.report(project, to_check))
 
     return True, _rq.report(project, to_check)
+
+
+def _bridge_folder(project: Project, cmd: Dict) -> Tuple[bool, str]:
+    """
+    Attach one folder to the rest of the job, with the reasoning shown.
+
+    Reports by default. The choice of WHICH activity to bridge on is the part
+    worth arguing with, so the candidates and their scores come back rather
+    than just a tie.
+    """
+    from engine import bridge as _br
+
+    ref = (cmd.get("wbs") or cmd.get("folder") or cmd.get("wbs_name")
+           or cmd.get("wbs_uid"))
+    if not ref:
+        raise EditError("bridge_folder needs a folder (wbs)")
+    node = _find_wbs(project, ref, ref, ref)
+    if not node:
+        raise EditError(_no_wbs(project, ref))
+
+    brain = _BRAIN_FOR(project) if _BRAIN_FOR else None
+    if not cmd.get("apply"):
+        return True, _br.report(project, node.uid, brain)
+
+    r = _br.propose(project, node.uid, brain)
+    if r.get("error"):
+        raise EditError(r["error"])
+    if not r["commands"]:
+        return True, (f"Nothing confident enough to bridge '{r['folder']}'. "
+                      + _br.report(project, node.uid, brain))
+    results = apply_commands(project, r["commands"])
+    ok = sum(1 for good, _ in results if good)
+    return True, (f"Bridged '{r['folder']}': {ok} tie(s) added. "
+                  f"Nothing was deleted; undo reverts it.")
+
+
+def _fix_backward(project: Project, cmd: Dict) -> Tuple[bool, str]:
+    """
+    Reverse only the folder ties that are genuinely upside down.
+
+    Ties whose dates simply drifted are left alone — those need a reflow, and
+    reversing them would break correct logic.
+    """
+    from engine import bridge as _br
+
+    cmds = _br.fix_backward(project)
+    if not cmds:
+        return True, ("No backward tie is safely reversible.\n"
+                      + _br.backward_report(project))
+    n = len(cmds) // 2
+    if not cmd.get("apply"):
+        return True, (f"{n} tie(s) are genuinely reversed and can be flipped. "
+                      f"Nothing applied — pass apply=true.\n"
+                      + _br.backward_report(project))
+    results = apply_commands(project, cmds)
+    ok = sum(1 for good, _ in results if good)
+    return True, (f"Reversed {n} backward tie(s) ({ok} commands). "
+                  f"Ties whose dates had merely drifted were left alone — "
+                  f"run Schedule for those. Undo reverts the batch.")
 
 
 def _normalize_logic(project: Project, cmd: Dict) -> Tuple[bool, str]:

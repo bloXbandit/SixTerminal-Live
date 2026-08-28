@@ -900,6 +900,41 @@ requirements:
   is the answer, not "looks good". enforce reports by default and only
   changes anything with apply=true.
 
+bridge_folder:
+  Attach ONE folder to the rest of the job, with the reasoning shown. This is
+  the combination judgement — what the folder contains, how it flows
+  internally, and the best partner outside:
+    · the bridge goes on the row that really STARTS the work (the head of the
+      internal chain, or a start milestone), never a middle row — a tie into
+      the middle of a chain changes no date and leaves the folder just as unfed
+    · the same for the way out, from the row that really ends it
+    · candidates come back RANKED with why each scored, so the choice can be
+      argued with rather than taken on trust
+  Reports by default; apply=true makes the ties.
+    {"action": "bridge_folder", "wbs": "MV 101"}
+    {"action": "bridge_folder", "wbs": "MV 101", "apply": true}
+  Use this for one folder. Use normalize_logic when many need it at once.
+  If it says nothing outside finishes close enough before the folder, SAY SO —
+  that means the feeding work is missing or the dates are wrong, and inventing
+  a tie would hide a real problem.
+
+backward_report / fix_backward:
+  A folder tie running backward in time is one of three things, and they must
+  be told apart before anything is changed:
+    reversed  the tie itself is upside down — safe to flip, and this is what
+              "clear the backward flag" means
+    stale     the two activities are in order; only the FOLDERS' earliest
+              dates disagree because the schedule has not been reflowed. The
+              logic is correct — run Schedule, do NOT edit it
+    real      genuinely out-of-sequence work; only the user can say
+  backward_report classifies them. fix_backward flips ONLY the reversed ones
+  and never touches the stale ones — on a real schedule the split can be 34
+  reversed against 60 stale, so "fix all of them" would break sixty working
+  ties. Report the split before offering to fix anything.
+    {"action": "backward_report"}
+    {"action": "fix_backward"}                  ← what would be flipped
+    {"action": "fix_backward", "apply": true}
+
 normalize_plan:
   Read-only. The whole schedule diagnosed at once, in the order the work
   should actually be done: duplicates first (wiring a folder that holds
