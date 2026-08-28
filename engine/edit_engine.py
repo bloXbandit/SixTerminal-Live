@@ -304,6 +304,8 @@ def apply_command(project: Project, command: Dict[str, Any]) -> Tuple[bool, str]
         elif action in ("find_duplicates", "duplicate_report"):
             from engine import wbs_flow as _wf
             return True, _wf.duplicates(project)
+        elif action in ("fill_folder_from_template", "fill_folder", "match_folder"):
+            return _fill_folder_from_template(project, command)
         elif action in ("bulk_rules", "if_then"):
             return _bulk_rules(project, command)
         elif action == "move_activity_wbs":
@@ -1266,6 +1268,208 @@ def _copy_activities(project: Project, cmd: Dict) -> Tuple[bool, str]:
     if missing:
         msg += f"; {len(missing)} copied row(s) no longer exist and were skipped"
     return True, msg
+
+
+def _wd_delta(d1, d2, wd, hol) -> int:
+    """Working days from d1 to d2 on a calendar. Negative if d2 is earlier."""
+    import datetime as _d
+    if d2 == d1:
+        return 0
+    step = 1 if d2 > d1 else -1
+    days, cur = 0, d1
+    guard = 0
+    while cur != d2 and guard < 4000:
+        cur += _d.timedelta(days=step)
+        guard += 1
+        if cur.weekday() in wd and ((not hol) or cur.isoformat() not in hol):
+            days += step
+    return days
+
+
+def _fill_folder_from_template(project: Project, cmd: Dict) -> Tuple[bool, str]:
+    """
+    Build a thin folder up to match one that is already right — without
+    disturbing a thing that is already in it.
+
+    The situation this exists for: several areas are meant to run the same way,
+    one of them has been fully built out and wired, and the rest were started
+    and left short. Copying the whole template over would duplicate the rows
+    that already exist and orphan the logic hanging off them; adding the
+    missing rows by hand is hours of work per area.
+
+    What it does, and nothing else:
+      · matches rows by WORK, not by exact name — "Pull Wire MV 101" and
+        "Pull Wire MV 105" are the same task in two places (the same
+        normalisation the crew-fill uses), so an area that already has the
+        work under its own name is left alone
+      · adds ONLY the template rows with no counterpart in the target
+      · re-creates the template's internal logic between rows in the target,
+        skipping any tie that is already there
+      · NEVER deletes an activity, NEVER deletes or repoints a relationship,
+        and NEVER edits a row that already existed. Logic already in the
+        target survives untouched — that is the whole point.
+
+    Names carry the area across when the folder name appears in them, so
+    "Set CRAHs MV 101" lands in MV 105 as "Set CRAHs MV 105". When it does
+    not appear, the template's name is used as-is.
+
+    Dates are placed at the same working-day OFFSET from the target folder's
+    start as they sit from the template's, so the shape is preserved rather
+    than every new row piling onto one day. Edits do not reschedule, so run
+    Schedule afterwards to let the logic settle them.
+
+      template_wbs / source_wbs : the folder to copy the pattern FROM
+      target_wbs                : the folder to fill (or targets: [..])
+      with_logic                : default true; false adds rows only
+      preview                   : default false; true reports and changes nothing
+    """
+    import datetime as _d
+
+    src_ref = (cmd.get("template_wbs") or cmd.get("source_wbs")
+               or cmd.get("template_wbs_name") or cmd.get("source_wbs_name"))
+    if not src_ref:
+        raise EditError("template_wbs is required — the folder to copy the pattern from")
+    src = _find_wbs(project, src_ref, src_ref, src_ref)
+    if not src:
+        raise EditError("Template " + _no_wbs(project, src_ref))
+
+    targets_ref = cmd.get("targets") or cmd.get("target_wbs") or cmd.get("target_wbs_name")
+    if not targets_ref:
+        raise EditError("target_wbs is required — the folder to fill")
+    if isinstance(targets_ref, str):
+        targets_ref = [targets_ref]
+
+    tgts = []
+    for ref in targets_ref:
+        w = _find_wbs(project, ref, ref, ref)
+        if not w:
+            raise EditError("Target " + _no_wbs(project, ref))
+        if w.uid == src.uid:
+            raise EditError(f"'{w.name}' is the template — pick a different folder to fill")
+        tgts.append(w)
+
+    with_logic = cmd.get("with_logic", True)
+    preview = bool(cmd.get("preview"))
+
+    by_folder: Dict[str, List[Activity]] = {}
+    for a in project.activities:
+        by_folder.setdefault(a.wbs_uid, []).append(a)
+
+    src_acts = by_folder.get(src.uid, [])
+    if not src_acts:
+        raise EditError(f"Template folder '{src.name}' has no activities to copy")
+
+    def _earliest(acts):
+        ds = [str(a.planned_start)[:10] for a in acts if a.planned_start]
+        return min(ds) if ds else None
+
+    src_start_s = _earliest(src_acts)
+    src_uids = {a.uid for a in src_acts}
+    src_internal = [r for r in project.relations
+                    if r.predecessor_uid in src_uids and r.successor_uid in src_uids]
+
+    lines, total_added, total_ties = [], 0, 0
+    for tgt in tgts:
+        tgt_acts = by_folder.get(tgt.uid, [])
+        have = {_norm_name(a.name): a for a in tgt_acts}
+        missing = [a for a in src_acts if _norm_name(a.name) not in have]
+
+        tgt_start_s = _earliest(tgt_acts) or src_start_s
+        added_map: Dict[str, Activity] = {}       # src uid -> new activity
+
+        if preview:
+            lines.append(f"{tgt.name}: would add {len(missing)} of "
+                         f"{len(src_acts)} — {len(tgt_acts)} already there")
+            for a in missing[:8]:
+                lines.append(f"    + {a.name}")
+            if len(missing) > 8:
+                lines.append(f"    +{len(missing) - 8} more")
+            continue
+
+        for a in missing:
+            wd, hol, hpd = _act_calendar(project, a)
+            new_start = a.planned_start
+            if src_start_s and tgt_start_s and a.planned_start:
+                try:
+                    off = _wd_delta(_d.date.fromisoformat(src_start_s),
+                                    _d.date.fromisoformat(str(a.planned_start)[:10]),
+                                    wd, hol)
+                    new_start = _add_working_days(
+                        _d.date.fromisoformat(tgt_start_s), off, wd, hol).isoformat()
+                except ValueError:
+                    new_start = a.planned_start
+            dur_d = (a.planned_duration or 0.0) / hpd
+            new_finish = new_start
+            if new_start and dur_d > 0:
+                try:
+                    new_finish = _add_working_days(
+                        _d.date.fromisoformat(new_start), _span_days(dur_d),
+                        wd, hol).isoformat()
+                except ValueError:
+                    new_finish = new_start
+
+            name = a.name or ""
+            if src.name and tgt.name and src.name in name:
+                name = name.replace(src.name, tgt.name)
+
+            new = Activity(
+                uid=_new_uid(), activity_id=_next_activity_id(project),
+                name=name, wbs_uid=tgt.uid, calendar_uid=a.calendar_uid,
+                activity_type=a.activity_type, status="Not Started",
+                planned_duration=a.planned_duration,
+                remaining_duration=a.planned_duration,
+                planned_start=new_start, planned_finish=new_finish,
+            )
+            if getattr(a, "udfs", None):
+                new.udfs = dict(a.udfs)
+            project.activities.append(new)
+            project.build_lookups()
+            added_map[a.uid] = new
+            total_added += 1
+
+        ties = 0
+        if with_logic:
+            # Where does each template row live in the target? Either a row
+            # that was already there doing that work, or one just added.
+            counterpart: Dict[str, Activity] = {}
+            for a in src_acts:
+                if a.uid in added_map:
+                    counterpart[a.uid] = added_map[a.uid]
+                else:
+                    m = have.get(_norm_name(a.name))
+                    if m is not None:
+                        counterpart[a.uid] = m
+            existing = {(r.predecessor_uid, r.successor_uid) for r in project.relations}
+            for r in src_internal:
+                p = counterpart.get(r.predecessor_uid)
+                s = counterpart.get(r.successor_uid)
+                if p is None or s is None or p.uid == s.uid:
+                    continue
+                if (p.uid, s.uid) in existing:
+                    continue          # already tied — leave the user's logic alone
+                project.relations.append(Relation(
+                    uid=_new_uid(), predecessor_uid=p.uid, successor_uid=s.uid,
+                    type=r.type, lag=r.lag))
+                existing.add((p.uid, s.uid))
+                ties += 1
+            total_ties += ties
+
+        project.build_lookups()
+        lines.append(f"{tgt.name}: +{len(missing)} activities, +{ties} ties "
+                     f"({len(tgt_acts)} already there, untouched)")
+
+    if preview:
+        return True, ("PREVIEW — nothing changed.\n"
+                      f"Template '{src.name}' has {len(src_acts)} activities.\n"
+                      + "\n".join(lines)
+                      + "\nRun again without preview to apply.")
+
+    head = (f"Filled from '{src.name}': +{total_added} activities, "
+            f"+{total_ties} relationships across "
+            f"{len(tgts)} folder{'s' if len(tgts) != 1 else ''}. "
+            f"Nothing existing was changed or removed.")
+    tail = "\n  " + "\n  ".join(lines) if lines else ""
+    return True, head + tail + "\n  Run Schedule to let the new logic settle the dates."
 
 
 def _move_activities(project: Project, cmd: Dict) -> Tuple[bool, str]:

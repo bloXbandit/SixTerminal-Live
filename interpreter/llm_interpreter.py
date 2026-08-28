@@ -827,6 +827,28 @@ update_udf:
   {"action": "update_udf", "activity_id": "A1000", "value": "6"}
   {"action": "update_udf", "activity_id": "A1000", "field": "Number of Electricians", "value": "6"}
 
+fill_folder_from_template:
+  Build a thin folder up to match one that is already right, WITHOUT
+  disturbing what is already in it. For "make MV 105 look like MV 101",
+  "fill in the missing activities", "the other rooms should follow this one".
+  Rows are matched by the WORK, not exact name, so "Pull Wire MV 101" and
+  "Pull Wire MV 105" are the same task — an area that already has that work
+  is left alone. Only genuinely missing rows are added; the template's
+  internal logic is recreated, skipping any tie already there; and the area
+  carries into the names. Nothing is ever deleted, no existing relationship
+  is touched, and no existing row is edited. Safe to run twice.
+  ALWAYS offer preview first on a folder the user has not filled before —
+  it reports what would be added and changes nothing.
+    {"action": "fill_folder_from_template", "template_wbs": "MV 101",
+     "target_wbs": "MV 105", "preview": true}
+    {"action": "fill_folder_from_template", "template_wbs": "MV 101",
+     "targets": ["MV 105", "MV 106", "MV 107"]}
+  with_logic: false adds the rows without recreating the ties.
+  Dates land at the same working-day offset from the target folder's start as
+  they sit from the template's, so tell the user to run Schedule afterwards.
+  Do NOT use copy_activities for this — it duplicates rows that already exist,
+  which is what created the duplicate pairs in this schedule.
+
 find_duplicates:
   Activities repeated in the same folder on the same date — read-only. A
   schedule built from repeated imports grows identical pairs, which double the

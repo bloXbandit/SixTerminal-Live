@@ -5406,6 +5406,44 @@ function focusBranch(uid){
   applyWbsVisibility();
 }
 
+/**
+ * Fill a thin folder from one that is already built out.
+ *
+ * Previewed first, always. The whole worry with this operation is losing
+ * logic that is already in the target, so the user sees exactly what would
+ * be added — and what is being left alone — before anything happens.
+ */
+async function fillFolderFrom(targetUid, targetName){
+  const opts = (lastSchedData?.wbs_sections || [])
+    .filter(w => w.uid !== targetUid && (w.activity_count_direct || 0) > 0)
+    .sort((a, b) => (b.activity_count_direct || 0) - (a.activity_count_direct || 0));
+  if(!opts.length){ flashSched('No other folder has activities to copy from', true); return; }
+
+  const list = opts.slice(0, 25)
+    .map((w, i) => `${i + 1}. ${w.name} (${w.activity_count_direct} act.)`).join('\n');
+  const pick = prompt(
+    `Fill "${targetName}" with the activities it is missing.\n\n`
+    + `Nothing already in it is changed or removed — its logic stays.\n\n`
+    + `Copy the pattern FROM which folder? (number)\n\n${list}`);
+  if(!pick) return;
+  const idx = parseInt(pick, 10) - 1;
+  const src = opts[idx];
+  if(!src){ flashSched('That was not one of the listed numbers', true); return; }
+
+  const d = await directEdit(
+    [{action:'fill_folder_from_template', template_wbs: src.uid,
+      target_wbs: targetUid, preview: true}],
+    `Preview: fill ${targetName} from ${src.name}`);
+  const preview = (d && (d.results || []).map(r => r.message).join('\n')) || '';
+  if(!preview){ return; }
+  if(!confirm(preview + '\n\nApply this?')) return;
+
+  await directEdit(
+    [{action:'fill_folder_from_template', template_wbs: src.uid,
+      target_wbs: targetUid}],
+    `Fill ${targetName} from ${src.name}`);
+}
+
 /** Unclip one links cell so every chip in it is visible. */
 function toggleLinksCell(el){
   const td = el.closest('td');
@@ -7554,6 +7592,8 @@ function onSchedContextMenu(e){
                          () => pasteIntoNewSubfolder(tr.dataset.wbsuid)]]),
       ['---'],
     ] : []),
+    ['⧉ Fill from another folder…', () => fillFolderFrom(tr.dataset.wbsuid, tr.dataset.wbsname)],
+    ['---'],
     ['＋ New sub-folder…',  () => addSubfolder(tr.dataset.wbsuid)],
     ['＋ Add activity here', () => quickAddActivity(tr.dataset.wbsuid, tr.dataset.wbsname)],
     ['---'],
