@@ -231,7 +231,7 @@ ADVISORY_ACTIONS = frozenset({"recommend_logic", "read_document", "describe_brai
                               "wbs_flow_report", "find_duplicates",
                               "schedule_preview", "normalize_plan",
                               "bridge_folder", "backward_report",
-                              "procurement_report"})
+                              "procurement_report", "ripple_preview"})
 
 
 def is_advisory(action: str) -> bool:
@@ -330,6 +330,10 @@ def apply_command(project: Project, command: Dict[str, Any]) -> Tuple[bool, str]
             return _wire_procurement(project, command)
         elif action in ("replicate_pattern", "copy_logic_pattern"):
             return _replicate_pattern(project, command)
+        elif action in ("ripple_preview", "simulate_activity"):
+            return _ripple(project, command, apply_it=False)
+        elif action in ("ripple", "schedule_activity", "reflow_path"):
+            return _ripple(project, command, apply_it=bool(command.get("apply")))
         elif action in ("bulk_rules", "if_then"):
             return _bulk_rules(project, command)
         elif action == "move_activity_wbs":
@@ -1938,6 +1942,18 @@ def _set_actual_date(project: Project, cmd: Dict) -> Tuple[bool, str]:
     if field not in ("start", "finish"):
         raise EditError("field must be 'start' or 'finish'")
     date = (cmd.get("date") or "").strip() or None
+    if date:
+        # Unlike the planned-date edit, this never checked. An unparseable
+        # string went straight onto the activity as its actual date, where it
+        # then failed to compare or sort against every real date in the job —
+        # a silent corruption, and of the one field the CPM anchors started
+        # work to. Normalised to a plain ISO day as well, so "2026-03-02
+        # 07:00" cannot sit next to "2026-03-02" and count as different.
+        import datetime as _d
+        try:
+            date = _d.date.fromisoformat(date[:10]).isoformat()
+        except ValueError:
+            raise EditError(f"Not a valid date: {cmd.get('date')!r}")
     a = matches[0]
     if field == "start":
         a.actual_start = date
@@ -2557,6 +2573,49 @@ def _requirements(project: Project, cmd: Dict) -> Tuple[bool, str]:
                       + _rq.report(project, to_check))
 
     return True, _rq.report(project, to_check)
+
+
+def _ripple(project: Project, cmd: Dict, apply_it: bool) -> Tuple[bool, str]:
+    """
+    Reschedule ONE activity's path and leave the rest of the job alone.
+
+    The middle speed between "type a date and nothing moves" and "press
+    Schedule and everything moves". Only activities downstream of this one are
+    written back; anything that would have moved elsewhere under a full reflow
+    is deliberately left as it was.
+    """
+    from engine import ripple as _rp
+
+    aid = cmd.get("activity_id") or cmd.get("target_id")
+    if not aid:
+        matches = _find_activity(project, None, cmd.get("target_name"))
+        if not matches:
+            raise EditError("ripple needs an activity_id")
+        if len(matches) > 1:
+            raise EditError(f"Found {len(matches)} activities — use activity_id")
+        aid = matches[0].activity_id
+
+    changes = {k: cmd[k] for k in
+               ("actual_start", "actual_finish", "planned_start",
+                "planned_finish", "duration_days", "status")
+               if cmd.get(k) is not None}
+    back = bool(cmd.get("include_predecessors"))
+
+    if not apply_it:
+        return True, _rp.report(project, aid, changes, back)
+
+    r = _rp.apply_ripple(project, aid, changes, back)
+    if r.get("error"):
+        raise EditError(r["error"])
+    msg = [f"Rippled from {r['activity_id']} — {r['moved_on_path']} activity"
+           f"{'' if r['moved_on_path'] == 1 else 'ies'} on its path moved "
+           f"({r['written']} rows written)."]
+    if r["would_move_off_path"]:
+        msg.append(f"  {r['would_move_off_path']} elsewhere were left alone — "
+                   f"they would only have moved because a full Schedule run "
+                   f"moves everything.")
+    msg.append("  Undo reverts the whole ripple.")
+    return True, "\n".join(msg)
 
 
 def _wire_procurement(project: Project, cmd: Dict) -> Tuple[bool, str]:

@@ -900,6 +900,30 @@ requirements:
   is the answer, not "looks good". enforce reports by default and only
   changes anything with apply=true.
 
+ripple_preview / ripple:
+  Reschedule ONE activity's path and leave the rest of the job alone — the
+  middle speed between typing a date (nothing moves, so the logic downstream
+  now says something the schedule does not support) and pressing Schedule
+  (everything moves, including hundreds of rows with no predecessor that get
+  dragged to the data date).
+  The CPM runs globally, because an activity's dates depend on the whole
+  network above it — but only activities DOWNSTREAM of this one are written
+  back. Everything else keeps the dates it had.
+    {"action": "ripple_preview", "activity_id": "A1000",
+     "actual_start": "2026-03-02"}
+    {"action": "ripple", "activity_id": "A1000",
+     "actual_start": "2026-03-02", "apply": true}
+  Takes actual_start, actual_finish, planned_start, planned_finish,
+  duration_days or status — the same fields the single edits take.
+  USE THIS for statusing and actualising: "we started this Tuesday", "this
+  finished late", "push this two weeks". It is what the user means by moving
+  one activity and letting its path follow. Reach for the Schedule button only
+  when they want the WHOLE job reflowed.
+  It reports how many activities elsewhere a full Schedule run would have
+  moved — say that number, it is the reason for doing it this way.
+  include_predecessors=true also walks backward, but leave it off unless
+  asked: moving an activity's start does not move what came before it.
+
 procurement_report:
   Long-lead and material lines matched to the work they feed, and tied.
   Reports by default; apply=true makes the ties.
