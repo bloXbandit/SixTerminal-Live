@@ -1225,12 +1225,17 @@
     /* Editable cells get an affordance only in edit mode */
     body.edit-on td.editable{cursor:text;}
     body.edit-on td.editable:hover{background:rgba(0,207,255,.06);box-shadow:inset 0 0 0 1px var(--accent);border-radius:3px;}
+    td.cell-selected{box-shadow:inset 0 0 0 2px var(--accent);}
     .cell-input{
       width:100%;background:var(--panel2,#0d1117);color:var(--text);
       border:1px solid var(--accent);border-radius:3px;
       font-family:inherit;font-size:11px;padding:2px 4px;outline:none;
     }
     .cell-input.mono{font-family:var(--mono);}
+    input[type="date"].cell-input::-webkit-calendar-picker-indicator{
+      filter: invert(.6) sepia(1) saturate(3) hue-rotate(160deg);
+      cursor: pointer;
+    }
     /* a pinned date is held against the scheduler by a constraint */
     .date-pin{margin-left:4px;font-size:8px;opacity:.85;}
     .constraint-pop{
@@ -4631,6 +4636,8 @@ function applyDefaultFold(){
 let isEditMode   = false;
 let lastSchedData = null;         // last /api/schedule payload (for WBS lists)
 const selectedIds = new Set();    // activity_ids currently selected
+const selectedCells = new Map();  // actId -> Set(fields) selected in the grid
+let _lastSelectedCell = null;     // anchor for shift+click cell range
 let clipboard    = [];            // copied activity specs (cross-schedule fallback)
 let _clipMeta    = null;          // {ids, projectId, rels, cut} — lets a same-schedule
                                   // paste carry the logic between the copied rows
@@ -5055,11 +5062,13 @@ function renderSchedule(data) {
     // (all WBS nodes shown — even empty ones — so activities can be quick-added)
     const indent = ' '.repeat(wbs.depth * 4);
     const isCollapsed = collapsedWbs.has(wbs.uid);
+    const wbsColor = wbs.color ? ` style="border-left:3px solid ${wbs.color};"` : '';
     rows.push(`
       <tr class="sched-wbs-row${isCollapsed ? ' collapsed' : ''}${selectedWbs.has(wbs.uid) ? ' wbs-selected' : ''}${wbs.flow ? ' flow-' + wbs.flow : ''}"
           id="wbs-hdr-${wbs.uid}" data-wbsuid="${escAttr(wbs.uid)}"
           data-wbsname="${escAttr(wbs.name)}" data-depth="${wbs.depth || 0}"
-          draggable="true" onclick="onWbsRowClick(event, '${wbs.uid}')">
+          data-wbscolor="${escAttr(wbs.color || '')}"
+          draggable="true" onclick="onWbsRowClick(event, '${wbs.uid}')"${wbsColor}>
         <td colspan="20">
           <span class="sched-wbs-toggle" onclick="toggleWbs('${wbs.uid}');event.stopPropagation();">
             ${indent}<span class="sched-wbs-arrow">▾</span>
@@ -6179,6 +6188,9 @@ async function directEdit(commands, label, brainOverride, via){
     if(Array.isArray(d.renamed_folders) && d.renamed_folders.length){
       patchFolderNames(d.renamed_folders);
     }
+    if(Array.isArray(d.colored_folders) && d.colored_folders.length){
+      patchFolderColors(d.colored_folders);
+    }
     if(d.success && !d.structural && Array.isArray(d.changed_rows)){
       // Patch in place — no refetch, no full rebuild. Adds and deletes come
       // through here too now, so inserting a row costs the same as editing one.
@@ -6245,6 +6257,21 @@ function patchFolderNames(renamed){
     if(span) span.textContent = f.name;   // also clears the inline editor
   }
   populateWbsSelects(lastSchedData || {wbs_sections:[]});
+}
+
+function patchFolderColors(colored){
+  for(const f of colored){
+    const w = (lastSchedData?.wbs_sections || []).find(s => s.uid === f.uid);
+    if(w) w.color = f.color;
+    const tr = document.getElementById('wbs-hdr-' + f.uid);
+    if(!tr) continue;
+    tr.dataset.wbscolor = f.color || '';
+    if(f.color){
+      tr.style.borderLeft = `3px solid ${f.color}`;
+    } else {
+      tr.style.borderLeft = '';
+    }
+  }
 }
 
 // ── Transient feedback toast ──
@@ -6321,6 +6348,8 @@ function onRowShiftClick(e){
   if(!mod) return;
   if(_pickState || _tracePicking) return;
   if(e.target.closest('input,select,button,.chip-x,.row-add-link')) return;
+  // Let onCellClick handle modifier clicks on editable cells
+  if(e.target.closest('td.editable')) return;
   const tr = e.target.closest('tr.sched-act-row');
   const id = tr && tr.dataset.actid;
   if(!id) return;
@@ -6594,6 +6623,35 @@ function buildCellCommand(actId, field, val, orig){
     return {cmd:{action:'update_duration', activity_id:actId, new_duration_days:n},
             label:`${actId} duration → ${n}d`};
   }
+  if(field === 'start' || field === 'finish'){
+    if(!val) return false;
+    const rec = actDataById(actId);
+    const st = rec && rec.status;
+    if(field === 'start' && (st === 'In Progress' || st === 'Completed'))
+      return {cmd:{action:'set_actual_date', activity_id:actId, field, date:val},
+              label:`${actId} actual start → ${val}`};
+    if(field === 'finish' && st === 'Completed')
+      return {cmd:{action:'set_actual_date', activity_id:actId, field, date:val},
+              label:`${actId} actual finish → ${val}`};
+    if(field === 'finish')
+      return {cmd:{action:'update_planned_date', activity_id:actId, field, date:val},
+              label:`${actId} finish → ${val}`};
+    const hasPreds = rec && (rec.predecessors || []).length > 0;
+    if(rec && rec.constraint_type)
+      return {cmd:{action:'update_planned_date', activity_id:actId, field, date:val},
+              label:`${actId} start → ${val} (${rec.constraint_type} moves with it)`};
+    if(hasPreds)
+      return {cmd:{action:'set_constraint', activity_id:actId,
+                   constraint_type:'Start On', constraint_date:val},
+              label:`${actId} start pinned to ${val}`};
+    return {cmd:{action:'update_planned_date', activity_id:actId, field, date:val},
+            label:`${actId} start → ${val}`};
+  }
+  if(field === 'type'){
+    if(!val) return false;
+    return {cmd:{action:'update_activity_type', activity_id:actId, activity_type:val},
+            label:`${actId} type → ${val}`};
+  }
   return false;
 }
 
@@ -6751,18 +6809,17 @@ function beginDateEdit(td, actId, field){
   const orig = (td.dataset.val || '').slice(0,10);
   const restoreHTML = td.innerHTML;
   const input = document.createElement('input');
-  // A text box, not a native date picker: the whole date can be typed in one
-  // go, in any of the usual formats, and selected/overwritten like any cell.
-  input.type = 'text';
+  // Native date picker: calendar popover plus keyboard entry in ISO form.
+  // The value is always stored as YYYY-MM-DD, which is what the engine expects.
+  input.type = 'date';
   input.className = 'cell-input mono';
   input.autocomplete = 'off';
   input.spellcheck = false;
-  input.placeholder = 'dd-mmm-yy';
-  input.title = 'Type a date in any usual form — 3/2/26, 2026-03-02, 02-Mar-26';
-  if(orig) input.value = fmtDate(orig);
+  input.title = 'Pick a date from the calendar, or type YYYY-MM-DD';
+  if(orig) input.value = orig;
   td.innerHTML = ''; td.appendChild(input);
   input.focus();
-  input.select();                     // typing replaces the date that is there
+  if(input.showPicker) input.showPicker();
 
   let done = false;
   const finish = async (opts, cmd, label) => {
@@ -6780,13 +6837,10 @@ function beginDateEdit(td, actId, field){
     // Blank cancels rather than clears — tabbing out mid-entry used to wipe
     // the date. Anything unparseable says so instead of silently doing nothing.
     if(!typed){ finish(opts, null); return; }
-    const val = parseDateInput(typed);
-    if(!val){
-      // On Enter/Tab, say so and stay put so it can be corrected. On blur
-      // there is nothing to correct — the cell has already lost focus, and
-      // holding it open would trap the cursor.
+    const val = typed;
+    if(!/^\d{4}-\d{2}-\d{2}$/.test(val) || Number.isNaN(Date.parse(val))){
       if(opts && opts.blur){ finish(opts, null); return; }
-      flashSched(`"${typed}" is not a date I can read — try 3/2/26 or 02-Mar-26`, true);
+      flashSched(`"${val}" is not a valid date — use YYYY-MM-DD`, true);
       input.select();
       return;
     }
@@ -7636,6 +7690,7 @@ function toggleSelAll(checked){
 }
 function clearSelection(){
   selectedIds.clear();
+  clearCellSelection();
   document.querySelectorAll('tr.sel-selected').forEach(tr => tr.classList.remove('sel-selected'));
   document.querySelectorAll('.sel-box').forEach(cb => cb.checked = false);
   refreshBulkBar();
@@ -7659,6 +7714,148 @@ function refreshBulkBar(){
   // is a relocation of existing rows, so that combination doesn't apply
   const pnb = document.getElementById('bulk-paste-new-btn');
   if(pnb) pnb.disabled = !canPaste || isCut;
+}
+function refreshCellSelection(){
+  document.querySelectorAll('td.cell-selected').forEach(td => td.classList.remove('cell-selected'));
+  selectedCells.forEach((fields, actId) => {
+    fields.forEach(field => {
+      const td = findCell(actId, field);
+      if(td) td.classList.add('cell-selected');
+    });
+  });
+}
+function clearCellSelection(){
+  selectedCells.clear();
+  _lastSelectedCell = null;
+  refreshCellSelection();
+}
+function cellKey(actId, field){ return actId + '\x00' + field; }
+function cellActField(key){ const i = key.indexOf('\x00'); return {actId:key.slice(0,i), field:key.slice(i+1)}; }
+function getCell(td){
+  const actId = td.dataset.actid;
+  const field = td.dataset.edit;
+  if(!actId || !field) return null;
+  return {actId, field, td};
+}
+function selectCell(td, on){
+  const c = getCell(td); if(!c) return;
+  const {actId, field} = c;
+  const set = selectedCells.get(actId);
+  if(on){
+    if(!set){ selectedCells.set(actId, new Set([field])); }
+    else { set.add(field); }
+  } else {
+    if(set){ set.delete(field); if(!set.size) selectedCells.delete(actId); }
+  }
+  td.classList.toggle('cell-selected', on);
+}
+function selectCellRange(anchor, target){
+  const ac = getCell(anchor), tc = getCell(target);
+  if(!ac || !tc || ac.field !== tc.field) return;
+  const field = ac.field;
+  const visible = [...document.querySelectorAll('td.editable[data-edit="'+CSS.escape(field)+'"]')];
+  const ai = visible.findIndex(td => td.dataset.actid === ac.actId);
+  const ti = visible.findIndex(td => td.dataset.actid === tc.actId);
+  if(ai === -1 || ti === -1) return;
+  const [from, to] = ai <= ti ? [ai, ti] : [ti, ai];
+  for(let i=from; i<=to; i++){
+    const td = visible[i];
+    const actId = td.dataset.actid;
+    const set = selectedCells.get(actId) || new Set();
+    set.add(field); selectedCells.set(actId, set);
+  }
+  refreshCellSelection();
+}
+function onCellClick(e){
+  if(!isEditMode) return;
+  if(_pickState || _tracePicking) return;
+  const td = e.target.closest('td.editable');
+  if(!td) return;
+  if(e.target.closest('input,select,button')) return;
+  const c = getCell(td); if(!c) return;
+  const isMod = e.ctrlKey || e.metaKey || e.shiftKey;
+  if(!isMod){
+    // A plain click on an already-selected cell opens the inline editor.
+    // If only one cell is selected, treat the first click as select, second as edit.
+    const already = selectedCells.has(c.actId) && selectedCells.get(c.actId).has(c.field);
+    if(already && selectedCells.size === 1 && selectedCells.get(c.actId).size === 1){
+      e.preventDefault(); e.stopPropagation();
+      clearCellSelection();
+      beginCellEdit(td);
+      return;
+    }
+    clearCellSelection();
+    selectCell(td, true);
+    _lastSelectedCell = td;
+    return;
+  }
+  e.preventDefault();
+  e.stopPropagation();
+  window.getSelection()?.removeAllRanges();
+  if(e.shiftKey && _lastSelectedCell){
+    selectCellRange(_lastSelectedCell, td);
+    _lastSelectedCell = td;
+  } else if(e.ctrlKey || e.metaKey){
+    const on = !(selectedCells.get(c.actId) || new Set()).has(c.field);
+    selectCell(td, on);
+    _lastSelectedCell = td;
+  }
+}
+function selectedCellList(){
+  const out = [];
+  selectedCells.forEach((fields, actId) =>
+    fields.forEach(field => { const td = findCell(actId, field); if(td) out.push({actId, field, td}); }));
+  return out;
+}
+function selectedCellField(){
+  const first = selectedCellList()[0]; if(!first) return null;
+  for(const c of selectedCellList()) if(c.field !== first.field) return null;
+  return first.field;
+}
+async function bulkFillDownCells(){
+  const cells = selectedCellList().sort((a,b)=> a.td.compareDocumentPosition(b.td) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1);
+  if(cells.length < 2){ flashSched('Select at least two cells in the same column', true); return; }
+  const field = selectedCellField();
+  if(!field){ flashSched('Fill-down only works inside one column', true); return; }
+  const src = actDataById(cells[0].actId);
+  if(!src){ flashSched('Cannot read the first cell', true); return; }
+  const cmds = [];
+  for(let i=1; i<cells.length; i++){
+    const {actId} = cells[i];
+    const cmd = buildCellCommand(actId, field, valueForField(src, field), '');
+    if(cmd) cmds.push(cmd.cmd);
+  }
+  if(!cmds.length){ clearCellSelection(); return; }
+  clearCellSelection();
+  await directEdit(cmds, `Fill ${field} down ${cmds.length} cells`);
+}
+function valueForField(a, field){
+  if(field === 'duration') return String(a.duration_days || 0);
+  if(field === 'pct') return String(a.percent_complete || 0);
+  if(field === 'blu') return String((a.labor_units != null) ? a.labor_units : '');
+  if(field === 'elec') return String((a.udf_crew != null) ? a.udf_crew : '');
+  if(field === 'start') return (a.actual_start || a.planned_start || '').slice(0,10);
+  if(field === 'finish') return (a.actual_finish || a.planned_finish || '').slice(0,10);
+  if(field === 'name') return a.name || '';
+  if(field === 'id') return a.activity_id || '';
+  if(field === 'type') return a.activity_type || 'Task Dependent';
+  return '';
+}
+function buildCellCommandForValue(actId, field, val){
+  const orig = valueForField(actDataById(actId), field);
+  return buildCellCommand(actId, field, val, orig);
+}
+async function setSelectedCells(field, val){
+  const cells = selectedCellList();
+  if(!cells.length) return;
+  const cmds = [];
+  for(const c of cells){
+    const cmd = buildCellCommandForValue(c.actId, field, val);
+    if(cmd) cmds.push(cmd.cmd);
+  }
+  if(!cmds.length) return;
+  clearCellSelection();
+  await directEdit(cmds, `Set ${field} on ${cmds.length} cells`);
 }
 function bulkSetDuration(){
   const v = parseFloat(document.getElementById('bulk-dur').value);
@@ -8013,8 +8210,84 @@ function openAppendNamePopup(ev, opts){
   setTimeout(() => document.addEventListener('mousedown', outsideConstraintClose), 0);
 }
 
-// ═══════════════════════════════════════════════════
-//  Right-click context menu
+// ── WBS folder color picker ──────────────────────────────────────────────────
+const _WBS_COLOR_POOL = [
+  '#ef4444','#f97316','#eab308','#22c55e','#06b6d4',
+  '#3b82f6','#8b5cf6','#ec4899','#f43f5e','#14b8a6',
+  '#a855f7','#facc15','#84cc16','#0ea5e9','#6366f1',
+];
+function _randomColors(n){
+  const pool = [..._WBS_COLOR_POOL];
+  const out = [];
+  for(let i=0; i<n && pool.length; i++){
+    out.push(pool.splice(Math.floor(Math.random()*pool.length), 1)[0]);
+  }
+  return out;
+}
+function openWbsColorPicker(wbsUid, wbsName){
+  closeConstraintEditor();
+  const pop = document.createElement('div');
+  pop.id = 'constraint-pop';
+  pop.className = 'constraint-pop';
+  pop.style.borderColor = 'var(--accent)';
+  pop.style.flexWrap = 'wrap';
+  pop.style.maxWidth = '260px';
+  pop.style.padding = '10px';
+
+  const hdr = document.getElementById('wbs-hdr-' + wbsUid);
+  const currentColor = hdr?.dataset.wbscolor || '';
+
+  const renderSwatches = () => {
+    const colors = _randomColors(5);
+    pop.innerHTML =
+      `<span style="font-size:10px;color:var(--text3);width:100%;">Color for "${escHtml(wbsName)}"</span>`
+      + `<div style="display:flex;gap:8px;width:100%;margin:6px 0;">`
+      + colors.map(c =>
+          `<div class="wbs-color-swatch" data-color="${c}"
+              style="width:28px;height:28px;border-radius:6px;cursor:pointer;
+                     background:${c};border:2px solid ${c===currentColor?'#fff':'transparent'};"></div>`
+        ).join('')
+      + `</div>`
+      + `<div style="display:flex;gap:6px;width:100%;">`
+      + `<button class="mini-btn" id="wbs-color-reroll" style="flex:1;">🎲 Reroll</button>`
+      + (currentColor ? `<button class="mini-btn no" id="wbs-color-clear" style="flex:1;">Clear</button>` : '')
+      + `<button class="mini-btn no" id="wbs-color-cancel">✕</button>`
+      + `</div>`;
+  };
+  renderSwatches();
+  document.body.appendChild(pop);
+
+  const vw = window.innerWidth, vh = window.innerHeight;
+  const hdrRect = hdr?.getBoundingClientRect();
+  if(hdrRect){
+    pop.style.top  = (window.scrollY + Math.min(hdrRect.bottom + 4, vh - 120)) + 'px';
+    pop.style.left = (window.scrollX + Math.max(8, Math.min(hdrRect.left, vw - 280))) + 'px';
+  } else {
+    pop.style.top  = (window.scrollY + 200) + 'px';
+    pop.style.left = (window.scrollX + Math.max(8, vw - 280)) + 'px';
+  }
+
+  pop.addEventListener('click', async ev => {
+    const sw = ev.target.closest('.wbs-color-swatch');
+    if(sw){
+      const color = sw.dataset.color;
+      closeConstraintEditor();
+      await directEdit([{action:'set_wbs_color', wbs_uid:wbsUid, color}],
+                       `Color "${wbsName}" → ${color}`);
+      return;
+    }
+    if(ev.target.closest('#wbs-color-reroll')){ renderSwatches(); return; }
+    if(ev.target.closest('#wbs-color-clear')){
+      closeConstraintEditor();
+      await directEdit([{action:'set_wbs_color', wbs_uid:wbsUid, color:''}],
+                       `Clear color on "${wbsName}"`);
+      return;
+    }
+    if(ev.target.closest('#wbs-color-cancel')){ closeConstraintEditor(); return; }
+  });
+
+  setTimeout(() => document.addEventListener('mousedown', outsideConstraintClose), 0);
+}
 // ═══════════════════════════════════════════════════
 function closeCtxMenu(){
   document.getElementById('ctx-menu')?.remove();
@@ -8078,6 +8351,7 @@ function onSchedContextMenu(e){
     ['✂ Cut folder',        () => cutSelectedWbs()],
     ['⧉ Duplicate folder',  () => duplicateSelectedWbs()],
     ['✎ Rename folder…',    () => beginWbsRename(tr)],
+    ['🎨 Folder color…',    () => openWbsColorPicker(tr.dataset.wbsuid, tr.dataset.wbsname)],
     ['⇱ Move to root',      () => moveSelectedWbs(true)],
     ['📌✕ Clear constraints', () => wbsClearConstraints()],
     ['✎+ Add text to names',  (ev) => openAppendNamePopup(ev, {wbsScope:true})],
@@ -8097,6 +8371,10 @@ function onSchedContextMenu(e){
     ['---'],
     ['⛓ Link selected in sequence', () => bulkLinkSequence()],
     ['⇊ Fill duration down',        () => bulkFillDown()],
+    ...(selectedCells.size > 1 ? [
+      [`⇊ Fill ${selectedCellField() || 'cell'} down (${selectedCells.size} cells)`, () => bulkFillDownCells()],
+      ['---'],
+    ] : []),
     ['＋ Add predecessor',          () => addLink(actId, 'pred')],
     ['＋ Add successor',            () => addLink(actId, 'succ')],
     ['⤳ Trace what drives this',    () => { startTrace(); applyTrace(actId); }],
@@ -9874,6 +10152,7 @@ document.addEventListener('keydown', e => {
     tb.addEventListener('dblclick', onSchedDblClick);
     tb.addEventListener('click', onPickClick, true);   // capture: intercept while picking
     tb.addEventListener('click', onRowShiftClick);     // shift+click = range select
+    tb.addEventListener('click', onCellClick);         // cell selection (single/shift/cmd)
     // WBS folder drag-and-drop re-parenting
     tb.addEventListener('dragstart', onWbsDragStart);
     tb.addEventListener('dragover',  onWbsDragOver);
@@ -9910,6 +10189,13 @@ document.addEventListener('keydown', e => {
       if(_pickState) cancelPick();
       if(_traceState || _tracePicking) clearTrace();
       closeCtxMenu();
+      if(selectedCells.size){ clearCellSelection(); }
+    }
+    // D = fill-down for selected cells, but only when not typing
+    if(!e.ctrlKey && !e.metaKey && !e.altKey && (e.key === 'd' || e.key === 'D')){
+      const t = e.target;
+      if(t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+      if(selectedCells.size){ e.preventDefault(); bulkFillDownCells(); }
     }
     // Delete / Backspace removes the selected activities (not while typing)
     if(e.key === 'Delete' || e.key === 'Backspace'){

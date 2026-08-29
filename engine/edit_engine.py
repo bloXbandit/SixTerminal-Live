@@ -381,6 +381,8 @@ def apply_command(project: Project, command: Dict[str, Any]) -> Tuple[bool, str]
             return _bulk_update_activity_id(project, command)
         elif action == "normalize_activity_ids":
             return _normalize_activity_ids(project, command)
+        elif action == "set_wbs_color":
+            return _set_wbs_color(project, command)
         else:
             return False, f"Unknown action: '{action}'"
     except EditError as e:
@@ -794,6 +796,21 @@ def _rename_wbs(project: Project, cmd: Dict) -> Tuple[bool, str]:
     if new_code:
         wbs.code = new_code
     return True, f"Renamed WBS '{old}' → '{wbs.name}'"
+
+
+def _set_wbs_color(project: Project, cmd: Dict) -> Tuple[bool, str]:
+    wbs = _find_wbs(project, cmd.get("wbs_code"), cmd.get("wbs_name"),
+                    cmd.get("wbs_uid"))
+    if not wbs:
+        raise EditError(_no_wbs(project, cmd.get("wbs_code") or cmd.get("wbs_name")
+                                or cmd.get("wbs_uid")))
+    color = (cmd.get("color") or "").strip()
+    if color and not color.startswith("#"):
+        raise EditError("set_wbs_color needs a hex color like #3b82f6, or empty to clear")
+    wbs.color = color or None
+    if color:
+        return True, f"Set color of '{wbs.name}' to {color}"
+    return True, f"Cleared color on '{wbs.name}'"
 
 
 def _match_subfolder_numbers(project: Project, cmd: Dict) -> Tuple[bool, str]:

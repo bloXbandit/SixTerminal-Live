@@ -32,6 +32,7 @@ class WBSNode:
     code: str
     parent_uid: Optional[str] = None
     sequence_num: int = 0
+    color: Optional[str] = None
 
 
 @dataclass

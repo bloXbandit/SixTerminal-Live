@@ -2035,6 +2035,7 @@ def _apply_direct(commands, label):
         before_order = list(before.keys())
         before_wbs = None if tree_changing else _wbs_signature(project)
         before_names = _wbs_names(project)
+        before_colors = _wbs_colors(project)
         before_flow = _flow_signature(project)
 
         _push_undo(label)
@@ -2092,10 +2093,16 @@ def _apply_direct(commands, label):
             for uid, name in _wbs_names(project).items()
             if uid in before_names and before_names[uid] != name]
 
+        colored_folders = [
+            {"uid": uid, "color": color}
+            for uid, color in _wbs_colors(project).items()
+            if uid in before_colors and before_colors[uid] != color]
+
         return jsonify({
             "type":             "result",
             "changed_folders":  changed_folders,
             "renamed_folders":  renamed_folders,
+            "colored_folders":  colored_folders,
             "success":          fail_count == 0,
             "commands_applied": success_count,
             "commands_failed":  fail_count,
@@ -3817,6 +3824,11 @@ def _procurement_block(project) -> str:
         return ""
 
 
+def _wbs_colors(project):
+    """uid -> color, diffed across an edit to report color changes for in-place patching."""
+    return {w.uid: (w.color or "") for w in project.wbs_nodes}
+
+
 def _flow_signature(project) -> dict:
     """
     Each folder's connection verdict, for the grid's flow tint.
@@ -3868,15 +3880,6 @@ _TREE_ACTIONS = {
     "bulk_create_wbs_for_each", "move_wbs", "reorder_wbs",
     "delete_wbs", "duplicate_wbs", "move_activity_wbs", "move_activities",
     "copy_activities", "bulk_rules",
-}
-
-_STRUCTURAL_ACTIONS = {
-    "add_activity", "delete_activity", "bulk_add_activity",
-    "add_wbs", "rename_wbs", "bulk_create_wbs", "add_wbs_for_each",
-    "bulk_create_wbs_for_each", "move_activity_wbs", "move_wbs",
-    "reorder_wbs", "delete_wbs",
-    "duplicate_wbs", "copy_activities", "update_activity_type",
-    "update_activity_id", "bulk_update_activity_id",
 }
 
 
@@ -4057,6 +4060,7 @@ def _schedule_view_inner():
             "code":       wbs.code,
             "parent_uid": wbs.parent_uid,
             "depth":      wbs_depth(wbs.uid),
+            "color":      wbs.color,
             "activities": activities_out,
         })
 
