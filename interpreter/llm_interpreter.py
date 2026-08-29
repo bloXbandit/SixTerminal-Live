@@ -997,6 +997,22 @@ procurement_map / procurement_story:
   sequencing question touches equipment: do not propose pulling work earlier
   than the date its equipment arrives, and say why when you decline to.
 
+procurement_cover:
+  What FIXES the NO LOGIC rows. Ties each delivery to every activity that
+  needs it and is not already behind it. Reports by default.
+    {"action": "procurement_cover"}
+    {"action": "procurement_cover", "system": "chiller", "apply": true}
+    {"action": "procurement_cover", "phase": "Phase 2", "apply": true}
+  Prefer this over procurement_report+apply when the user wants material
+  logic actually connected: procurement_report ties only the FIRST install
+  per supply line, which on this job made 42 ties and greened one system,
+  where this made 81 and greened eleven.
+  It refuses the same two things and you should say so: work dated before its
+  own delivery is never tied (that conflict is the user's to settle), and
+  pads, layout and steel are never tied behind the equipment they precede.
+  Work already reachable from the delivery is skipped, so running it twice
+  adds nothing and a wired sequence does not collect redundant ties.
+
 replicate_pattern:
   Copy the internal sequence of one folder onto others of the same kind —
   when one area has been wired properly and the rest have not, the shape is

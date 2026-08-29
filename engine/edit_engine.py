@@ -337,6 +337,8 @@ def apply_command(project: Project, command: Dict[str, Any]) -> Tuple[bool, str]
             return _procurement_map(project, command)
         elif action in ("procurement_story", "delivery_story"):
             return _procurement_story(project, command)
+        elif action in ("procurement_cover", "cover_procurement_gaps"):
+            return _procurement_cover(project, command)
         elif action in ("replicate_pattern", "copy_logic_pattern"):
             return _replicate_pattern(project, command)
         elif action in ("ripple_preview", "simulate_activity"):
@@ -2743,6 +2745,39 @@ def _procurement_story(project: Project, cmd: Dict) -> Tuple[bool, str]:
         raise EditError("procurement_story needs a system, e.g. "
                         '{"action":"procurement_story","system":"chiller"}')
     return True, _pm.story(project, system, cmd.get("phase"))
+
+
+def _procurement_cover(project: Project, cmd: Dict) -> Tuple[bool, str]:
+    """
+    Close the "dates work, nothing holding them" rows — a tie for every
+    activity using the equipment that is not already behind its delivery.
+
+    Reports by default. Work dated before its own delivery is never tied.
+    """
+    from engine import procurement_map as _pm
+
+    phase = cmd.get("phase")
+    system = cmd.get("system") or cmd.get("equipment")
+    if not cmd.get("apply"):
+        return True, _pm.cover_report(project, phase, system)
+
+    r = _pm.cover_gaps(project, phase, system)
+    if not r["commands"]:
+        return True, ("Nothing to tie — every system whose dates work is "
+                      "already held there by logic."
+                      + (f" {len(r['blocked'])} are dated before their own "
+                         f"delivery and are left alone."
+                         if r["blocked"] else ""))
+
+    made = sum(1 for ok, _ in apply_commands(project, r["commands"]) if ok)
+    msg = [f"Tied {made} delivery→work relationship(s) across "
+           f"{r['systems_touched']} system(s)."]
+    if r["blocked"]:
+        msg.append(f"  {len(r['blocked'])} NOT tied — dated before the "
+                   f"equipment arrives; that conflict is a decision about the "
+                   f"job, so it stays visible.")
+    msg.append("  Undo reverts the whole pass.")
+    return True, "\n".join(msg)
 
 
 def _wire_procurement(project: Project, cmd: Dict) -> Tuple[bool, str]:

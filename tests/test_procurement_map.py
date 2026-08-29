@@ -359,6 +359,107 @@ def test_the_digest_is_empty_when_there_is_no_procurement_to_talk_about():
     assert pm.digest(p) == ""
 
 
+# ── closing the "dates work, nothing holding them" rows ──────────────────────
+
+def test_covering_gaps_ties_every_activity_that_needs_the_delivery():
+    """procurement_wire ties the FIRST install per line; on the reference
+    schedule that made 42 ties and moved exactly one system to green, because
+    the second and fortieth consumer were never connected to anything."""
+    p = _job(tie=False)
+    _act(p, "I2", "Chiller Lineup 2 - Set Equipment", "W", "2026-06-15",
+         "2026-06-20")
+    r = pm.cover_gaps(p)
+    assert {c["successor_id"] for c in r["commands"]} == {"I1", "I2"}
+
+
+def test_work_already_reachable_from_the_delivery_is_not_tied_again():
+    """Otherwise a properly-wired sequence collects a redundant tie per row
+    and the schedule ends up with a hundred relationships saying what four
+    already said."""
+    p = _job(tie=True)
+    _act(p, "I2", "Chiller Lineup 1 - Tie-In", "W", "2026-06-15", "2026-06-20")
+    _rel(p, "I1", "I2")
+    assert pm.cover_gaps(p)["commands"] == []
+
+
+def test_a_tie_just_proposed_covers_what_is_downstream_of_it():
+    """The reachability has to account for ties proposed a moment ago, or a
+    chain of five gets five ties instead of one."""
+    p = _job(tie=False)
+    _act(p, "I2", "Chiller Lineup 1 - Tie-In", "W", "2026-06-15", "2026-06-20")
+    _rel(p, "I1", "I2")
+    r = pm.cover_gaps(p)
+    assert [c["successor_id"] for c in r["commands"]] == ["I1"]
+
+
+def test_work_dated_before_its_delivery_is_reported_never_tied():
+    p = _job(need_start="2026-01-12", arrive="2026-03-02")
+    r = pm.cover_gaps(p)
+    assert r["commands"] == []
+
+
+def test_a_pad_is_never_tied_behind_the_equipment_it_is_poured_for():
+    """Even on a row that IS being wired — the pad is poured before the
+    chiller lands, so a tie there would be wrong rather than redundant."""
+    p = _job(tie=False)
+    _act(p, "P1", "Chiller Housekeeping Pad", "W", "2026-01-06", "2026-01-09")
+    r = pm.cover_gaps(p)
+    tied = {c["successor_id"] for c in r["commands"]}
+    assert "I1" in tied, "it should still wire the real consumer"
+    assert "P1" not in tied, "it tied a pad behind its own equipment"
+
+
+def test_an_unconnected_pad_does_not_hold_a_system_amber_forever():
+    """It cannot be tied, so counting it as unconnected would leave the row
+    permanently amber with nothing anyone could do — the worst kind of
+    warning."""
+    p = _job(tie=True)
+    _act(p, "P1", "Chiller Housekeeping Pad", "W", "2026-01-06", "2026-01-09")
+    assert _row(p)["verdict"] == pm.READY
+
+
+def test_covering_the_gaps_turns_the_row_green():
+    p = _job(tie=False)
+    assert _row(p)["verdict"] == pm.NO_LOGIC
+    ok, _ = apply_command(p, {"action": "procurement_cover", "apply": True})
+    assert ok and _row(p)["verdict"] == pm.READY
+
+
+def test_the_cover_action_reports_by_default():
+    p = _job(tie=False)
+    rels = len(p.relations)
+    ok, msg = apply_command(p, {"action": "procurement_cover"})
+    assert ok and len(p.relations) == rels
+    assert "Nothing applied" in msg
+
+
+def test_covering_twice_adds_nothing_the_second_time():
+    p = _job(tie=False)
+    apply_command(p, {"action": "procurement_cover", "apply": True})
+    n = len(p.relations)
+    apply_command(p, {"action": "procurement_cover", "apply": True})
+    assert len(p.relations) == n
+
+
+def test_covering_never_removes_logic_the_user_set():
+    p = _job(tie=False)
+    _act(p, "I2", "Chiller Lineup 2 - Set Equipment", "W", "2026-06-15",
+         "2026-06-20")
+    _rel(p, "I2", "I1")                      # an odd tie, deliberately theirs
+    before = {(r.predecessor_uid, r.successor_uid) for r in p.relations}
+    apply_command(p, {"action": "procurement_cover", "apply": True})
+    after = {(r.predecessor_uid, r.successor_uid) for r in p.relations}
+    assert before <= after
+
+
+def test_covering_can_be_scoped_to_one_system():
+    p = _job(tie=False)
+    _act(p, "S2", "Generators (4MW)", "LLE", "2026-01-05", "2026-03-02")
+    _act(p, "G1", "Set Generator", "W", "2026-06-01", "2026-06-05")
+    r = pm.cover_gaps(p, system="generator")
+    assert {c["successor_id"] for c in r["commands"]} == {"G1"}
+
+
 def test_back_to_back_delivery_reads_as_no_room_rather_than_a_conflict():
     """The delivery's own finish day is worked, so work starting the next
     working day is zero buffer, not minus one."""

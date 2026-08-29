@@ -251,11 +251,17 @@ def analyse(project, phase: Optional[str] = None,
 
         # Coverage is reachability, not a direct link: a delivery tied to the
         # first install, which carries on to the rest, has covered them all.
+        #
+        # And it is measured over the work that NEEDS the delivery, not over
+        # everything that names the equipment. A housekeeping pad must not be
+        # tied behind the equipment it is poured for, so holding READY back
+        # because the pad is unconnected would leave a row permanently amber
+        # with nothing anyone could do about it — the worst kind of warning.
         covered_ids: List[str] = []
         uncovered: List[Any] = []
         if dels and cons:
             reach = _multi_source_reach(project, {a.uid for a in dels}, fwd)
-            for a in cons:
+            for a in needs_it:
                 if a.uid in reach:
                     covered_ids.append(a.activity_id)
                 else:
@@ -295,9 +301,7 @@ def analyse(project, phase: Optional[str] = None,
             verdict = NO_CONSUMER
         elif buffer_days is not None and buffer_days < 0:
             verdict = AT_RISK
-        elif not covered_ids:
-            verdict = NO_LOGIC
-        elif uncovered:
+        elif uncovered or (needs_it and not covered_ids):
             verdict = NO_LOGIC
         else:
             verdict = READY
@@ -444,8 +448,12 @@ def story(project, system: str, phase: Optional[str] = None) -> str:
         else:
             out.append(f"  {r['buffer_days']} working days of room.")
 
-        out.append(f"  {r['covered']} of {r['consumers']} activities using this "
-                   f"equipment are downstream of the delivery.")
+        out.append(f"  {r['covered']} of {r['needs_delivery']} activities that "
+                   f"need this equipment are downstream of the delivery."
+                   + (f" ({r['consumers'] - r['needs_delivery']} more name it "
+                      f"but run before it lands — pads, layout, steel — and "
+                      f"are correctly not tied behind it.)"
+                      if r["consumers"] > r["needs_delivery"] else ""))
         if r["uncovered"]:
             out.append(f"  ⚠ {r['uncovered']} are NOT — nothing in the network "
                        f"holds them behind the delivery, so they will not move "
@@ -480,7 +488,7 @@ def report(project, phase: Optional[str] = None, max_rows: int = 40) -> str:
         out.append(f"{r['icon']} {r['system']:<14} {r['phase']:<10} "
                    f"arrives {r['arrival'] or '—':<10} "
                    f"needed {r['need'] or '—':<10} {gap:>6}  "
-                   f"{r['covered']}/{r['consumers']} connected"
+                   f"{r['covered']}/{r['needs_delivery']} connected"
                    + ("  (fed from "
                       + ", ".join(r["cross_phase_from"]) + ")"
                       if r["cross_phase_from"] else ""))
@@ -503,6 +511,118 @@ def report(project, phase: Optional[str] = None, max_rows: int = 40) -> str:
 
     out.append("\nAsk for one system by name to get the full story — which "
                "rows are unconnected and what feeds them.")
+    return "\n".join(out)
+
+
+def cover_gaps(project, phase: Optional[str] = None,
+               system: Optional[str] = None) -> Dict[str, Any]:
+    """
+    Ties that would close the NO LOGIC rows — one per activity that uses the
+    equipment and is not already behind its delivery.
+
+    procurement_wire ties a supply line to the FIRST install it feeds, which
+    is the right unit for that report and not enough for this one: on the
+    reference schedule it made 42 ties and moved exactly one system to green,
+    because the second and fortieth consumer of the same equipment were never
+    connected to anything.
+
+    Three refusals, and each is load-bearing:
+
+      Work dated before its delivery is never tied. Same rule procurement_wire
+      applies, same reason — forcing it pushes the work out and settles a
+      conflict that belongs to the user.
+
+      Work already reachable from the delivery is skipped, including work that
+      became reachable through a tie proposed a moment ago. Otherwise a folder
+      wired properly in sequence collects a redundant tie per activity, and
+      the schedule ends up with a hundred relationships saying what four
+      already said.
+
+      Pads, layout and high steel are never candidates at all. They precede
+      delivery by design, and analyse() has already excluded them from the
+      uncovered set for exactly that reason — so the exclusion lives in one
+      place rather than being restated here where it could drift.
+    """
+    from engine.logic_advisor import _calendar_of, working_days_between
+
+    d = analyse(project, phase=phase, system=system)
+    by_id = {a.activity_id: a for a in project.activities}
+    fwd: Dict[str, List[str]] = {}
+    for r in project.relations:
+        fwd.setdefault(r.predecessor_uid, []).append(r.successor_uid)
+
+    cmds: List[Dict[str, Any]] = []
+    tied: List[Dict[str, Any]] = []
+    blocked: List[Dict[str, Any]] = []
+
+    for row in d["systems"]:
+        if row["verdict"] not in (NO_LOGIC,) or not row["uncovered_ids"]:
+            continue
+        pred = by_id.get(row["arrival_id"])
+        if pred is None:
+            continue
+
+        reach = _multi_source_reach(
+            project, {by_id[i].uid for i in row["delivery_ids"] if i in by_id},
+            fwd)
+
+        for aid in sorted(row["uncovered_ids"],
+                          key=lambda i: _d(getattr(by_id.get(i), "planned_start", ""))):
+            succ = by_id.get(aid)
+            if succ is None or succ.uid in reach:
+                continue
+            raw = working_days_between(pred.planned_finish, succ.planned_start,
+                                       _calendar_of(project, succ))
+            gap = None if raw is None else raw - 1
+            if gap is None or gap < 0:
+                blocked.append({
+                    "system": row["system"], "phase": row["phase"],
+                    "predecessor_id": pred.activity_id,
+                    "predecessor_name": pred.name,
+                    "arrival": row["arrival"],
+                    "activity_id": aid, "name": succ.name,
+                    "start": _d(succ.planned_start), "gap_days": gap})
+                continue
+
+            cmds.append({"action": "add_relation",
+                         "predecessor_id": pred.activity_id,
+                         "successor_id": aid, "type": "fs", "lag_days": 0})
+            tied.append({"system": row["system"], "phase": row["phase"],
+                         "predecessor_id": pred.activity_id,
+                         "activity_id": aid, "name": succ.name,
+                         "gap_days": gap})
+            # Everything downstream of this row is now behind the delivery
+            # too, so the rest of a wired sequence does not each collect a
+            # tie of its own.
+            reach |= _multi_source_reach(project, {succ.uid}, fwd)
+
+    return {"commands": cmds, "tied": tied, "blocked": blocked,
+            "systems_touched": len({(t["system"], t["phase"]) for t in tied})}
+
+
+def cover_report(project, phase: Optional[str] = None,
+                 system: Optional[str] = None, max_rows: int = 20) -> str:
+    r = cover_gaps(project, phase, system)
+    if not r["commands"] and not r["blocked"]:
+        return ("Every system whose dates work is already held there by logic. "
+                "Nothing to add.")
+    out = [f"COVER PROCUREMENT GAPS — {len(r['commands'])} tie(s) across "
+           f"{r['systems_touched']} system(s). Nothing applied."]
+    for t in r["tied"][:max_rows]:
+        out.append(f"  {t['predecessor_id']} → {t['activity_id']}  "
+                   f"({t['gap_days']}d gap)  {t['name'][:52]}")
+    if len(r["tied"]) > max_rows:
+        out.append(f"  …and {len(r['tied']) - max_rows} more")
+    if r["blocked"]:
+        out.append(f"\n  ⚠ {len(r['blocked'])} NOT tied — dated before the "
+                   f"equipment arrives. Tying these would push the work out "
+                   f"and hide a conflict only you can settle:")
+        for b in r["blocked"][:12]:
+            out.append(f"    {b['activity_id']} {b['name'][:48]} starts "
+                       f"{b['start']}, {b['predecessor_name'][:34]} arrives "
+                       f"{b['arrival']}")
+        if len(r["blocked"]) > 12:
+            out.append(f"    …and {len(r['blocked']) - 12} more")
     return "\n".join(out)
 
 

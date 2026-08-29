@@ -557,6 +557,54 @@
       box-shadow:var(--shadow-lg),0 0 60px rgba(0,0,0,.5);
     }
     .modal.wide{width:640px;}
+    .modal.xwide{width:980px;}
+
+    /* ── Procurement board ───────────────────────────────────────────────
+       One row per equipment system per phase. The verdict colour is on the
+       left edge rather than the whole row: at forty-odd rows a full-bleed
+       red is unreadable, and the eye only needs the edge to group them. */
+    .proc-tally{
+      display:flex;gap:14px;flex-wrap:wrap;font-size:11px;color:var(--text2);
+      padding:0 0 12px;border-bottom:1px solid var(--border);margin-bottom:10px;
+    }
+    .proc-tally b{color:var(--text);font-weight:600;}
+    .proc-table{width:100%;border-collapse:collapse;font-size:11px;}
+    .proc-table th{
+      text-align:left;font-size:9px;letter-spacing:.1em;text-transform:uppercase;
+      color:var(--text3);font-weight:600;padding:6px 8px;
+      border-bottom:1px solid var(--border2);position:sticky;top:0;
+      background:var(--surface);z-index:1;
+    }
+    .proc-table td{padding:7px 8px;border-bottom:1px solid var(--border);
+                   vertical-align:top;}
+    .proc-row{cursor:pointer;}
+    .proc-row:hover{background:var(--surface2);}
+    .proc-row td:first-child{border-left:3px solid transparent;}
+    .proc-row.v-AT_RISK     td:first-child{border-left-color:var(--red,#e5484d);}
+    .proc-row.v-NO_LOGIC    td:first-child{border-left-color:var(--orange,#f5a524);}
+    .proc-row.v-NO_DELIVERY td:first-child{border-left-color:var(--text3);}
+    .proc-row.v-NO_CONSUMER td:first-child{border-left-color:var(--text3);}
+    .proc-row.v-READY       td:first-child{border-left-color:var(--green,#30a46c);}
+    .proc-sys{font-weight:600;color:var(--text);text-transform:capitalize;}
+    .proc-sub{color:var(--text3);font-size:10px;margin-top:2px;}
+    .proc-date{font-family:var(--mono);white-space:nowrap;}
+    .proc-gap{font-family:var(--mono);white-space:nowrap;text-align:right;}
+    .proc-gap.neg{color:var(--red,#e5484d);font-weight:600;}
+    .proc-gap.zero{color:var(--orange,#f5a524);}
+    /* The coverage bar is the honest bit: a system can have perfect dates and
+       nothing holding them, and the bar is where that shows at a glance. */
+    .proc-bar{
+      height:5px;border-radius:3px;background:var(--surface3);
+      overflow:hidden;min-width:56px;margin-top:4px;
+    }
+    .proc-bar i{display:block;height:100%;background:var(--green,#30a46c);}
+    .proc-bar.none i{background:var(--orange,#f5a524);}
+    .proc-detail{background:var(--surface2);}
+    .proc-detail pre{
+      white-space:pre-wrap;font-size:10.5px;margin:0;color:var(--text2);
+      font-family:var(--mono);line-height:1.55;
+    }
+    .proc-acts{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px;}
     .modal-head{
       padding:18px 22px 14px;border-bottom:1px solid var(--border);flex-shrink:0;
     }
@@ -1514,6 +1562,28 @@
   </div>
 </div>
 
+<!-- ══ PROCUREMENT BOARD ══════════════════════════════════
+     One row per equipment system per phase: when it lands, when it is first
+     needed, the room between, and whether anything in the network is holding
+     the two together. Clicking a row tells the story and offers to make the
+     ties that are safe to make. -->
+<div class="modal-overlay" id="proc-modal" onclick="closeModal('proc-modal',event)">
+  <div class="modal xwide">
+    <div class="modal-head">
+      <h2><span class="mh-icon">📦</span> Procurement — delivery vs. the work that needs it</h2>
+    </div>
+    <div class="modal-body" id="proc-body">
+      <div style="color:var(--text3);font-size:11px;">Reading the schedule…</div>
+    </div>
+    <div class="modal-foot">
+      <span id="proc-status" style="margin-right:auto;font-size:10.5px;color:var(--text3);"></span>
+      <button class="btn btn-ghost btn-sm" onclick="procTieAllSafe()"
+              title="Make every delivery→install tie that does not push work out. Conflicts are never tied.">⛓ Tie what's safe</button>
+      <button class="btn btn-ghost" onclick="closeModal('proc-modal')">Close</button>
+    </div>
+  </div>
+</div>
+
 <!-- ══ NEW PROJECT MODAL ══════════════════════════════════ -->
 <div class="modal-overlay" id="create-modal" onclick="closeModal('create-modal',event)">
   <div class="modal">
@@ -2156,6 +2226,11 @@
             <div class="tb-row">
               <button class="tb-chip" onclick="toggleFlowView()" title="Colour folders by whether work flows in and out of them">◧ Flow colours</button>
               <button class="tb-chip" onclick="showFlowReport()" title="List every folder that is isolated, one-way, or holds loose activities">▤ Flow report</button>
+            </div>
+            <div class="tb-pop-sep"></div>
+            <div class="tb-pop-label">Procurement</div>
+            <div class="tb-row">
+              <button class="tb-chip" onclick="showProcurementBoard()" title="Every major system: when it arrives, when it is first needed, and whether any logic holds the two together">📦 Delivery board</button>
             </div>
             <div class="tb-pop-sep"></div>
             <div class="tb-pop-label">Schedule runs</div>
@@ -4798,6 +4873,178 @@ async function showFlowReport(){
     switchTab('chat');
   }catch(e){ flashSched(e.message, true); }
 }
+
+// ═══════════════════════════════════════════════════
+//  Procurement board — does every system arrive before the work needing it?
+// ═══════════════════════════════════════════════════
+//
+// The chart answers a question the grid cannot: material readiness by SYSTEM
+// rather than by activity. One row per equipment kind per phase, worst first,
+// because the point of the board is the problems.
+//
+// Everything it draws comes from /api/procurement/map, which is the same
+// analysis the agent reads — so the colours and what the agent says about
+// them can never disagree.
+
+let lastProcData = null;
+let _procOpenRow = null;
+
+async function showProcurementBoard(){
+  openModal('proc-modal');
+  const body = document.getElementById('proc-body');
+  body.innerHTML = `<div style="color:var(--text3);font-size:11px;">Reading the schedule…</div>`;
+  try{
+    const d = await fetch('/api/procurement/map').then(_readJson);
+    if(d.error){ body.innerHTML = `<div style="color:var(--red)">${escHtml(d.error)}</div>`; return; }
+    lastProcData = d;
+    _procOpenRow = null;
+    renderProcBoard();
+  }catch(e){
+    body.innerHTML = `<div style="color:var(--red)">${escHtml(e.message)}</div>`;
+  }
+}
+
+function procGapCell(r){
+  if(r.buffer_days === null || r.buffer_days === undefined) return `<span class="proc-gap">—</span>`;
+  const cls = r.buffer_days < 0 ? 'neg' : (r.buffer_days === 0 ? 'zero' : '');
+  const txt = r.buffer_days < 0 ? `${r.buffer_days}d` : `+${r.buffer_days}d`;
+  return `<span class="proc-gap ${cls}">${txt}</span>`;
+}
+
+function renderProcBoard(){
+  const d = lastProcData;
+  if(!d) return;
+  const t = d.tally || {};
+  const rows = (d.systems || []).map((r, i) => {
+    // A system with no consumers has no coverage to show — an empty bar there
+    // would read as "nothing is connected", which is a different claim.
+    // Denominated over work that NEEDS the delivery, not everything naming
+    // the equipment — a pad is poured before the chiller lands and must not
+    // be tied behind it, so counting it as unconnected would show a bar that
+    // can never fill.
+    const need = r.needs_delivery || 0;
+    const pct = need ? Math.round(100 * r.covered / need) : 0;
+    const bar = need
+      ? `<div class="proc-bar${r.covered ? '' : ' none'}"><i style="width:${pct}%"></i></div>
+         <div class="proc-sub">${r.covered}/${need} connected</div>`
+      : `<div class="proc-sub">no work uses it</div>`;
+    const open = _procOpenRow === i;
+    return `
+      <tr class="proc-row v-${escAttr(r.verdict)}" onclick="procToggleRow(${i})">
+        <td><span class="proc-sys">${escHtml(r.icon)} ${escHtml(r.system)}</span>
+            <div class="proc-sub">${escHtml(r.phase)}${
+              r.cross_phase_from ? ' · fed from ' + escHtml(r.cross_phase_from.join(', ')) : ''}</div></td>
+        <td class="proc-date">${escHtml(r.arrival || '—')}
+            <div class="proc-sub">${escHtml((r.arrival_name || '').slice(0,34))}</div></td>
+        <td class="proc-date">${escHtml(r.need || '—')}
+            <div class="proc-sub">${escHtml((r.need_name || '').slice(0,34))}</div></td>
+        <td style="text-align:right">${procGapCell(r)}</td>
+        <td style="min-width:90px">${bar}</td>
+        <td style="font-size:10px;color:var(--text3)">${escHtml(r.label)}</td>
+      </tr>` + (open ? procDetailRow(r, i) : '');
+  }).join('');
+
+  document.getElementById('proc-body').innerHTML = `
+    <div class="proc-tally">
+      <span>🔴 <b>${t.AT_RISK || 0}</b> at risk</span>
+      <span>🟡 <b>${t.NO_LOGIC || 0}</b> dates ok, nothing holding them</span>
+      <span>⚪ <b>${(t.NO_DELIVERY || 0) + (t.NO_CONSUMER || 0)}</b> unmatched</span>
+      <span>🟢 <b>${t.READY || 0}</b> ready</span>
+      <span style="margin-left:auto;color:var(--text3)">click a row for the story</span>
+    </div>
+    <table class="proc-table">
+      <thead><tr>
+        <th>System</th><th>Arrives</th><th>First needed</th>
+        <th style="text-align:right">Room</th><th>Logic</th><th>Verdict</th>
+      </tr></thead>
+      <tbody>${rows || '<tr><td colspan="6" style="color:var(--text3)">No equipment system matched.</td></tr>'}</tbody>
+    </table>`;
+  document.getElementById('proc-status').textContent =
+    `${d.count} system/phase combination${d.count === 1 ? '' : 's'} · read-only`;
+}
+
+/** The story for one system, plus a way into the schedule. */
+function procDetailRow(r, i){
+  const acts = [];
+  if(r.arrival_id) acts.push(r.arrival_id);
+  if(r.need_id)    acts.push(r.need_id);
+  const showIds = (r.uncovered_ids && r.uncovered_ids.length)
+    ? r.uncovered_ids : acts;
+  return `
+    <tr class="proc-detail"><td colspan="6">
+      <pre id="proc-story-${i}" style="color:var(--text3)">Loading…</pre>
+      <div class="proc-acts">
+        <button class="btn btn-ghost btn-sm"
+                onclick="event.stopPropagation();procShowInGrid(${escAttrJs(JSON.stringify(showIds))})">
+          ⌖ Find in schedule (${showIds.length})</button>
+        ${r.verdict === 'NO_LOGIC' ? `
+        <button class="btn btn-ghost btn-sm"
+                onclick="event.stopPropagation();procTieSystem(${escAttrJs(r.phase)},${escAttrJs(r.system)})">
+          ⛓ Tie ${escHtml(r.system)} into its work</button>` : ''}
+        ${r.verdict === 'AT_RISK' ? `
+        <span style="font-size:10px;color:var(--text3);align-self:center">
+          Nothing will tie this shut — the conflict is a decision about the job.</span>` : ''}
+      </div>
+    </td></tr>`;
+}
+
+function procToggleRow(i){
+  _procOpenRow = (_procOpenRow === i) ? null : i;
+  renderProcBoard();
+  if(_procOpenRow === null) return;
+  const r = lastProcData.systems[i];
+  // Fetched rather than held on every row: the full story for fifty systems
+  // is a lot of text to carry for the one row someone opens.
+  fetch(`/api/procurement/map?system=${encodeURIComponent(r.system)}`
+        + `&phase=${encodeURIComponent(r.phase)}`)
+    .then(_readJson)
+    .then(d => {
+      const el = document.getElementById(`proc-story-${i}`);
+      if(el) el.textContent = d.story || d.report || 'No detail available.';
+    })
+    .catch(e => {
+      const el = document.getElementById(`proc-story-${i}`);
+      if(el) el.textContent = e.message;
+    });
+}
+
+/** Close the board and light up the rows it was talking about. */
+function procShowInGrid(idsJson){
+  let ids;
+  try{ ids = JSON.parse(idsJson); }catch(_){ ids = []; }
+  if(!ids.length){ flashSched('Nothing to show for that row', true); return; }
+  closeModal('proc-modal');
+  switchTab('schedule');
+  revealActivities(ids);
+}
+
+/**
+ * Make the delivery→install ties that are safe to make.
+ *
+ * "Safe" is the engine's judgement, not the button's: procurement_wire never
+ * ties an install dated before its own delivery, because forcing that pushes
+ * the work out and quietly resolves a conflict only the user can settle.
+ * So this can green the 🟡 rows and will never touch a 🔴 one.
+ */
+async function procTieSystem(phase, system){
+  const cmd = {action:'procurement_cover', apply:true};
+  if(phase && phase !== 'Unphased') cmd.phase = phase;
+  if(system) cmd.system = system;
+  const what = system ? `${system}${phase ? ' — ' + phase : ''}`
+                      : (phase || 'every system');
+  const label = `Cover procurement gaps — ${what}`;
+  if(!confirm(`Tie deliveries into the work for ${what}?\n\n`
+            + `This adds a Finish-to-Start tie from each delivery to every `
+            + `activity that needs it and is not already behind it.\n\n`
+            + `Two things are never tied: work dated BEFORE its own delivery `
+            + `(that conflict stays visible for you to settle), and pads, `
+            + `layout and steel, which precede delivery by design.\n\n`
+            + `Undo reverts the whole pass.`)) return;
+  const d = await directEdit([cmd], label);
+  if(d && !d.error){ await showProcurementBoard(); }
+}
+
+function procTieAllSafe(){ return procTieSystem(null, null); }
 
 function renderSchedule(data) {
   lastSchedData = data;
