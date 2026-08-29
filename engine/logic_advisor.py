@@ -1364,21 +1364,30 @@ def sequence_recommendations(project: Project, needle: str,
 # procurement line uses to the words the installation activities use.
 
 EQUIPMENT_TERMS: List[Tuple[str, Tuple[str, ...]]] = [
-    ("generator",      ("generator", "gen ")),
-    ("switchgear",     ("switchgear", "swbd", "swgr", "msg", "mvs")),
-    ("transformer",    ("transformer", "xfmr")),
+    ("generator",      ("generator", "gen", "genset")),
+    ("switchgear",     ("switchgear", "swbd", "swgr", "msg", "mvs", "hvs gear",
+                        "hv switchgear", "mv switchgear")),
+    ("lv switchgear",  ("lv switchgear", "lv swbd", "msb", "edp", "csb", "ccs",
+                        "esb", "cdb")),
+    ("transformer",    ("transformer", "xfmr", "xmfr")),
     ("chiller",        ("chiller",)),
     ("cooling tower",  ("cooling tower",)),
     ("dry cooler",     ("dry cooler",)),
+    ("cdu",            ("cdu", "cdus", "coolant distribution")),
+    ("fan wall",       ("fan wall", "fanwall", "fan walls")),
     ("ups",            ("ups",)),
+    ("battery",        ("battery cabinet", "battery")),
     ("pdu",            ("pdu",)),
+    ("pdp",            ("pdp",)),
     ("rmu",            ("rmu",)),
     ("gis",            ("gis",)),
+    ("ais",            ("ais",)),
     ("crah",           ("crah",)),
     ("fcw",            ("fcw", "fcu")),
     ("busway",         ("busway", "bus duct")),
     ("skid",           ("skid",)),
     ("panel",          ("panelboard", "panel board")),
+    ("elevator",       ("elevator",)),
 ]
 
 _INSTALL_VERBS = ("set ", "install", "rig", "hang", "place", "erect", "mount",
@@ -1390,9 +1399,63 @@ _PRE_DELIVERY_OK = ("base", "pad", "foundation", "rough-in", "rough in", "layout
                     "hanger", "support", "steel", "housekeeping", "curb", "isolator")
 
 
-def _equipment_of(name: str) -> List[str]:
-    low = (name or "").lower()
-    return [key for key, words in EQUIPMENT_TERMS if any(w in low for w in words)]
+# A trailing parenthetical of the form "(Word 123)" is a LOCATION — the room
+# the work happens in — not a description of the work. On the reference
+# schedule "OH Lighting (Gen 325)" is lighting in generator room 325; it needs
+# the room, not a generator. Reading it as equipment made 603 activities look
+# like they consumed generators when 159 actually do, which is the difference
+# between a procurement map that means something and one that flags a quarter
+# of the job.
+#
+# The shape is deliberately narrow: a short alphabetic prefix, then a bare
+# number. That keeps "(4MW)", "(2500KVA)" and "(LV Switchgear)" — which
+# describe the equipment and belong to the name — while stripping "(Gen 318)",
+# "(MV 101)" and "(Data Hall 202)", which describe where.
+_LOCATION_TAG = re.compile(
+    r"\s*\((?:[A-Za-z][A-Za-z.\-/ ]{0,18}?)\s*#?\d{1,4}[A-Za-z]?\)\s*$")
+
+
+def strip_location(name: str) -> str:
+    """An activity name with its trailing room/area tag removed."""
+    s, prev = (name or "").strip(), None
+    while prev != s:
+        prev = s
+        s = _LOCATION_TAG.sub("", s).strip()
+    return s
+
+
+def location_tag(name: str) -> Optional[str]:
+    """The room/area tag itself, when there is one — 'Gen 318', 'MV 101'."""
+    m = _LOCATION_TAG.search((name or "").strip())
+    return m.group(0).strip().strip("()").strip() if m else None
+
+
+# Word-boundary matching, because substring matching quietly mis-reads short
+# codes: "gis" fired on "Holder Logistics/Planning", and "ups" would fire on
+# "groups". The codes here are three letters more often than not, so the
+# boundary is doing real work rather than being pedantic.
+_TERM_RE: Dict[str, "re.Pattern"] = {}
+
+
+def _term_re(word: str) -> "re.Pattern":
+    rx = _TERM_RE.get(word)
+    if rx is None:
+        rx = re.compile(r"(?<![a-z0-9])" + re.escape(word).replace(r"\ ", r"\s+")
+                        + r"(?:s|es|'s)?(?![a-z0-9])", re.I)
+        _TERM_RE[word] = rx
+    return rx
+
+
+def _equipment_of(name: str, keep_location: bool = False) -> List[str]:
+    """
+    Which major equipment systems this activity name refers to.
+
+    The location tag is dropped first unless asked for, so work is matched to
+    the equipment it actually handles rather than to the room it happens in.
+    """
+    low = (name if keep_location else strip_location(name)) or ""
+    return [key for key, words in EQUIPMENT_TERMS
+            if any(_term_re(w).search(low) for w in words)]
 
 
 def _is_install(name: str) -> bool:

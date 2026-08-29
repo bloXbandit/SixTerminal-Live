@@ -232,7 +232,8 @@ ADVISORY_ACTIONS = frozenset({"recommend_logic", "read_document", "describe_brai
                               "wbs_flow_report", "find_duplicates",
                               "schedule_preview", "normalize_plan",
                               "bridge_folder", "backward_report",
-                              "procurement_report", "ripple_preview"})
+                              "procurement_report", "ripple_preview",
+                              "procurement_map", "procurement_story"})
 
 
 def is_advisory(action: str) -> bool:
@@ -332,6 +333,10 @@ def apply_command(project: Project, command: Dict[str, Any]) -> Tuple[bool, str]
             return _fix_backward(project, command)
         elif action in ("procurement_report", "wire_procurement", "link_lle"):
             return _wire_procurement(project, command)
+        elif action in ("procurement_map", "delivery_map", "material_map"):
+            return _procurement_map(project, command)
+        elif action in ("procurement_story", "delivery_story"):
+            return _procurement_story(project, command)
         elif action in ("replicate_pattern", "copy_logic_pattern"):
             return _replicate_pattern(project, command)
         elif action in ("ripple_preview", "simulate_activity"):
@@ -2713,6 +2718,31 @@ def _ripple(project: Project, cmd: Dict, apply_it: bool) -> Tuple[bool, str]:
                    f"moves everything.")
     msg.append("  Undo reverts the whole ripple.")
     return True, "\n".join(msg)
+
+
+def _procurement_map(project: Project, cmd: Dict) -> Tuple[bool, str]:
+    """
+    Every major system: when it lands, when it is first needed, and whether
+    anything in the network holds the two together. Read-only.
+    """
+    from engine import procurement_map as _pm
+    return True, _pm.report(project, phase=cmd.get("phase"),
+                            max_rows=int(cmd.get("max_rows") or 40))
+
+
+def _procurement_story(project: Project, cmd: Dict) -> Tuple[bool, str]:
+    """
+    One system, told as a sentence — the "the chillers have to be here before
+    this chiller work" answer, with the activities named. Read-only.
+    """
+    from engine import procurement_map as _pm
+
+    system = (cmd.get("system") or cmd.get("equipment")
+              or cmd.get("target_name") or "").strip()
+    if not system:
+        raise EditError("procurement_story needs a system, e.g. "
+                        '{"action":"procurement_story","system":"chiller"}')
+    return True, _pm.story(project, system, cmd.get("phase"))
 
 
 def _wire_procurement(project: Project, cmd: Dict) -> Tuple[bool, str]:

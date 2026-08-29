@@ -1716,7 +1716,9 @@ def edit():
                 _append_chat("user",
                              f"[picked: {tag}]" if tag else f"[confirmed: {instruction}]")
         else:
-            llm_ctx = project.llm_context() + _brain_for(project).context_block(project)
+            llm_ctx = (project.llm_context()
+                       + _brain_for(project).context_block(project)
+                       + _procurement_block(project))
             if sess.get("last_undone"):
                 llm_ctx += f"\n\nRECENT UNDO: The user just undid: \"{sess['last_undone']}\". If asked to redo, you know exactly what was done."
             commands, raw_llm = interpret(
@@ -1787,7 +1789,9 @@ def edit():
                 )
                 commands2, raw_llm2 = interpret(
                     retry_instruction,
-                    project_summary=project.llm_context() + _brain_for(project).context_block(project),
+                    project_summary=(project.llm_context()
+                                     + _brain_for(project).context_block(project)
+                                     + _procurement_block(project)),
                     edit_history=[],
                     chat_history=sess["chat_history"][:-1],
                     model_key=_settings["model_key"],
@@ -3292,6 +3296,34 @@ def schedule_log_route():
     })
 
 
+@app.route("/api/procurement/map", methods=["GET"])
+def procurement_map_route():
+    """
+    Every major system: when it lands, when it is first needed, and whether
+    anything holds the two together.
+
+    Read-only, like the flow map it sits beside. `system` narrows to one kind
+    of equipment and returns the full story for it — the text the board's
+    rows link to — so the chart and the prose come from one analysis and can
+    never disagree.
+    """
+    sess = _get_session()
+    if sess is None or sess["project"] is None:
+        return jsonify({"error": "No schedule loaded"}), 400
+    from engine import procurement_map as pm
+
+    phase = (request.args.get("phase") or "").strip() or None
+    system = (request.args.get("system") or "").strip() or None
+    project = sess["project"]
+
+    data = pm.analyse(project, phase=phase, system=system)
+    data["success"] = True
+    data["report"] = pm.report(project, phase=phase)
+    if system:
+        data["story"] = pm.story(project, system, phase)
+    return jsonify(data)
+
+
 @app.route("/api/wbs-flow", methods=["GET"])
 def wbs_flow_route():
     """
@@ -3760,6 +3792,29 @@ def _wbs_signature(project):
 def _wbs_names(project):
     """uid -> name, diffed across an edit to report renames for in-place patching."""
     return {w.uid: w.name for w in project.wbs_nodes}
+
+
+def _procurement_block(project) -> str:
+    """
+    The procurement map, compressed, riding in every turn's context.
+
+    Sequencing questions are procurement questions more often than they look —
+    "why can't this move up", "what drives this room", "can we start the
+    terminations in March". The agent could only answer those from logic and
+    dates, so it would happily propose pulling work forward past the date its
+    equipment lands, because nothing in what it could see said the equipment
+    existed. A dozen lines naming the systems at risk is enough for it to stop
+    doing that, and cheap enough (~0.12s) to carry every turn.
+
+    Never fatal: a context block is an improvement to an answer, not a
+    precondition for giving one.
+    """
+    try:
+        from engine import procurement_map as pm
+        txt = pm.digest(project)
+        return f"\n\n{txt}\n" if txt else ""
+    except Exception:
+        return ""
 
 
 def _flow_signature(project) -> dict:

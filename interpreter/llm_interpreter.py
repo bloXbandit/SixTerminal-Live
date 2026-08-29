@@ -966,6 +966,37 @@ procurement_report:
   equipment match is loose so it finds things, which means it also finds
   things it should not, so nothing with a negative gap is ever wired.
 
+procurement_map / procurement_story:
+  Read-only, and the ones to reach for when the question is about MATERIAL
+  rather than about one line. procurement_report works a supply line at a
+  time; the map works a SYSTEM at a time — one kind of equipment within one
+  phase, which is the unit a procurement conversation is actually held in.
+    {"action": "procurement_map"}
+    {"action": "procurement_map", "phase": "Phase 2"}
+    {"action": "procurement_story", "system": "chiller"}
+    {"action": "procurement_story", "system": "generator", "phase": "Phase 1"}
+  Four verdicts per system:
+    AT RISK    work is dated before its equipment can arrive — a real
+               conflict, and a decision about the job. Report it; never tie
+               it shut.
+    NO LOGIC   the dates are fine and nothing connects the delivery to the
+               work. THIS IS THE ONE PEOPLE MISS: it is not a problem today
+               and becomes one silently the moment either end moves, because
+               nothing is holding the gap open. procurement_report with
+               apply=true is what fixes it.
+    NO DELIVERY there is work for this equipment and no supply line at all.
+    READY      dates work and a logic path carries the delivery into the work.
+  procurement_story is the articulation — "the chillers land 10-Oct, the first
+  work needing them is X on 29-Jun, that is 185 working days of room, and 7 of
+  15 chiller activities are not downstream of the delivery, here they are".
+  USE IT when the user asks anything shaped like "do we have what we need for
+  X", "when do the generators have to be here", "what is waiting on material".
+  Answer from the story, naming the activities and dates — do not paraphrase
+  it into a verdict with no numbers.
+  A PROCUREMENT summary is already in your context every turn. Use it when a
+  sequencing question touches equipment: do not propose pulling work earlier
+  than the date its equipment arrives, and say why when you decline to.
+
 replicate_pattern:
   Copy the internal sequence of one folder onto others of the same kind —
   when one area has been wired properly and the rest have not, the shape is
