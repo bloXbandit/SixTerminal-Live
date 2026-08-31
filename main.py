@@ -38,11 +38,35 @@ def open_browser(port: int, delay: float = 1.2):
 def main():
     args = parse_args()
 
+    # Before the check below, or a key sitting in .env reports as missing —
+    # server.py loads these too, but that import happens further down and the
+    # warning would already have been printed by then.
+    from engine.envfile import load as _load_env
+    _env_files = _load_env(ROOT)
+    if _env_files:
+        print(f"[i] Loaded {', '.join(_env_files)}")
+
     # Check for API key
     if not os.environ.get("ANTHROPIC_API_KEY") and not os.environ.get("OPENAI_API_KEY"):
         print("\n[!] WARNING: No LLM API key found.")
-        print("    Set ANTHROPIC_API_KEY or OPENAI_API_KEY in your environment.")
+        print("    Set ANTHROPIC_API_KEY or OPENAI_API_KEY in your environment,")
+        print("    or put it in a .env file beside this script.")
         print("    File loading and editing will work, but natural language interpretation will fail.\n")
+
+    # Say whether saved schedules will be pulled back, because the alternative
+    # is an app that starts empty for two very different reasons and does not
+    # say which: nothing stored, or credentials that never loaded.
+    try:
+        from engine import cloud_store
+        st = cloud_store.status()
+        if st.get("configured"):
+            print(f"[i] Cloud storage: {st['bucket']}/{st['prefix']} — "
+                  f"restoring saved schedules")
+        elif st.get("missing"):
+            print(f"[i] Cloud storage off (missing: {', '.join(st['missing'])}) "
+                  f"— schedules stay in memory only")
+    except Exception:
+        pass
 
     # Import server from project root (avoids importlib subdirectory traversal)
     from server import app

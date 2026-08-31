@@ -30,28 +30,17 @@ def read_env_file(path: Optional[str] = None) -> Dict[str, str]:
     """
     KEY=value lines, quotes optional, # comments ignored.
 
-    Deliberately not a dotenv library: this reads one small file at the start
-    of a run, and a dependency for that is not worth it.
+    The parser moved to engine/envfile.py when the app itself started reading
+    .env — one parser, so a file the evals accept cannot be one the server
+    silently ignores. This keeps the eval-facing signature, where the path
+    defaults to .env.local.
 
     The path is resolved at CALL time rather than defaulting to ENV_FILE in
     the signature — a default argument is bound once at import, so the module
     constant could never be pointed anywhere else afterwards.
     """
-    path = path or ENV_FILE
-    out: Dict[str, str] = {}
-    try:
-        with open(path, encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if not line or line.startswith("#") or "=" not in line:
-                    continue
-                key, _, val = line.partition("=")
-                val = val.strip().strip('"').strip("'")
-                if val:
-                    out[key.strip()] = val
-    except OSError:
-        pass
-    return out
+    from engine.envfile import read_env_file as _read
+    return _read(path or ENV_FILE)
 
 
 def load_into_env(path: Optional[str] = None) -> int:
@@ -60,12 +49,8 @@ def load_into_env(path: Optional[str] = None) -> int:
     that is already set — an explicitly exported key should always win over a
     file somebody forgot about.
     """
-    n = 0
-    for k, v in read_env_file(path).items():
-        if not os.environ.get(k):
-            os.environ[k] = v
-            n += 1
-    return n
+    from engine.envfile import load_into_env as _load
+    return _load(path or ENV_FILE)
 
 
 def for_provider(provider: str, explicit: Optional[str] = None) -> Optional[str]:

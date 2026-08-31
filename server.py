@@ -27,6 +27,14 @@ from flask import Flask, request, jsonify, send_from_directory, send_file
 ROOT = Path(__file__).parent          # C:\SixTerminal-Live
 sys.path.insert(0, str(ROOT))
 
+# BEFORE any other engine import, and that ordering is not cosmetic:
+# cloud_store reads R2_PREFIX at module import, and this module restores from
+# the cloud at import time too. Loading .env after those would set the
+# variables just too late to matter — the exact shape of the bug this fixes,
+# where a correct .env sat next to an app that silently ignored it.
+from engine import envfile as _envfile
+_ENV_FILES_LOADED = _envfile.load(str(ROOT))
+
 from engine.xer_reader import load_xer
 from engine.xml_reader import load_xml
 from engine.xml_writer import write_p6_xml
