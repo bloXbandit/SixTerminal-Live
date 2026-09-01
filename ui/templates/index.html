@@ -8827,6 +8827,7 @@ function onSchedContextMenu(e){
     ['✎ Rename folder…',    () => beginWbsRename(tr)],
     ['🎨 Folder color…',    () => openWbsColorPicker(tr.dataset.wbsuid, tr.dataset.wbsname)],
     ['🔖 Activity ID prefix…', (ev) => openWbsPrefixEditor(ev, tr.dataset.wbsuid, tr.dataset.wbsname)],
+    ['#️⃣ Normalize IDs in this folder…', () => normalizeIdsInFolder(tr.dataset.wbsuid)],
     ['⇱ Move to root',      () => moveSelectedWbs(true)],
     ['📌✕ Clear constraints', () => wbsClearConstraints()],
     ['✎+ Add text to names',  (ev) => openAppendNamePopup(ev, {wbsScope:true})],
@@ -10292,9 +10293,22 @@ function fillScopeSelect(id){
 
 let _normIdChanges = [];
 
-function openNormalizeIdsModal(){
+/**
+ * Open the normalizer already scoped to one folder, and run the check.
+ *
+ * The modal has always taken a scope, but reaching it meant opening it from
+ * the menu and finding the folder again in a dropdown of every folder in the
+ * job — when you were already right-clicking the folder you meant.
+ */
+function normalizeIdsInFolder(uid){
+  openNormalizeIdsModal(uid);
+  scanNormalizeIds();
+}
+
+function openNormalizeIdsModal(scopeUid){
   if(!lastSchedData){ flashSched('Load a schedule first', true); return; }
   fillScopeSelect('normids-scope');
+  if(scopeUid) document.getElementById('normids-scope').value = scopeUid;
   _normIdChanges = [];
   document.getElementById('normids-summary').innerHTML = '';
   document.getElementById('normids-body').innerHTML =
