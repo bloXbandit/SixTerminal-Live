@@ -780,6 +780,79 @@ def verdicts(directives: List[Directive], pred_name: str, succ_name: str,
 
 # ── Checking the schedule against what you said ──────────────────────────────
 
+def topic_of(d: Directive) -> str:
+    """
+    What a directive is ABOUT, for spreading a capped selection across the job.
+
+    Crude on purpose — the leading significant word of whichever side names
+    the work. It only has to separate "this rule is about MV rooms" from
+    "this one is about generators" well enough to stop a selection landing
+    entirely in one area.
+    """
+    if d.kind == REQUIREMENT:
+        s = d.spec or {}
+        src = s.get("scope") or s.get("what") or s.get("from") or ""
+    elif d.kind == ORDER:
+        src = d.subject or d.after or ""
+    elif d.kind in (SEQUENCE, ROOM_ORDER):
+        src = d.family or ""
+    else:
+        src = d.text or ""
+    for w in _norm(src).split():
+        if w not in _STOP:
+            return w
+    return "general"
+
+
+def select_for_prompt(items: List[Directive], cap: int) -> List[Directive]:
+    """
+    Which `cap` of these the agent should be shown, keeping the order taught.
+
+    Newest-first was the old rule, and it is wrong in a specific way: rules are
+    taught in bursts while working on one area, so the newest thirty on a
+    well-taught job can all be about the same folder — the agent then reads a
+    brain that appears to know one room and nothing else about the project.
+
+    So the selection goes round the TOPICS, newest first within each, until it
+    is full. Every area the user has taught about keeps a voice even when the
+    total is over the cap, which is what "reaching the full scope of the job"
+    actually requires. Contested rules are seeded first regardless: they are
+    the ones the agent has to raise, and dropping one silently is the whole
+    failure this is trying to avoid.
+    """
+    if len(items) <= cap:
+        return items
+    order = {id(d): i for i, d in enumerate(items)}
+    picked: List[Directive] = []
+    seen = set()
+
+    for d in items:
+        if d.overridden >= _REVIEW_OVERRIDES and d.overridden > d.upheld:
+            picked.append(d)
+            seen.add(id(d))
+            if len(picked) >= cap:
+                break
+
+    buckets: Dict[str, List[Directive]] = {}
+    for d in items:
+        if id(d) not in seen:
+            buckets.setdefault(topic_of(d), []).append(d)
+    for b in buckets.values():
+        b.reverse()                      # newest first within a topic
+
+    while len(picked) < cap and any(buckets.values()):
+        for key in list(buckets):
+            if not buckets[key]:
+                del buckets[key]
+                continue
+            picked.append(buckets[key].pop(0))
+            if len(picked) >= cap:
+                break
+    # Back into the order they were taught, so a sequence still reads in order.
+    picked.sort(key=lambda d: order[id(d)])
+    return picked
+
+
 def contradictions(directives: List[Directive]) -> List[Dict[str, Any]]:
     """
     Rules that cannot all be true at once.
@@ -1252,7 +1325,13 @@ class Brain:
     # every request, so it is bounded rather than growing with the brain —
     # the full list is always one click away in the panel, and a tail line
     # says how much was left out so nothing looks complete when it is not.
-    _CAP = 30
+    # Measured, not guessed: a rule line costs about 29 tokens, so thirty of
+    # them saved roughly 900 against an llm_context that runs to tens of
+    # thousands on a real job. The cap was buying almost nothing and paying
+    # for it by dropping rules the agent then could not explain. Eighty costs
+    # about 2,300 — still noise beside the activity list, and past the point
+    # where a normally-taught job ever reaches it.
+    _CAP = 80
 
     def context_block(self, project=None) -> str:
         """
@@ -1291,7 +1370,7 @@ class Brain:
             if not items:
                 return []
             out = [title]
-            shown = items[-self._CAP:] if len(items) > self._CAP else items
+            shown = select_for_prompt(items, self._CAP)
             out.extend(fmt(d) for d in shown)
             if len(items) > self._CAP:
                 out.append(f"  …and {len(items) - self._CAP} older one(s) not shown "

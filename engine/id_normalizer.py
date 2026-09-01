@@ -42,6 +42,12 @@ _SEP_RE = re.compile(r"[.\-_/ ]+")
 # something to pick a winner in silently.
 _MIN_SHARE = 0.6
 
+# A runner-up convention this close to the leader means the file carries two
+# coding systems, not one system and some drift. Four stray codes beside a
+# thousand is 0.4%; three against two is 67%, and only the second is a
+# decision the user has to make.
+_RIVAL_SHARE = 0.4
+
 _DEFAULT_STRIDE = 10
 
 
@@ -98,16 +104,54 @@ class _Allocator:
         raise RuntimeError("Could not find a free activity id")
 
 
-def _dominant_family(project: Project) -> Tuple[Optional[str], float]:
-    counts = Counter()
+def is_structured(prefix: str) -> bool:
+    """
+    Is this a coded prefix, or the generic one P6 hands out?
+
+    "MDC1.PH2.ER." is a convention — it carries the job, the phase and the
+    area. "A" is what an activity gets when nobody coded it. The separator is
+    what tells them apart, and the distinction is load-bearing: without it the
+    normalizer picks whichever family is MORE COMMON, and in a folder where
+    the strays outnumber the coded rows it renames MDC1.PH2.ER.1000 to A2030 —
+    normalizing backwards, onto the junk, which is the exact opposite of the
+    job this module exists to do.
+    """
+    return bool(_SEP_RE.search((prefix or "").strip()))
+
+
+def _dominant_family(project: Project) -> Tuple[Optional[str], float, float]:
+    """
+    The convention to normalize TOWARDS: (family, share, rival ratio).
+
+    A structured family always beats a generic one, however many generic ids
+    there are — those are the rows being FIXED, not evidence of a convention.
+    The share is then measured against the other structured families, because
+    the question is "is there one convention here", and letting the strays
+    dilute it would refuse to run on precisely the files that need it most.
+
+    The rival ratio is the runner-up measured against the leader, and it is
+    what share alone cannot say. Three XYZ ids against two MDC1 ids is 60% —
+    over any sane threshold — while plainly being two live conventions rather
+    than one convention and some drift. A thousand MDC1 ids against four
+    strays is the same 60%-plus and is not ambiguous at all. Comparing the top
+    two directly separates those cases; the share cannot.
+    """
+    counts, structured = Counter(), Counter()
     for a in project.activities:
         parsed = parse_id(a.activity_id)
-        if parsed:
-            counts[family(parsed[0])] += 1
+        if not parsed:
+            continue
+        fam = family(parsed[0])
+        counts[fam] += 1
+        if is_structured(parsed[0]):
+            structured[fam] += 1
     if not counts:
-        return None, 0.0
-    name, n = counts.most_common(1)[0]
-    return name, n / sum(counts.values())
+        return None, 0.0, 0.0
+    pool = structured or counts
+    ranked = pool.most_common()
+    name, n = ranked[0]
+    rival = (ranked[1][1] / n) if len(ranked) > 1 and n else 0.0
+    return name, n / sum(pool.values()), rival
 
 
 def _descendants(project: Project, root_uid: str) -> set:
@@ -140,17 +184,19 @@ def plan(project: Project, root_uid: Optional[str] = None) -> Dict[str, Any]:
     `changes` is the reviewable list — one entry per activity, carrying the
     uid it applies to so the caller can apply exactly what was shown.
     """
-    fam, share = _dominant_family(project)
+    fam, share, rival = _dominant_family(project)
     if fam is None:
         return {"convention": None, "share": 0.0, "changes": [], "left_alone": [],
                 "skipped": ["No activity id in this schedule ends in a number, "
                             "so there is no pattern to follow."],
                 "scanned": len(project.activities)}
-    if share < _MIN_SHARE:
+    if share < _MIN_SHARE or rival >= _RIVAL_SHARE:
         return {"convention": fam, "share": share, "changes": [], "left_alone": [],
                 "skipped": [f"No single convention covers this schedule — "
-                            f"'{fam}' is only {share:.0%} of the ids. Normalizing "
-                            f"would be picking a winner rather than following one."],
+                            f"'{fam}' is only {share:.0%} of the coded ids, and "
+                            f"another convention is nearly as common. "
+                            f"Normalizing would be picking a winner rather than "
+                            f"following one."],
                 "scanned": len(project.activities)}
 
     in_scope = _descendants(project, root_uid) if root_uid else None

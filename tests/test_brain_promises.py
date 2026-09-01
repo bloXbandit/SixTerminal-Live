@@ -297,3 +297,65 @@ def test_promises_survive_a_save_and_reload():
     back = Brain.from_json(b.to_json())
     d = back.promises[0]
     assert d.spec["kind"] == "not_after" and d.spec["date"] == "2027-04-26"
+
+
+# ── what the agent is shown when there is more than fits ─────────────────────
+# Newest-first was the old rule and it fails in a specific way: rules are
+# taught in bursts while working on one area, so on a well-taught job the
+# newest N can all be about the same folder. The agent then reads a brain that
+# appears to know one room and nothing else about the project.
+
+from engine.project_brain import select_for_prompt, topic_of
+
+
+def _rules(brain, n, fmt):
+    for i in range(n):
+        brain.add(fmt(i))
+
+
+def test_everything_is_shown_when_it_fits():
+    b = Brain(key="J")
+    _rules(b, 5, lambda i: f"Pull Wire MV {100+i} must come after Rough In MV {100+i}")
+    assert select_for_prompt(b.rules, 80) == b.rules
+
+
+def test_a_long_burst_does_not_crowd_out_every_other_area():
+    """The whole point. 90 MV rules taught last would otherwise fill the window
+    and the agent would never see the generator or chiller rules at all."""
+    b = Brain(key="J")
+    _rules(b, 8, lambda i: f"Terminations Gen {300+i} must come after Set Generator {300+i}")
+    _rules(b, 8, lambda i: f"Chiller Lineup {i} must come after Set Chiller {i}")
+    _rules(b, 90, lambda i: f"Pull Wire MV {100+i} must come after Rough In MV {100+i}")
+
+    newest = {topic_of(d) for d in b.rules[-80:]}
+    assert len(newest) == 1, "fixture no longer reproduces the crowding"
+
+    shown = {topic_of(d) for d in select_for_prompt(b.rules, 80)}
+    assert shown == {topic_of(d) for d in b.rules}
+
+
+def test_the_selection_never_exceeds_the_cap():
+    b = Brain(key="J")
+    _rules(b, 200, lambda i: f"Task {i} must come after Prior {i}")
+    assert len(select_for_prompt(b.rules, 80)) == 80
+
+
+def test_a_contested_rule_is_shown_however_old_it_is():
+    """It is the one the agent has to raise; dropping it silently is the
+    failure this is trying to avoid."""
+    b = Brain(key="J")
+    d0 = b.add("Ancient Rule must come after Older Thing")
+    from engine.project_brain import _REVIEW_OVERRIDES
+    for _ in range(_REVIEW_OVERRIDES):
+        b.record_conflict(d0.id, overridden=True)
+    _rules(b, 150, lambda i: f"Pull Wire MV {100+i} must come after Rough In MV {100+i}")
+    assert d0 in select_for_prompt(b.rules, 80)
+
+
+def test_the_order_taught_is_preserved():
+    """A sequence still has to read in order once selected."""
+    b = Brain(key="J")
+    _rules(b, 40, lambda i: f"Terminations Gen {300+i} must come after Set Generator {300+i}")
+    _rules(b, 60, lambda i: f"Pull Wire MV {100+i} must come after Rough In MV {100+i}")
+    sel = select_for_prompt(b.rules, 80)
+    assert sel == sorted(sel, key=lambda d: b.rules.index(d))

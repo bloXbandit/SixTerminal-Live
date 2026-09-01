@@ -331,3 +331,91 @@ def test_an_unknown_folder_scope_is_refused():
     c = _client()
     resp = c.post("/api/ids/normalize", json={"preview": True, "wbs_uid": "nope"})
     assert resp.status_code == 400
+
+
+# ── it must normalize TOWARDS the convention, never away from it ─────────────
+# The generic id P6 hands out is exactly what this module exists to fix, so
+# counting those as evidence of a convention inverts the whole thing. In a
+# folder where the strays outnumbered the coded rows, "A" won the vote on raw
+# count and MDC1.PH2.ER.1000 was proposed to become A2030.
+
+def _mixed(structured, generic, folders=None):
+    p = Project(uid="1", name="DC", id="J", planned_start="2026-01-05")
+    p.calendars = [Calendar(uid="1", name="Std")]
+    p.wbs_nodes = folders or [WBSNode(uid="er", name="ER R202", code="ER")]
+    p.activities = []
+    for i, aid in enumerate(list(structured) + list(generic)):
+        p.activities.append(Activity(
+            uid=f"u{i}", activity_id=aid, name=f"Work {aid}",
+            wbs_uid=p.wbs_nodes[0].uid, calendar_uid="1",
+            planned_duration=40.0, remaining_duration=40.0,
+            planned_start="2026-01-05", planned_finish="2026-01-09"))
+    p.relations = []
+    p.build_lookups()
+    return p
+
+
+def test_a_coded_id_is_never_renamed_to_a_generic_one():
+    """The bug: generic ids outnumbered coded ones, so 'A' won on raw count."""
+    p = _mixed(["MDC1.PH2.ER.1000", "MDC1.PH2.ER.1010", "MDC1.PH2.ER.1020"],
+               ["A1000", "A1010", "A2000", "A2010", "A2020"])
+    rep = id_normalizer.plan(p)
+    assert rep["convention"] == "MDC1"
+    for c in rep["changes"]:
+        assert not c["to"].startswith("A"), f"renamed onto the junk: {c}"
+
+
+def test_the_strays_are_the_ones_that_move():
+    p = _mixed(["MDC1.PH2.ER.1000", "MDC1.PH2.ER.1010"],
+               ["A1000", "A1010", "A2000"])
+    moved = {c["from"] for c in id_normalizer.plan(p)["changes"]}
+    assert moved == {"A1000", "A1010", "A2000"}
+
+
+def test_one_coded_id_outweighs_any_number_of_generic_ones():
+    """A convention is a convention however outnumbered — the generic rows are
+    the population being corrected, not a rival scheme."""
+    p = _mixed(["MDC1.PH2.ER.1000"], [f"A{1000 + i * 10}" for i in range(20)])
+    assert id_normalizer.plan(p)["convention"] == "MDC1"
+
+
+def test_two_real_conventions_are_still_refused():
+    """Structured vs structured is a decision for the user. Share alone cannot
+    say this: three against two is 60%, over any sane threshold, while plainly
+    being two live conventions."""
+    p = _mixed(["XYZ.100", "XYZ.110", "XYZ.120", "MDC1.FDG.100", "MDC1.FDG.110"], [])
+    rep = id_normalizer.plan(p)
+    assert rep["changes"] == []
+    assert "single convention" in " ".join(rep["skipped"])
+
+
+def test_a_lone_stray_beside_a_real_convention_does_not_look_like_a_rival():
+    """The same ratio test must not fire on a normal file."""
+    p = _mixed([f"MDC1.PH2.ER.{1000 + i * 10}" for i in range(40)] + ["XYZ.100"], [])
+    assert id_normalizer.plan(p)["convention"] == "MDC1"
+
+
+def test_a_folder_scoped_run_keeps_the_projects_convention():
+    """Scoping to one phase must not let that folder's local mix redefine the
+    job's coding."""
+    folders = [WBSNode(uid="ph2", name="Phase 2 (Build-Out)", code="PH2"),
+               WBSNode(uid="er", name="ER R202", code="ER", parent_uid="ph2")]
+    p = _mixed(["MDC1.PH2.ER.1000", "MDC1.PH2.ER.1010"],
+               ["A1000", "A1010", "A2000", "A2010"], folders=folders)
+    for a in p.activities:
+        a.wbs_uid = "er"
+    p.build_lookups()
+    rep = id_normalizer.plan(p, "ph2")
+    assert rep["convention"] == "MDC1"
+    assert all(c["to"].startswith("MDC1.") for c in rep["changes"])
+
+
+def test_the_result_is_unique_and_stable():
+    p = _mixed(["MDC1.PH2.ER.1000", "MDC1.PH2.ER.1010"],
+               ["A1000", "A1010", "A2000"])
+    rep = id_normalizer.plan(p)
+    assert len({c["to"] for c in rep["changes"]}) == len(rep["changes"])
+    for c in rep["changes"]:
+        p.get_activity(activity_id=c["from"]).activity_id = c["to"]
+    p.build_lookups()
+    assert id_normalizer.plan(p)["changes"] == [], "re-running proposed more work"
