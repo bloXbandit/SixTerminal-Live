@@ -222,6 +222,29 @@ def plan(project: Project, root_uid: Optional[str] = None) -> Dict[str, Any]:
         project_wide.update(counter)
 
     prefix_cache: Dict[Optional[str], Optional[str]] = {}
+    stated_cache: Dict[Optional[str], Optional[str]] = {}
+
+    def stated_prefix(wbs_uid: Optional[str]) -> Optional[str]:
+        """
+        The prefix the USER set on this folder or an ancestor, or None.
+
+        Kept apart from target_prefix, which also answers with an inferred
+        one, because the two carry different authority. A stated prefix is an
+        instruction and rows must be brought onto it even when they already
+        look coded; an inferred prefix is an observation, and forcing rows
+        onto it would churn a folder that legitimately holds two segments.
+        """
+        if wbs_uid in stated_cache:
+            return stated_cache[wbs_uid]
+        node, guard, out = by_uid.get(wbs_uid), 0, None
+        while node is not None and guard < 200:
+            guard += 1
+            if (node.id_prefix or "").strip():
+                out = node.id_prefix.strip()
+                break
+            node = by_uid.get(node.parent_uid)
+        stated_cache[wbs_uid] = out
+        return out
 
     def target_prefix(wbs_uid: Optional[str]) -> Optional[str]:
         """
@@ -282,8 +305,21 @@ def plan(project: Project, root_uid: Optional[str] = None) -> Dict[str, Any]:
                                "why": "no number at the end of the code"})
             continue
         prefix, num, width = parsed
-        if family(prefix) == fam:
-            continue                              # already on the convention
+        # A STATED prefix is an instruction, so a row must be brought onto it
+        # even when it already looks coded. family() is only the leading
+        # segment — "MDC1" — so without this check a row reading
+        # MDC1.PH2.ER.1000 in a folder stated as MDC1.PH2.MV. was skipped as
+        # "already on the convention", and setting a prefix appeared to do
+        # nothing at all for exactly the rows it was set for.
+        told = stated_prefix(a.wbs_uid)
+        if told:
+            if prefix == told:
+                continue                          # already carries it
+        elif family(prefix) == fam:
+            # No instruction here, so only off-convention rows move. Forcing
+            # inferred prefixes would churn a folder that legitimately holds
+            # more than one segment.
+            continue
         want = target_prefix(a.wbs_uid)
         if not want:
             note = f"'{_wbs_path(project, a.wbs_uid) or 'this folder'}' has no coded rows to follow"

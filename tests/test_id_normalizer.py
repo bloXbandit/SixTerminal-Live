@@ -505,3 +505,87 @@ def test_setting_a_prefix_renames_nothing_on_its_own():
     apply_command(p, {"action": "set_wbs_id_prefix", "wbs_uid": "mv",
                       "prefix": "MDC1.PH2.MV."})
     assert [a.activity_id for a in p.activities] == before
+
+
+# ── a stated prefix must actually re-code the rows ──────────────────────────
+# The bug: the change loop skipped any row whose FAMILY matched the project's,
+# and family() is only the leading segment — "MDC1". So a row reading
+# MDC1.PH2.ER.1000, sitting in a folder stated as MDC1.PH2.MV., was passed
+# over as "already on the convention" and setting a prefix appeared to do
+# nothing for exactly the rows it was set for. Every earlier test used A####
+# strays, whose family differs, so none of them reached this line.
+
+def _wrong_segment():
+    p = Project(uid="1", name="DC", id="J", planned_start="2026-01-05")
+    p.calendars = [Calendar(uid="1", name="Std")]
+    p.wbs_nodes = [WBSNode(uid="ph2", name="Phase 2", code="P"),
+                   WBSNode(uid="mv", name="MV 108", code="M", parent_uid="ph2"),
+                   WBSNode(uid="er", name="ER R202", code="E", parent_uid="ph2")]
+    p.activities = []
+    for i, (aid, f) in enumerate([("MDC1.PH2.ER.1000", "mv"),
+                                  ("MDC1.PH2.ER.1010", "mv"),
+                                  ("A5000", "mv"),
+                                  ("MDC1.PH2.ER.2000", "er"),
+                                  ("MDC1.PH2.ER.2010", "er")]):
+        p.activities.append(Activity(
+            uid=f"u{i}", activity_id=aid, name="Work", wbs_uid=f,
+            calendar_uid="1", planned_duration=40.0, remaining_duration=40.0,
+            planned_start="2026-01-05", planned_finish="2026-01-09"))
+    p.relations = []
+    p.build_lookups()
+    return p
+
+
+def test_a_stated_prefix_recodes_rows_already_on_the_family():
+    p = _wrong_segment()
+    apply_command(p, {"action": "set_wbs_id_prefix", "wbs_uid": "mv",
+                      "prefix": "MDC1.PH2.MV."})
+    moved = {c["from"]: c["to"] for c in id_normalizer.plan(p, "ph2")["changes"]}
+    assert moved["MDC1.PH2.ER.1000"] == "MDC1.PH2.MV.1000"
+    assert moved["MDC1.PH2.ER.1010"] == "MDC1.PH2.MV.1010"
+
+
+def test_a_stated_prefix_still_picks_up_the_plain_strays():
+    p = _wrong_segment()
+    apply_command(p, {"action": "set_wbs_id_prefix", "wbs_uid": "mv",
+                      "prefix": "MDC1.PH2.MV."})
+    moved = {c["from"]: c["to"] for c in id_normalizer.plan(p, "ph2")["changes"]}
+    assert moved["A5000"].startswith("MDC1.PH2.MV.")
+
+
+def test_a_folder_with_no_stated_prefix_is_left_alone():
+    """Inference is an observation, not an instruction — forcing rows onto an
+    inferred prefix would churn a folder that legitimately holds two
+    segments."""
+    p = _wrong_segment()
+    apply_command(p, {"action": "set_wbs_id_prefix", "wbs_uid": "mv",
+                      "prefix": "MDC1.PH2.MV."})
+    moved = {c["from"] for c in id_normalizer.plan(p, "ph2")["changes"]}
+    assert "MDC1.PH2.ER.2000" not in moved and "MDC1.PH2.ER.2010" not in moved
+
+
+def test_a_row_already_carrying_the_stated_prefix_is_not_touched():
+    p = _wrong_segment()
+    apply_command(p, {"action": "set_wbs_id_prefix", "wbs_uid": "er",
+                      "prefix": "MDC1.PH2.ER."})
+    moved = {c["from"] for c in id_normalizer.plan(p, "er")["changes"]}
+    assert moved == set()
+
+
+def test_recoding_onto_a_stated_prefix_is_idempotent():
+    p = _wrong_segment()
+    apply_command(p, {"action": "set_wbs_id_prefix", "wbs_uid": "mv",
+                      "prefix": "MDC1.PH2.MV."})
+    for c in id_normalizer.plan(p, "ph2")["changes"]:
+        p.get_activity(activity_id=c["from"]).activity_id = c["to"]
+    p.build_lookups()
+    assert id_normalizer.plan(p, "ph2")["changes"] == []
+
+
+def test_a_prefix_stated_on_the_phase_recodes_every_room_under_it():
+    p = _wrong_segment()
+    apply_command(p, {"action": "set_wbs_id_prefix", "wbs_uid": "ph2",
+                      "prefix": "MDC1.PH2.", "descend": True})
+    moved = {c["to"] for c in id_normalizer.plan(p, "ph2")["changes"]}
+    assert moved and all(t.startswith("MDC1.PH2.") for t in moved)
+    assert all(not t.startswith("MDC1.PH2.ER.") for t in moved)
