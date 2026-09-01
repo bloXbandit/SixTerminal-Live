@@ -735,6 +735,63 @@
       padding:1px 4px;border-radius:3px;color:var(--accent);
     }
 
+    /* ── BRAIN PANEL ─────────────────────────────────────────
+       Shaped by AUTHORITY, not by subject, because that is the only axis the
+       brain has — context_block() emits objective, enforced rules, unenforced
+       notes, things that matched nothing, then rules the user keeps
+       overriding. Organising this screen any other way would imply a
+       structure the agent does not have. */
+    #panel-brain{flex:1;display:none;flex-direction:column;overflow:hidden;}
+    #panel-brain.active{display:flex;}
+    .brain-body{flex:1;overflow-y:auto;padding:18px 22px;}
+    .brain-checks{
+      display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));
+      gap:10px;margin-bottom:20px;
+    }
+    .brain-check{
+      border:1px solid var(--border2);border-radius:var(--r-md);
+      background:var(--surface2);padding:11px 13px;cursor:pointer;
+      transition:border-color .12s,background .12s;
+    }
+    .brain-check:hover{border-color:var(--accent);background:var(--surface3);}
+    .brain-check h4{
+      font-size:9px;letter-spacing:.12em;text-transform:uppercase;
+      color:var(--text3);font-weight:600;margin-bottom:6px;
+    }
+    .brain-check .bc-main{font-size:16px;color:var(--text);font-weight:600;}
+    .brain-check .bc-sub{font-size:10.5px;color:var(--text3);margin-top:3px;}
+    .bc-bad{color:var(--red);} .bc-warn{color:var(--orange);} .bc-ok{color:var(--green);}
+
+    .brain-sec{margin-bottom:22px;}
+    .brain-sec > h3{
+      font-size:10px;letter-spacing:.1em;text-transform:uppercase;
+      color:var(--text2);font-weight:600;margin-bottom:3px;
+      display:flex;align-items:center;gap:8px;
+    }
+    .brain-sec > .bs-note{
+      font-size:10.5px;color:var(--text3);margin-bottom:9px;line-height:1.5;
+    }
+    .brain-count{
+      font-family:var(--mono);font-size:9.5px;color:var(--text3);
+      border:1px solid var(--border2);border-radius:9px;padding:1px 7px;
+    }
+    .brain-item{
+      border:1px solid var(--border);border-left:3px solid var(--border2);
+      border-radius:var(--r-sm);background:var(--surface2);
+      padding:9px 12px;margin-bottom:7px;
+    }
+    .brain-item.enforced{border-left-color:var(--green);}
+    .brain-item.dead{border-left-color:var(--orange);}
+    .brain-item.contested{border-left-color:var(--red);}
+    .brain-item.note{border-left-color:var(--text3);}
+    .bi-text{font-size:12px;color:var(--text);line-height:1.45;}
+    .bi-meta{
+      font-size:10px;color:var(--text3);margin-top:4px;
+      display:flex;gap:12px;flex-wrap:wrap;font-family:var(--mono);
+    }
+    .bi-warn{color:var(--orange);}
+    .brain-empty{font-size:11px;color:var(--text3);font-style:italic;padding:4px 0;}
+
     /* ── COMPARE PANEL ───────────────────────────────────── */
     #panel-compare{
       flex:1;display:none;flex-direction:column;overflow:hidden;
@@ -2145,6 +2202,9 @@
       <button class="tab-btn" id="tab-btn-schedule" onclick="switchTab('schedule')">
         ⊞ Schedule <span class="tab-pill" id="sched-count-pill">—</span>
       </button>
+      <button class="tab-btn" id="tab-btn-brain" onclick="switchTab('brain')">
+        ◉ Brain <span class="tab-pill" id="brain-count-pill">—</span>
+      </button>
       <button class="tab-btn" id="tab-btn-compare" onclick="switchTab('compare')">
         ⇄ Compare
       </button>
@@ -2483,6 +2543,13 @@
         <span class="sched-sep"></span>
         <button class="mini-btn bb-danger" onclick="bulkDelete()">Delete</button>
         <button class="mini-btn" onclick="clearSelection()">Clear</button>
+      </div>
+    </div>
+
+    <!-- Brain panel — what the agent has been told, and what it can check -->
+    <div id="panel-brain">
+      <div class="brain-body" id="brain-body">
+        <div style="color:var(--text3);font-size:11px;">Load a schedule first.</div>
       </div>
     </div>
 
@@ -4575,7 +4642,7 @@ let currentTab = 'editor';
 // chat" delivered its text into #messages — which lives INSIDE panel-editor —
 // and then hid it. Preview schedule, Preview as of date, the schedule log and
 // the flow report all looked like they did nothing at all.
-const TABS = ['editor', 'schedule', 'compare'];
+const TABS = ['editor', 'schedule', 'brain', 'compare'];
 
 /**
  * Show the conversation, where every report is written.
@@ -4598,10 +4665,13 @@ function switchTab(name) {
   currentTab = name;
   document.getElementById('tab-btn-editor').classList.toggle('active', name === 'editor');
   document.getElementById('tab-btn-schedule').classList.toggle('active', name === 'schedule');
+  document.getElementById('tab-btn-brain').classList.toggle('active', name === 'brain');
   document.getElementById('tab-btn-compare').classList.toggle('active', name === 'compare');
   document.getElementById('panel-editor').classList.toggle('hidden', name !== 'editor');
   document.getElementById('panel-schedule').classList.toggle('active', name === 'schedule');
+  document.getElementById('panel-brain').classList.toggle('active', name === 'brain');
   document.getElementById('panel-compare').classList.toggle('active', name === 'compare');
+  if (name === 'brain') loadBrainTab();
   if (name === 'schedule') {
     // Auto-load if empty or stale
     const tbody = document.getElementById('sched-tbody');
@@ -4904,6 +4974,183 @@ async function showFlowReport(){
     addMsg('system', `<pre style="white-space:pre-wrap;font-size:11px;margin:0;">${escHtml(d.report)}</pre>`);
     revealChat();
   }catch(e){ flashSched(e.message, true); }
+}
+
+// ═══════════════════════════════════════════════════
+//  Brain tab — what the agent has been told, and what it can check
+// ═══════════════════════════════════════════════════
+//
+// Organised by AUTHORITY, not by subject. That is the only axis the brain
+// has: context_block() emits the objective, then enforced rules, then
+// unenforced notes, then things that matched nothing, then rules the user
+// keeps overriding. A screen grouped by procurement/drawings/permits would
+// look aligned and be decorative — moving an item between such groups would
+// not change one byte of what the agent reads.
+//
+// The strip along the top is the honest answer to "where does it draw further
+// context": each tile is a live engine feeding the same agent, so the numbers
+// here and what the agent says cannot drift apart.
+
+let lastBrainData = null;
+
+async function loadBrainTab(){
+  const body = document.getElementById('brain-body');
+  try{
+    const d = await fetch('/api/brain/overview').then(_readJson);
+    if(d.error){
+      body.innerHTML = `<div style="color:var(--text3);font-size:11px;">${escHtml(d.error)}</div>`;
+      return;
+    }
+    lastBrainData = d;
+    renderBrainTab();
+  }catch(e){
+    body.innerHTML = `<div style="color:var(--red);font-size:11px;">${escHtml(e.message)}</div>`;
+  }
+}
+
+function brainCheckTile(title, main, sub, cls, onclick){
+  return `<div class="brain-check"${onclick ? ` onclick="${onclick}"` : ''}>
+    <h4>${escHtml(title)}</h4>
+    <div class="bc-main ${cls || ''}">${main}</div>
+    <div class="bc-sub">${sub}</div></div>`;
+}
+
+/** One directive row. `cls` carries the verdict colour on the left edge. */
+function brainItem(d, cls){
+  const meta = [];
+  // A rule matching nothing enforces nothing while still looking like a rule.
+  if(cls === 'enforced' || cls === 'contested'){
+    meta.push(d.matched
+      ? `applies to ${d.matched}`
+      : `<span class="bi-warn">matches nothing</span>`);
+  }
+  if(d.overridden) meta.push(`overridden ${d.overridden}× · kept ${d.upheld}×`);
+  // Enforced either way — what is lost past the cap is the agent's ability to
+  // recall or explain it, which is most of what the text is for.
+  if(!d.in_prompt) meta.push(`<span class="bi-warn">not shown to the agent</span>`);
+  if(d.note_reason && cls === 'dead') meta.push(escHtml(d.note_reason));
+  return `<div class="brain-item ${cls}">
+    <div class="bi-text">${escHtml(d.text)}</div>
+    ${d.understood && cls !== 'note'
+      ? `<div class="bi-meta" style="font-style:italic">${escHtml(d.understood)}</div>` : ''}
+    ${meta.length ? `<div class="bi-meta">${meta.join(' · ')}</div>` : ''}
+  </div>`;
+}
+
+function brainSection(title, note, items, cls){
+  return `<div class="brain-sec">
+    <h3>${escHtml(title)}<span class="brain-count">${items.length}</span></h3>
+    <div class="bs-note">${note}</div>
+    ${items.length ? items.map(d => brainItem(d, cls)).join('')
+                   : `<div class="brain-empty">Nothing here yet.</div>`}
+  </div>`;
+}
+
+function renderBrainTab(){
+  const d = lastBrainData;
+  if(!d) return;
+  const h = d.health, c = d.checks || {};
+
+  // ── the live checks ──────────────────────────────────────────────────────
+  const tiles = [];
+  if(c.procurement){
+    const p = c.procurement;
+    tiles.push(brainCheckTile('Procurement',
+      `${p.at_risk} at risk`,
+      `${p.no_logic} unheld · ${p.ready} ready · ${p.systems} systems`,
+      p.at_risk ? 'bc-bad' : (p.no_logic ? 'bc-warn' : 'bc-ok'),
+      'showProcurementBoard()'));
+  }
+  if(c.flow){
+    const t = c.flow.tally || {};
+    const bad = (t.isolated || 0);
+    tiles.push(brainCheckTile('Folder flow',
+      `${t.connected || 0} connected`,
+      `${bad} isolated · ${t.one_way || 0} one-way · ${c.flow.folders} folders`,
+      bad ? 'bc-warn' : 'bc-ok', 'showFlowReport()'));
+  }
+  if(c.requirements){
+    const r = c.requirements;
+    const bad = r.unreadable
+      ? ` · <span class="bi-warn">${r.unreadable} unreadable</span>` : '';
+    tiles.push(brainCheckTile('Requirements',
+      r.total ? `${r.holding} of ${r.total} holding` : 'none set',
+      (r.total ? 'one-line promises checked against the schedule'
+               : 'tell the agent something like "every burn-in must reach commissioning"')
+        + bad,
+      r.total && r.holding < r.total ? 'bc-bad' : (r.total ? 'bc-ok' : ''), ''));
+  }
+  const doc = c.documents || {filed:0, searchable:0};
+  tiles.push(brainCheckTile('Documents',
+    `${doc.filed} filed`,
+    doc.filed ? `${doc.searchable} searchable — the agent reads these on request`
+              : 'drop a scope, submittal or drawing in the chat to file one', ''));
+
+  // ── the piles ────────────────────────────────────────────────────────────
+  const P = d.piles;
+  const parts = [`<div class="brain-checks">${tiles.join('')}</div>`];
+
+  parts.push(`<div class="brain-sec">
+    <h3>What this project is for</h3>
+    <div class="bs-note">The standing objective. The agent reports progress
+      against this and answers "what next" from it.</div>
+    ${d.objective ? `<div class="brain-item note"><div class="bi-text">${escHtml(d.objective)}</div></div>`
+                  : `<div class="brain-empty">No objective set — tell the agent what this job is for.</div>`}
+  </div>`);
+
+  parts.push(brainSection('Rules — enforced',
+    'Stated by you and applied in the tie ranking, not just remembered. '
+    + 'A rule matching <b>nothing</b> is enforcing nothing — reword it or drop it.',
+    P.rules, 'enforced'));
+
+  if(P.contested.length){
+    parts.push(brainSection('Contested',
+      'Still enforced, but you keep overriding these. Either the rule is too '
+      + 'broad or it has an exception worth stating. The agent applies them and '
+      + 'says they have been overridden before.',
+      P.contested, 'contested'));
+  }
+
+  parts.push(brainSection('Open — matched nothing',
+    'Said as a rule, but nothing in this schedule matches it, so it is '
+    + '<b>not in force</b>. Usually the naming differs or the work is missing — '
+    + 'both worth knowing. This is the most useful pile here.',
+    P.open, 'dead'));
+
+  parts.push(brainSection('Context — nothing enforced',
+    'Background the agent reasons with but never applies as a constraint.',
+    P.notes, 'note'));
+
+  parts.push(`<div class="brain-sec">
+    <h3>Documents<span class="brain-count">${d.documents.length}</span></h3>
+    <div class="bs-note">Only the <b>names</b> ride in every prompt; the agent
+      fetches contents on request, and is told not to claim what a document says
+      without reading it first.</div>
+    ${d.documents.length
+      ? d.documents.map(x => `<div class="brain-item note"><div class="bi-text">${escHtml(x.label)}</div>
+          ${x.searchable ? '' : '<div class="bi-meta bi-warn">no text layer — the agent cannot search this one</div>'}</div>`).join('')
+      : `<div class="brain-empty">Nothing filed yet.</div>`}
+  </div>`);
+
+  parts.push(`<div class="brain-sec">
+    <h3>What the agent is shown</h3>
+    <div class="bs-note">Each pile is capped at ${d.cap} in the prompt and the
+      <b>newest</b> survive. Anything past that is still enforced — the ranking
+      scores the stored rules, not this text — but the agent can no longer
+      recall or explain it.</div>
+    <div class="brain-item note"><div class="bi-text">
+      ${h.rules} rule${h.rules===1?'':'s'} ·
+      ${h.notes} note${h.notes===1?'':'s'} ·
+      ${h.open} open ·
+      ${h.contested} contested
+      ${h.dead_rules ? ` · <span class="bi-warn">${h.dead_rules} rule${h.dead_rules===1?'':'s'} matching nothing</span>` : ''}
+      ${h.hidden_from_prompt ? ` · <span class="bi-warn">${h.hidden_from_prompt} not shown to the agent</span>` : ''}
+    </div></div>
+  </div>`);
+
+  document.getElementById('brain-body').innerHTML = parts.join('');
+  const pill = document.getElementById('brain-count-pill');
+  if(pill) pill.textContent = h.rules + h.notes + h.open;
 }
 
 // ═══════════════════════════════════════════════════

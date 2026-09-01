@@ -2739,6 +2739,152 @@ def brain_list():
     return jsonify(_brain_payload(brain))
 
 
+def _pile(items, cap):
+    """
+    One authority pile, with the cap made visible.
+
+    context_block() shows only the last `cap` of each pile, newest first to
+    survive. A rule past that line is STILL ENFORCED — the tie ranker scores
+    against the stored objects, not the prompt text — but the agent can no
+    longer recall or explain it. That distinction is invisible today and is
+    half the reason for having this screen, so it travels per row.
+    """
+    n = len(items)
+    out = []
+    for i, d in enumerate(items):
+        out.append({
+            "id": d.id,
+            "text": d.text,
+            "understood": project_brain.describe(d),
+            "kind": d.kind,
+            "enabled": d.enabled,
+            "matched": (d.matched_subject or 0) + (d.matched_after or 0),
+            "matched_subject": d.matched_subject or 0,
+            "matched_after": d.matched_after or 0,
+            "overridden": d.overridden,
+            "upheld": d.upheld,
+            "note_reason": d.note_reason,
+            "in_prompt": i >= max(0, n - cap),
+        })
+    return out
+
+
+@app.route("/api/brain/overview", methods=["GET"])
+def brain_overview():
+    """
+    The brain as the agent actually receives it, plus what it can currently
+    check.
+
+    Shaped by AUTHORITY rather than by subject, because that is the only axis
+    the brain has: context_block() emits the objective, then enforced rules,
+    then unenforced notes, then things that matched nothing, then rules the
+    user keeps overriding. A screen organised any other way would imply a
+    structure the agent does not have.
+
+    The checks are the honest answer to "where does it draw further context" —
+    each one is a live engine feeding the same agent, so the numbers here and
+    the agent's answers cannot drift apart. Every one is guarded: a screen
+    that fails to open because one engine threw is worse than a screen with a
+    gap in it.
+    """
+    sess = _get_session()
+    if sess is None or sess["project"] is None:
+        return jsonify({"error": "No schedule loaded"}), 400
+    brain = _active_brain()
+    if brain is None:
+        return jsonify({"error": "No schedule loaded"}), 400
+    project = sess["project"]
+    cap = getattr(brain, "_CAP", 30)
+
+    rules, notes = brain.rules, brain.notes
+    questions = brain.open_questions
+    contested = [d for d in rules
+                 if d.overridden >= project_brain._REVIEW_OVERRIDES
+                 and d.overridden > d.upheld]
+    # A rule that matches nothing enforces nothing while still looking like a
+    # rule. It is the single most useful thing this screen can show.
+    dead = [d for d in rules if not (d.matched_subject or d.matched_after)]
+
+    checks = {}
+    try:
+        from engine import procurement_map as _pm
+        d = _pm.analyse(project)
+        checks["procurement"] = {
+            "at_risk": d["at_risk"], "no_logic": d["no_logic"],
+            "ready": d["ready"], "systems": d["count"]}
+    except Exception:
+        checks["procurement"] = None
+    try:
+        from engine import wbs_flow as _wf
+        f = _wf.analyse(project)["folders"]
+        tally = {}
+        for v in f.values():
+            tally[v["verdict"]] = tally.get(v["verdict"], 0) + 1
+        checks["flow"] = {"folders": len(f), "tally": tally}
+    except Exception:
+        checks["flow"] = None
+    try:
+        from engine import requirements as _rq
+        specs = list(getattr(brain, "requirements", []) or [])
+        results, broken = [], 0
+        for spec in specs:
+            try:
+                r = _rq.check(project, spec)
+            except Exception:
+                broken += 1
+                continue
+            # check() reports `violations` as a COUNT and `passed` as a bool —
+            # treating violations as a list silently dropped every requirement
+            # and reported "none set", which reads exactly like having set
+            # none. A requirement the engine cannot evaluate is a finding, so
+            # it is counted rather than swallowed.
+            if r.get("error"):
+                broken += 1
+                continue
+            results.append({
+                "statement": r.get("statement", ""),
+                "holds": bool(r.get("passed")),
+                "violations": int(r.get("violations") or 0),
+                "matched": int(r.get("matched") or 0)})
+        checks["requirements"] = {
+            "total": len(results),
+            "holding": sum(1 for r in results if r["holds"]),
+            "unreadable": broken,
+            "items": results[:20]}
+    except Exception:
+        checks["requirements"] = None
+
+    lib = brain.library
+    docs = [{"id": d.id, "name": d.name, "kind": d.kind,
+             "label": d.label(), "searchable": d.searchable}
+            for d in (lib.docs if lib else [])]
+    checks["documents"] = {"filed": len(docs),
+                           "searchable": sum(1 for d in docs if d["searchable"])}
+
+    return jsonify({
+        "success": True,
+        "key": brain.key,
+        "objective": brain.objective_line(project) or "",
+        "cap": cap,
+        "piles": {
+            "rules": _pile(rules, cap),
+            "notes": _pile(notes, cap),
+            "open": _pile(questions, cap),
+            "contested": _pile(contested, cap),
+        },
+        "documents": docs,
+        "scope": bool(brain.scope),
+        "health": {
+            "rules": len(rules), "notes": len(notes),
+            "open": len(questions), "contested": len(contested),
+            "dead_rules": len(dead),
+            "hidden_from_prompt": sum(max(0, len(x) - cap)
+                                      for x in (rules, notes, questions)),
+        },
+        "checks": checks,
+    })
+
+
 @app.route("/api/brain", methods=["POST"])
 def brain_add():
     """
