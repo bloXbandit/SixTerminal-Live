@@ -6308,7 +6308,13 @@ function toggleEditMode(){
     document.getElementById('add-wbs-btn').classList.remove('on');
     closeLinkEditor();
   }
-  if(lastSchedData) loadSchedule();
+  // NO reload here. Edit mode is entirely CSS — every difference it makes is a
+  // `body.edit-on ...` rule, and renderSchedule() does not read isEditMode at
+  // all. Refetching and rebuilding a few thousand rows to toggle one class
+  // threw away scroll position, open folders and selection every time the
+  // Edit button was pressed, which is most of the "the screen resets when I
+  // click things" problem.
+  refreshWbsSelection();
 }
 
 // ── Inline cell editing (delegated dbl-click) ──
@@ -7305,6 +7311,97 @@ function editLink(ev, predId, succId, dir){
  * actually enter a new date. Matches the app's existing popup convention
  * (constraint-pop id/class, closeConstraintEditor as the shared closer).
  */
+/**
+ * Schedule ONE activity to a date and let its own path follow.
+ *
+ * The middle speed between typing a date (nothing downstream moves, so the
+ * logic now says something the dates do not support) and pressing Schedule
+ * (everything moves, including work that had nothing to do with the change).
+ * Only activities downstream of this one are written; the rest of the job
+ * keeps the dates it had.
+ *
+ * Preview first, because the number that matters is how much moves, and that
+ * is not guessable from the date alone. Preview writes nothing at all.
+ */
+function scheduleActivityTo(actId, ev){
+  if(!actId){ flashSched('Right-click an activity first', true); return; }
+  const row = findActRow(actId);
+  const cur = (row && (row.actual_start || row.planned_start) || '').slice(0,10);
+  const iso = /^\d{4}-\d{2}-\d{2}$/.test(cur) ? cur : new Date().toISOString().slice(0,10);
+
+  closeConstraintEditor();
+  const pop = document.createElement('div');
+  pop.id = 'constraint-pop';
+  pop.className = 'constraint-pop';
+  pop.style.borderColor = 'var(--accent)';
+  pop.style.flexWrap = 'wrap';
+  pop.style.maxWidth = '360px';
+  pop.innerHTML =
+    `<span style="font-size:10px;color:var(--text3);width:100%;">
+       Schedule <b>${escHtml(actId)}</b> to a date — everything downstream of it
+       follows, nothing else moves</span>
+     <input id="ra-date" type="date" value="${escAttr(iso)}">
+     <button class="mini-btn" id="ra-preview">Preview</button>
+     <button class="mini-btn ok" id="ra-apply">Schedule</button>
+     <button class="mini-btn no" id="ra-cancel">Cancel</button>
+     <label style="display:flex;align-items:center;gap:6px;width:100%;font-size:10px;color:var(--text3);margin-top:4px;cursor:pointer;">
+       <input type="checkbox" id="ra-actual"> It actually started then (sets the
+       actual date and marks it started)</label>
+     <span style="font-size:10px;color:var(--text3);width:100%;">
+       Preview changes nothing. Schedule is one undo.</span>`;
+  document.body.appendChild(pop);
+
+  const target = (ev && ev.target) || rowByActId(actId);
+  if(target && typeof target.getBoundingClientRect === 'function'){
+    const r = target.getBoundingClientRect();
+    pop.style.top  = (window.scrollY + r.bottom + 4) + 'px';
+    pop.style.left = (window.scrollX + Math.max(8, Math.min(r.left, window.innerWidth - 380))) + 'px';
+  } else { pop.style.top = '120px'; pop.style.left = '20px'; }
+
+  const build = (apply) => {
+    const v = pop.querySelector('#ra-date').value;
+    if(!v) return null;
+    const actual = pop.querySelector('#ra-actual').checked;
+    const cmd = {action: apply ? 'ripple' : 'ripple_preview', activity_id: actId};
+    cmd[actual ? 'actual_start' : 'planned_start'] = v;
+    if(apply) cmd.apply = true;
+    return cmd;
+  };
+
+  pop.querySelector('#ra-preview').addEventListener('click', async () => {
+    const cmd = build(false);
+    if(!cmd){ flashSched('Pick a date', true); return; }
+    // Advisory action: reports, records nothing, changes nothing.
+    await directEdit([cmd], `Preview ripple from ${actId}`);
+    switchTab('chat');
+  });
+
+  pop.querySelector('#ra-apply').addEventListener('click', async () => {
+    const cmd = build(true);
+    if(!cmd){ flashSched('Pick a date', true); return; }
+    closeConstraintEditor();
+    await directEdit([cmd], `Schedule ${actId} → ${cmd.actual_start || cmd.planned_start}`);
+  });
+
+  pop.querySelector('#ra-cancel').addEventListener('click', closeConstraintEditor);
+  setTimeout(() => pop.querySelector('#ra-date')?.focus(), 0);
+}
+
+/** Reflow this activity's path from the dates it already has. */
+async function rippleFrom(actId){
+  if(!actId) return;
+  await directEdit([{action:'ripple', activity_id:actId, apply:true}],
+                   `Reflow the path from ${actId}`);
+}
+
+/** The activity record from the cached grid data, without touching the DOM. */
+function findActRow(actId){
+  for(const w of (lastSchedData?.wbs_sections || []))
+    for(const a of (w.activities || []))
+      if(a.activity_id === actId) return a;
+  return null;
+}
+
 function editDataDate(ev){
   if(!lastSchedData && !_activeProjectId){ flashSched('Load a schedule first', true); return; }
   const cur = (document.getElementById('info-date').textContent || '').trim();
@@ -8378,6 +8475,10 @@ function onSchedContextMenu(e){
     ['＋ Add predecessor',          () => addLink(actId, 'pred')],
     ['＋ Add successor',            () => addLink(actId, 'succ')],
     ['⤳ Trace what drives this',    () => { startTrace(); applyTrace(actId); }],
+    ['---'],
+    ['⚡ Schedule this to a date…',  (ev) => scheduleActivityTo(actId, ev)],
+    ['⚡ Reflow the path from here', () => rippleFrom(actId)],
+    ['---'],
     ['📌 Set constraint…',          () => { const c = findCell(actId, 'constraint'); if(c) beginCellEdit(c); }],
     ['📌✕ Clear constraints',       () => bulkClearConstraints()],
     ['✎+ Add text to name(s)',      (ev) => openAppendNamePopup(ev, {wbsScope:false})],
