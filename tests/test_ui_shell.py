@@ -120,3 +120,80 @@ def test_no_javascript_function_is_declared_twice():
                        body, re.M)
     dupes = {n for n in names if names.count(n) > 1}
     assert not dupes, f"declared more than once: {sorted(dupes)}"
+
+
+# ── every panel a report is sent to has to exist ─────────────────────────────
+# Preview schedule, Preview as of date, the schedule log and the flow report
+# all ended by "switching to the chat tab". There is no chat tab. switchTab
+# takes one of three names and toggles panel-editor's `hidden` class on
+# `name !== 'editor'`, so 'chat' HID the editor panel — the one that contains
+# #messages, where the report had just been written — and activated neither of
+# the others. A blank workspace, no error, and four menu items that looked
+# like they did nothing at all.
+
+def _panel_ids():
+    return set(re.findall(r'id="panel-([a-z]+)"', HTML))
+
+
+def test_the_chat_lives_in_a_panel_that_exists():
+    """#messages is inside panel-editor, which is why revealChat() switches
+    there rather than to a tab of its own."""
+    assert "editor" in _panel_ids()
+    editor = HTML[HTML.index('<div id="panel-editor">'):]
+    assert '<div id="messages">' in editor[:editor.index('<div id="panel-schedule">')]
+
+
+def _code_only(text: str) -> str:
+    """Drop // comment lines — the comment explaining this very bug quotes the
+    broken call, and a test that reads prose as code fails on its own docs."""
+    return "\n".join(l for l in text.splitlines() if not l.strip().startswith("//"))
+
+
+def test_nothing_switches_to_a_tab_that_is_not_a_panel():
+    """The bug, pinned. Any switchTab('x') where x is not a panel blanks the
+    workspace."""
+    panels = _panel_ids()
+    for name in set(re.findall(r"switchTab\('([a-z]+)'\)", _code_only(HTML))):
+        assert name in panels, (
+            f"switchTab('{name}') — there is no #panel-{name}, so this hides "
+            f"every panel and shows nothing")
+
+
+def test_switch_tab_falls_back_rather_than_showing_nothing():
+    """Belt and braces: an unknown name must not be able to blank the page
+    again, whatever a future call site passes."""
+    assert "TABS.includes(name)" in HTML
+    assert "name = 'editor'" in HTML
+
+
+def test_the_reports_reveal_the_chat_rather_than_guessing_at_a_tab():
+    for fn in ("showSchedulePreview", "showScheduleLog", "showFlowReport"):
+        body = HTML[HTML.index(f"function {fn}("):]
+        body = body[:body.index("\n}")]
+        assert "revealChat()" in body, f"{fn} does not show the chat it wrote to"
+
+
+# ── the grid must not rebuild for a change that is purely visual ─────────────
+
+def test_toggling_edit_mode_does_not_rebuild_the_grid():
+    """Edit mode is entirely CSS — renderSchedule() never reads isEditMode, so
+    every difference it makes is a `body.edit-on ...` rule. Reloading to
+    toggle one class threw away scroll position, open folders and the
+    selection every time the Edit button was pressed."""
+    body = HTML[HTML.index("function toggleEditMode()"):]
+    body = body[:body.index("\n}")]
+    assert "loadSchedule()" not in body
+
+    render = HTML[HTML.index("function renderSchedule(data)"):]
+    render = render[:render.index("\nfunction finishRender")]
+    assert "isEditMode" not in render, (
+        "renderSchedule now depends on edit mode, so toggling it needs a "
+        "rebuild again — revisit toggleEditMode")
+
+
+def test_scheduling_one_activity_is_reachable_from_the_grid():
+    """The ripple engine existed for a while with no way to reach it from the
+    grid, which is where you are when you decide to use it."""
+    assert "Schedule this to a date" in HTML
+    assert "function scheduleActivityTo(" in HTML
+    assert "ripple_preview" in HTML and "'ripple'" in HTML

@@ -4569,7 +4569,32 @@ function formatChat(text) {
 // ═══════════════════════════════════════════════════
 let currentTab = 'editor';
 
+// The only three panels there are. Anything else used to blank the workspace:
+// switchTab('chat') hid panel-editor (because 'chat' !== 'editor') and
+// activated neither of the others, so every report that ended by "switching to
+// chat" delivered its text into #messages — which lives INSIDE panel-editor —
+// and then hid it. Preview schedule, Preview as of date, the schedule log and
+// the flow report all looked like they did nothing at all.
+const TABS = ['editor', 'schedule', 'compare'];
+
+/**
+ * Show the conversation, where every report is written.
+ *
+ * Named rather than spelled out at each call site, because the chat is not a
+ * tab of its own — it lives in the editor panel — and five call sites had each
+ * independently guessed otherwise.
+ */
+function revealChat() {
+  switchTab('editor');
+  const msgs = document.getElementById('messages');
+  if (msgs) msgs.scrollTop = msgs.scrollHeight;
+}
+
 function switchTab(name) {
+  // A name that is not a panel would otherwise hide all three and leave a
+  // blank workspace with no error — the failure mode above. Fall back rather
+  // than show nothing.
+  if (!TABS.includes(name)) name = 'editor';
   currentTab = name;
   document.getElementById('tab-btn-editor').classList.toggle('active', name === 'editor');
   document.getElementById('tab-btn-schedule').classList.toggle('active', name === 'schedule');
@@ -4767,7 +4792,7 @@ async function showSchedulePreview(asOf){
     const d = await fetch('/api/schedule/preview' + q).then(_readJson);
     if(d.error){ flashSched(d.error, true); return; }
     addMsg('system', `<pre style="white-space:pre-wrap;font-size:11px;margin:0;">${escHtml(d.report)}</pre>`);
-    switchTab('chat');
+    revealChat();
     flashSched(d.moved
       ? `${d.moved} of ${d.total} would move${asOf ? ' as of ' + asOf : ''} — nothing changed`
       : 'Schedule would change nothing', false);
@@ -4835,7 +4860,7 @@ async function showScheduleLog(){
     if(d.error){ flashSched(d.error, true); return; }
     if(!d.count){
       addMsg('system', 'Schedule has not been run yet this session.');
-      switchTab('chat');
+      revealChat();
       return;
     }
     const lines = d.runs.map((r, i) => {
@@ -4867,7 +4892,7 @@ async function showScheduleLog(){
     addMsg('system', `<pre style="white-space:pre-wrap;font-size:11px;margin:0;">`
       + escHtml(`SCHEDULE RUNS (${d.count} this session)\n\n${lines}\n\n`
                 + `Undo reverts the most recent run.`) + `</pre>`);
-    switchTab('chat');
+    revealChat();
   }catch(e){ flashSched(e.message, true); }
 }
 
@@ -4877,7 +4902,7 @@ async function showFlowReport(){
     const d = await fetch('/api/wbs-flow').then(_readJson);
     if(d.error){ flashSched(d.error, true); return; }
     addMsg('system', `<pre style="white-space:pre-wrap;font-size:11px;margin:0;">${escHtml(d.report)}</pre>`);
-    switchTab('chat');
+    revealChat();
   }catch(e){ flashSched(e.message, true); }
 }
 
@@ -7373,7 +7398,7 @@ function scheduleActivityTo(actId, ev){
     if(!cmd){ flashSched('Pick a date', true); return; }
     // Advisory action: reports, records nothing, changes nothing.
     await directEdit([cmd], `Preview ripple from ${actId}`);
-    switchTab('chat');
+    revealChat();
   });
 
   pop.querySelector('#ra-apply').addEventListener('click', async () => {
