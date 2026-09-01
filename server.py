@@ -2045,6 +2045,7 @@ def _apply_direct(commands, label):
         before_names = _wbs_names(project)
         before_colors = _wbs_colors(project)
         before_prefixes = _wbs_prefixes(project)
+        before_dates = _wbs_date_range(project)
         before_flow = _flow_signature(project)
 
         _push_undo(label)
@@ -2107,6 +2108,11 @@ def _apply_direct(commands, label):
             for uid, color in _wbs_colors(project).items()
             if uid in before_colors and before_colors[uid] != color]
 
+        redated_folders = [
+            {"uid": uid, "start": rng[0], "finish": rng[1]}
+            for uid, rng in _wbs_date_range(project).items()
+            if uid in before_dates and before_dates[uid] != rng]
+
         prefixed_folders = [
             {"uid": uid, "id_prefix": pre}
             for uid, pre in _wbs_prefixes(project).items()
@@ -2118,6 +2124,7 @@ def _apply_direct(commands, label):
             "renamed_folders":  renamed_folders,
             "colored_folders":  colored_folders,
             "prefixed_folders": prefixed_folders,
+            "redated_folders":  redated_folders,
             "success":          fail_count == 0,
             "commands_applied": success_count,
             "commands_failed":  fail_count,
@@ -4011,6 +4018,48 @@ def _wbs_prefixes(project):
     return {w.uid: (w.id_prefix or "") for w in project.wbs_nodes}
 
 
+def _wbs_date_range(project):
+    """
+    uid -> (earliest start, latest finish) of the work in each folder, rolled
+    up through sub-folders.
+
+    Diffed across an edit for the same reason the flow verdict is: a date edit
+    patches the ACTIVITY rows in place, and the folder header is not among
+    them, so its range would keep showing the state before the edit until
+    something else forced a reload.
+    """
+    kids = {}
+    for w in project.wbs_nodes:
+        kids.setdefault(w.parent_uid, []).append(w.uid)
+    lo, hi = {}, {}
+    for a in project.activities:
+        s = str(a.actual_start or a.planned_start or "")[:10]
+        f = str(a.actual_finish or a.planned_finish or "")[:10]
+        if s and (a.wbs_uid not in lo or s < lo[a.wbs_uid]):
+            lo[a.wbs_uid] = s
+        if f and (a.wbs_uid not in hi or f > hi[a.wbs_uid]):
+            hi[a.wbs_uid] = f
+
+    def walk(uid):
+        s, f = lo.get(uid), hi.get(uid)
+        for k in kids.get(uid, ()):
+            ks, kf = walk(k)
+            if ks and (not s or ks < s):
+                s = ks
+            if kf and (not f or kf > f):
+                f = kf
+        lo[uid], hi[uid] = s, f
+        return s, f
+
+    for w in project.wbs_nodes:
+        if w.parent_uid is None:
+            walk(w.uid)
+    for w in project.wbs_nodes:                 # any node not under a root
+        if w.uid not in lo:
+            walk(w.uid)
+    return {w.uid: (lo.get(w.uid), hi.get(w.uid)) for w in project.wbs_nodes}
+
+
 def _flow_signature(project) -> dict:
     """
     Each folder's connection verdict, for the grid's flow tint.
@@ -4277,6 +4326,38 @@ def _schedule_view_inner():
     for w in wbs_sections:
         w["activity_count_direct"] = len(w["activities"])
         w["activity_count_total"] = totals[w["uid"]]
+
+    # The folder's date range, rolled up the same way — P6 shows a WBS row
+    # spanning its work, and without it a collapsed branch says how MUCH is in
+    # there but nothing about WHEN, which is the question being asked when you
+    # collapse it.
+    #
+    # Actual dates win over planned, matching the Start/Finish columns on the
+    # rows themselves: a folder whose work has started should read from the
+    # date it started, not the date it was once planned to.
+    def _s(a):
+        return a.get("actual_start") or a.get("planned_start")
+
+    def _f(a):
+        return a.get("actual_finish") or a.get("planned_finish")
+
+    starts = {w["uid"]: [d for d in (_s(a) for a in w["activities"]) if d]
+              for w in wbs_sections}
+    finishes = {w["uid"]: [d for d in (_f(a) for a in w["activities"]) if d]
+                for w in wbs_sections}
+    lo = {u: (min(v) if v else None) for u, v in starts.items()}
+    hi = {u: (max(v) if v else None) for u, v in finishes.items()}
+    for w in reversed(wbs_sections):          # children before parents
+        parent = w.get("parent_uid")
+        if parent not in lo:
+            continue
+        for bag, pick in ((lo, min), (hi, max)):
+            mine, theirs = bag[w["uid"]], bag[parent]
+            if mine and (not theirs or pick(mine, theirs) == mine):
+                bag[parent] = mine
+    for w in wbs_sections:
+        w["start"] = lo[w["uid"]]
+        w["finish"] = hi[w["uid"]]
 
     # Whether each folder is actually wired into the rest of the job, for the
     # grid's flow tint. Cheap — one pass over relations — and it travels with

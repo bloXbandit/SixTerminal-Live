@@ -1133,6 +1133,14 @@
       margin-left:auto;font-size:9px;font-weight:400;color:var(--text3);
       font-family:var(--mono);
     }
+    /* The folder's own date range, the way P6 spans a WBS row. Collapsed, a
+       branch said how MUCH was inside but nothing about WHEN — which is the
+       question you are asking when you collapse it. */
+    .sched-wbs-dates{
+      margin-left:12px;font-size:9px;font-weight:400;color:var(--text3);
+      font-family:var(--mono);white-space:nowrap;
+    }
+    .sched-wbs-dates .wd-sep{opacity:.5;padding:0 3px;}
 
     /* Activity rows */
     .sched-act-row td{color:var(--text2);}
@@ -5348,6 +5356,47 @@ async function procTieSystem(phase, system){
 
 function procTieAllSafe(){ return procTieSystem(null, null); }
 
+/**
+ * The folder's date range — earliest start to latest finish of the work
+ * inside it, rolled up through sub-folders the way P6 spans a WBS row.
+ *
+ * Actual dates win over planned, matching the Start/Finish columns on the
+ * rows themselves: a folder whose work has started should read from the date
+ * it started, not the date it was once planned to.
+ */
+function wbsDateSpan(wbs){
+  if(!wbs || (!wbs.start && !wbs.finish)) return '';
+  const a = fmtDate(wbs.start), b = fmtDate(wbs.finish);
+  return `<span class="sched-wbs-dates" data-wbsdates="${escAttr(wbs.uid)}"
+    title="Earliest start to latest finish of everything in this folder, sub-folders included">`
+    + `${escHtml(a || '—')}<span class="wd-sep">→</span>${escHtml(b || '—')}</span>`;
+}
+
+/**
+ * Repaint folder date ranges in place after an edit.
+ *
+ * A date edit patches the ACTIVITY rows; the folder header is not among them,
+ * so its range would keep showing the state before the edit until something
+ * else forced a reload — the same trap the flow tint fell into.
+ */
+function patchFolderDates(rows){
+  for(const f of (rows || [])){
+    const w = (lastSchedData?.wbs_sections || []).find(x => x.uid === f.uid);
+    if(w){ w.start = f.start; w.finish = f.finish; }
+    const el = document.querySelector(`[data-wbsdates="${CSS.escape(f.uid)}"]`);
+    if(el){
+      el.innerHTML = `${escHtml(fmtDate(f.start) || '—')}`
+        + `<span class="wd-sep">→</span>${escHtml(fmtDate(f.finish) || '—')}`;
+    } else if(w){
+      // The folder had no dates before, so there was no span to update —
+      // insert one rather than leaving the header blank until a reload.
+      const hdr = document.getElementById('wbs-hdr-' + f.uid);
+      const cnt = hdr && hdr.querySelector('.sched-wbs-count');
+      if(cnt) cnt.insertAdjacentHTML('afterend', wbsDateSpan(w));
+    }
+  }
+}
+
 function renderSchedule(data) {
   lastSchedData = data;
   if(_pendingDefaultFold){ applyDefaultFold(); _pendingDefaultFold = false; }
@@ -5371,7 +5420,7 @@ function renderSchedule(data) {
             <span class="sched-wbs-code">${escHtml(wbs.code)}</span>
             <span class="sched-wbs-count"
                   title="${wbs.activity_count_direct ?? wbs.activities.length} directly in this folder">
-              ${wbs.activity_count_total ?? wbs.activities.length} act.</span>${flowBadge(wbs)}
+              ${wbs.activity_count_total ?? wbs.activities.length} act.</span>${wbsDateSpan(wbs)}${flowBadge(wbs)}
           </span>
           <span class="wbs-tools">
             <span class="wbs-move" title="Move this folder up"
@@ -6488,6 +6537,9 @@ async function directEdit(commands, label, brainOverride, via){
     }
     if(Array.isArray(d.prefixed_folders) && d.prefixed_folders.length){
       patchFolderPrefixes(d.prefixed_folders);
+    }
+    if(Array.isArray(d.redated_folders) && d.redated_folders.length){
+      patchFolderDates(d.redated_folders);
     }
     if(d.success && !d.structural && Array.isArray(d.changed_rows)){
       // Patch in place — no refetch, no full rebuild. Adds and deletes come
