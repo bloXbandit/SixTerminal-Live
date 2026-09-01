@@ -2651,11 +2651,18 @@ def _requirements(project: Project, cmd: Dict) -> Tuple[bool, str]:
         return True, (f"Stored {added} requirement(s); now checking all "
                       f"{len(store)}.\n" + _rq.report(project, store))
 
-    to_check = specs or store
+    # Everything in force, from BOTH doors — specs set here, and promises the
+    # user taught as a sentence ("every burn-in must lead to commissioning").
+    # Checking only `store` reported a job as having no requirements while
+    # several were being enforced.
+    live = (brain.active_specs() if hasattr(brain, "active_specs")
+            else list(store))
+    to_check = specs or live
     if not to_check:
         return True, ("No requirements stored yet. Add one with "
-                      "op='add' — e.g. a phase contract date, or that "
-                      "burn-ins must lead to commissioning.")
+                      "op='add' — or just say it in plain language, e.g. "
+                      "\"every burn-in must lead to commissioning\" or "
+                      "\"nothing in Phase 2 may finish after 4/26/27\".")
 
     if op == "enforce":
         all_cmds, checks = [], []

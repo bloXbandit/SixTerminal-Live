@@ -5098,6 +5098,27 @@ function renderBrainTab(){
                   : `<div class="brain-empty">No objective set — tell the agent what this job is for.</div>`}
   </div>`);
 
+  // Rules that cannot all be true at once. The worst way for a schedule to be
+  // wrong, because it looks decided — so it goes above everything else.
+  const clash = d.contradictions || [];
+  if(clash.length){
+    parts.push(`<div class="brain-sec">
+      <h3 style="color:var(--red)">⚠ Rules that contradict each other<span class="brain-count">${clash.length}</span></h3>
+      <div class="bs-note">All of these are enforced. Where two disagree the
+        ranking silently picks one — so the schedule looks decided when it is
+        not. Reword or drop one of each pair.</div>
+      ${clash.map(c => `<div class="brain-item contested">
+        ${c.texts.map(t => `<div class="bi-text">· ${escHtml(t)}</div>`).join('')}
+        <div class="bi-meta bi-warn">${escHtml(c.why)}</div></div>`).join('')}
+    </div>`);
+  }
+
+  parts.push(brainSection('Promises — checked against the network',
+    'Verifiable one-liners: contract dates, and work that must lead somewhere. '
+    + 'These are not ranked like ordering rules — they are <b>checked</b>, and '
+    + 'the agent is told to say which are failing rather than assume they pass.',
+    P.promises || [], 'enforced'));
+
   parts.push(brainSection('Rules — enforced',
     'Stated by you and applied in the tie ranking, not just remembered. '
     + 'A rule matching <b>nothing</b> is enforcing nothing — reword it or drop it.',
@@ -5140,9 +5161,11 @@ function renderBrainTab(){
       recall or explain it.</div>
     <div class="brain-item note"><div class="bi-text">
       ${h.rules} rule${h.rules===1?'':'s'} ·
+      ${h.promises || 0} promise${(h.promises||0)===1?'':'s'} ·
       ${h.notes} note${h.notes===1?'':'s'} ·
       ${h.open} open ·
       ${h.contested} contested
+      ${h.contradictions ? ` · <span class="bi-warn">${h.contradictions} contradiction${h.contradictions===1?'':'s'}</span>` : ''}
       ${h.dead_rules ? ` · <span class="bi-warn">${h.dead_rules} rule${h.dead_rules===1?'':'s'} matching nothing</span>` : ''}
       ${h.hidden_from_prompt ? ` · <span class="bi-warn">${h.hidden_from_prompt} not shown to the agent</span>` : ''}
     </div></div>

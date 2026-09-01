@@ -882,6 +882,18 @@ requirements:
   every change. This is how a one-line statement becomes something enforced
   rather than something you hope to remember.
 
+  MANY OF THESE NO LONGER NEED YOU. The brain now parses four shapes straight
+  from plain language, so when the user simply states one, it is ALREADY a
+  checked promise and you do not have to convert it:
+    "every generator burn-in must lead to commissioning"   -> reaches
+    "every MV room must be driven by its transformer"      -> follows
+    "Phase 1 must finish by 3/15/27"                       -> deadline
+    "nothing in Phase 2 may finish after 4/26/27"          -> not_after
+  They appear in your context under PROMISES with what each bears on. Do not
+  re-add one that is already there. Use this action to CHECK them (op=check),
+  to see what would satisfy the failures (op=enforce), or to add a requirement
+  whose sentence did not parse — a scope or wording the shapes above miss.
+
   YOUR job is turning the sentence into a requirement; the engine walks the
   graph. Four kinds:
     deadline  — {"kind":"deadline","what":"Substantial Completion",

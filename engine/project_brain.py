@@ -61,6 +61,17 @@ ORDER = "order"          # X must come after Y
 SEQUENCE = "sequence"    # a family of areas runs one after another, by number
 ROOM_ORDER = "room_order"  # a family of areas runs in a STATED order
 NOTE = "note"            # prose the agent reads, nothing enforced
+# A promise about the NETWORK or a DATE, carried as a requirements.py spec.
+#
+# The three shapes above are the only ones that used to become rules, so most
+# of what a scheduler actually knows arrived as an inert note: "every burn-in
+# must lead to commissioning", "nothing in Phase 2 may finish after 4/26/27".
+# requirements.py could already check all of those — REACHES, FOLLOWS,
+# DEADLINE, NOT_AFTER — but the only way in was an explicit spec dict through
+# the requirements action, which is not the door anyone walks through. This is
+# that bridge: the same sentence, parsed into the spec the engine already
+# understands.
+REQUIREMENT = "requirement"
 
 
 @dataclass
@@ -84,6 +95,8 @@ class Directive:
     # demoted to guidance, and must be able to come back if the work appears.
     # Without keeping the two apart, grounding is a one-way door.
     parsed_kind: str = ""
+    # REQUIREMENT only: the requirements.py spec this sentence became.
+    spec: Dict[str, Any] = field(default_factory=dict)
     # How the rule has fared when it actually bit. A rule stopped an edit and
     # the user went ahead anyway is evidence about the RULE, not just that
     # edit — and it used to be discarded, so a rule overridden thirty times
@@ -160,6 +173,89 @@ def _clean(s: str) -> str:
     return re.sub(r"\s+", " ", t).strip()
 
 
+# ── Requirement shapes ───────────────────────────────────────────────────────
+# Deliberately narrow. The same rule the ordering parser follows applies here
+# and matters more, because these carry dates: guessing at a half-understood
+# sentence and then enforcing it is worse than leaving it as guidance.
+
+_MONTHS = {m: i for i, m in enumerate(
+    ["jan", "feb", "mar", "apr", "may", "jun",
+     "jul", "aug", "sep", "oct", "nov", "dec"], 1)}
+
+
+def parse_date(text: str) -> Optional[str]:
+    """
+    A date out of the middle of a sentence, in the forms a scheduler types.
+
+    US order for the all-numeric form — 4/26/27 is April 26th — because that
+    is what the people using this write, and a schedule is not the place to
+    discover you guessed the other way. Two-digit years are 2000s: a
+    construction programme is not being written for 1927.
+    """
+    s = (text or "").strip()
+    m = re.search(r"\b(\d{4})-(\d{1,2})-(\d{1,2})\b", s)
+    if m:
+        y, mo, da = (int(g) for g in m.groups())
+    else:
+        m = re.search(r"\b(\d{1,2})[/-](\d{1,2})[/-](\d{2,4})\b", s)
+        if m:
+            mo, da, y = (int(g) for g in m.groups())
+        else:
+            m = re.search(r"\b(\d{1,2})\s+([a-z]{3,9})\.?,?\s+(\d{2,4})\b", s, re.I)
+            if m:
+                da, mon, y = int(m.group(1)), m.group(2)[:3].lower(), int(m.group(3))
+                mo = _MONTHS.get(mon, 0)
+            else:
+                m = re.search(r"\b([a-z]{3,9})\.?\s+(\d{1,2})(?:st|nd|rd|th)?,?\s+(\d{2,4})\b",
+                              s, re.I)
+                if not m:
+                    return None
+                mon, da, y = m.group(1)[:3].lower(), int(m.group(2)), int(m.group(3))
+                mo = _MONTHS.get(mon, 0)
+    if not mo or y is None:
+        return None
+    if y < 100:
+        y += 2000
+    try:
+        return _dt.date(y, mo, da).isoformat()
+    except ValueError:
+        return None
+
+
+# "every X must lead to Y" — the forward-path promise. Deliberately requires a
+# universal word: "burn-in leads to commissioning" is an observation about one
+# activity, "EVERY burn-in must lead to commissioning" is a rule about all.
+_REACHES_RE = re.compile(
+    r"(?i)^(?:every|each|all)\s+(?P<what>.+?)\s+"
+    r"(?:must|should|has to|have to|needs? to)?\s*"
+    r"(?:lead|leads|feed|feeds|flow|flows|run|runs|tie|ties|connect|connects)\s+"
+    r"(?:in)?to\s+(?P<to>.+)$")
+
+# "every X must be driven by Y" — the backward twin. "after"/"follows" is
+# deliberately NOT here: those already parse as ORDER, which is the more
+# specific claim, and stealing them would change behaviour people rely on.
+_FOLLOWS_RE = re.compile(
+    r"(?i)^(?:every|each|all)\s+(?P<what>.+?)\s+"
+    r"(?:must|should|has to|have to|needs? to)?\s*be\s+"
+    r"(?:driven|preceded|fed)\s+by\s+(?P<by>.+)$")
+
+# "X must finish by DATE"
+_DEADLINE_RE = re.compile(
+    r"(?i)^(?P<what>.+?)\s+"
+    r"(?:must|should|has to|have to|needs? to|is due to)?\s*"
+    r"(?:finish|complete|be complete|be completed|be done|end)\s+"
+    r"(?:on or before|by|no later than|before)\s+(?P<date>.+)$")
+
+# "nothing in X may finish after DATE" — the gate. Tried FIRST, because it
+# contains the word "after" and would otherwise parse as an ordering rule with
+# a date as one of its sides.
+_NOT_AFTER_RE = re.compile(
+    r"(?i)^(?:nothing|no work|no activity|no activities)\s+"
+    r"(?:in|on|under|within)?\s*(?P<scope>.*?)\s*"
+    r"(?:may|can|should|must)\s+"
+    r"(?:finish|end|complete|run|go)\s+(?:past|after|beyond)\s+(?P<date>.+)$")
+
+
 def parse_directive(text: str) -> Directive:
     """
     Turn one sentence into a rule if it is one, otherwise keep it as a note.
@@ -189,6 +285,48 @@ def parse_directive(text: str) -> Directive:
     same_area = bool(_SAME_AREA_RE.search(stripped))
     # the scope qualifiers are not part of either side of the ordering
     stripped = _SAME_AREA_RE.sub(" ", stripped).strip()
+
+    # ── requirement shapes, tried before ordering ────────────────────────────
+    # NOT_AFTER first and for a concrete reason: "nothing in Phase 2 may finish
+    # AFTER 4/26/27" contains the ordering keyword, and left to _AFTER_RE it
+    # parses as "'nothing in Phase 2 may finish' comes after '4/26/27'" — a
+    # rule about two things that do not exist, which then quietly demotes to a
+    # note. The gate has to win the sentence.
+    def _req(spec, label):
+        spec["label"] = label
+        d.spec = spec
+        return _shape(REQUIREMENT)
+
+    m = _NOT_AFTER_RE.match(body)
+    if m:
+        date = parse_date(m.group("date"))
+        if date:
+            scope = _clean(m.group("scope"))
+            return _req({"kind": "not_after", "scope": scope or None,
+                         "date": date},
+                        f"nothing in {scope or 'the job'} after {date}")
+
+    m = _DEADLINE_RE.match(body)
+    if m:
+        date = parse_date(m.group("date"))
+        what = _clean(m.group("what"))
+        if date and what and what.lower() not in _STOP:
+            return _req({"kind": "deadline", "what": what, "date": date},
+                        f"{what} by {date}")
+
+    m = _REACHES_RE.match(body)
+    if m:
+        what, to = _clean(m.group("what")), _clean(m.group("to"))
+        if what and to and what.lower() != to.lower():
+            return _req({"kind": "reaches", "what": what, "to": to},
+                        f"{what} → {to}")
+
+    m = _FOLLOWS_RE.match(body)
+    if m:
+        what, by = _clean(m.group("what")), _clean(m.group("by"))
+        if what and by and what.lower() != by.lower():
+            return _req({"kind": "follows", "what": what, "from": by},
+                        f"{what} ← {by}")
 
     m = _AFTER_RE.match(stripped) or _BEFORE_RE.match(stripped)
     if m:
@@ -245,7 +383,28 @@ def ground(project, d: Directive) -> Directive:
         d.parsed_kind = d.kind
     d.kind, d.note_reason = d.parsed_kind, ""
     d.matched_subject = d.matched_after = 0
-    if d.kind == ORDER:
+    if d.kind == REQUIREMENT:
+        # Same standard as every other rule: prove it touches work that
+        # exists. A gate over a phase nobody named, or a deadline on work that
+        # is not in this file, enforces nothing — and showing it as enforced
+        # would be a lie about what the tool is doing. The engine already
+        # reports how many activities the requirement bears on, so this asks
+        # it rather than re-implementing the matching.
+        from engine import requirements as _rq
+        try:
+            r = _rq.check(project, d.spec or {})
+        except Exception:
+            r = {"error": "could not be evaluated"}
+        if r.get("error"):
+            d.kind, d.note_reason = NOTE, (
+                f"{r['error']} — kept as guidance")
+        else:
+            d.matched_subject = int(r.get("matched") or 0)
+            if not d.matched_subject:
+                d.kind, d.note_reason = NOTE, (
+                    f"nothing in this schedule matches this, so there is "
+                    f"nothing to hold to it — kept as guidance")
+    elif d.kind == ORDER:
         d.matched_after = sum(1 for a in acts if phrase_matches(d.after, a.name))
         d.matched_subject = sum(1 for a in acts if phrase_matches(d.subject, a.name))
         if not d.matched_after or not d.matched_subject:
@@ -294,6 +453,23 @@ def ground(project, d: Directive) -> Directive:
 
 def describe(d: Directive) -> str:
     """One line saying what was understood — shown back before anything uses it."""
+    if d.kind == REQUIREMENT:
+        s = d.spec or {}
+        seen = (f" — bears on {d.matched_subject} activities"
+                if d.matched_subject else "")
+        k = s.get("kind")
+        if k == "deadline":
+            return f"'{s.get('what')}' must finish on or before {s.get('date')}{seen}"
+        if k == "not_after":
+            where = f" in '{s['scope']}'" if s.get("scope") else ""
+            return f"nothing{where} may finish after {s.get('date')}{seen}"
+        if k == "reaches":
+            return (f"every '{s.get('what')}' must have a forward path to "
+                    f"'{s.get('to')}'{seen}")
+        if k == "follows":
+            return (f"every '{s.get('what')}' must be driven by "
+                    f"'{s.get('from')}'{seen}")
+        return f"checked promise{seen}"
     if d.kind == ORDER:
         where = ((" (within the same area)" if d.same_area else "")
                  + (" (within the same phase)" if d.same_phase else ""))
@@ -604,6 +780,117 @@ def verdicts(directives: List[Directive], pred_name: str, succ_name: str,
 
 # ── Checking the schedule against what you said ──────────────────────────────
 
+def contradictions(directives: List[Directive]) -> List[Dict[str, Any]]:
+    """
+    Rules that cannot all be true at once.
+
+    Nothing checked for this before, so two rules that disagreed were both
+    enforced and the tie ranker quietly picked whichever scored higher. The
+    user never learned they had said both. A contradiction is not resolved
+    here — which one is right is a decision about the job — but it stops being
+    invisible.
+
+    Four kinds, in order of how badly they bite:
+
+      CYCLE      "A after B", "B after C", "C after A". Nothing can satisfy
+                 it, and the ranker will happily lay ties around the loop.
+      REVERSED   the two-rule case of the same thing, called out separately
+                 because the fix is obvious once you see the pair.
+      DATES      two deadlines on the same subject with different dates.
+      ORDERING   a stated room order that disagrees with a "sequential" rule
+                 on the same family.
+    """
+    out: List[Dict[str, Any]] = []
+    live = [d for d in directives if d.enabled]
+
+    orders = [d for d in live if d.kind == ORDER and d.subject and d.after]
+
+    # ── reversed pairs ───────────────────────────────────────────────────────
+    seen_pairs: Dict[Tuple[str, str], Directive] = {}
+    for d in orders:
+        key = (_norm(d.subject), _norm(d.after))
+        rev = seen_pairs.get((key[1], key[0]))
+        if rev is not None:
+            out.append({
+                "kind": "reversed", "ids": [rev.id, d.id],
+                "texts": [rev.text, d.text],
+                "why": (f"One says '{rev.subject}' comes after '{rev.after}', "
+                        f"the other says the opposite. Both are enforced, so "
+                        f"the ranking picks whichever scores higher."),
+            })
+        seen_pairs.setdefault(key, d)
+
+    # ── cycles of three or more ──────────────────────────────────────────────
+    # Edge points from the thing that runs FIRST to the thing that runs after
+    # it, so a cycle here is work that has to precede itself.
+    adj: Dict[str, List[Tuple[str, Directive]]] = {}
+    for d in orders:
+        adj.setdefault(_norm(d.after), []).append((_norm(d.subject), d))
+
+    seen_cycles = set()
+    WHITE, GREY, BLACK = 0, 1, 2
+    colour: Dict[str, int] = {}
+
+    def walk(node: str, path: List[Directive], seen_nodes: List[str]):
+        colour[node] = GREY
+        for nxt, d in adj.get(node, ()):
+            c = colour.get(nxt, WHITE)
+            if c == GREY:                       # closed a loop
+                start = seen_nodes.index(nxt) if nxt in seen_nodes else 0
+                loop = path[start:] + [d]
+                sig = tuple(sorted(x.id for x in loop))
+                if len(loop) > 2 and sig not in seen_cycles:
+                    seen_cycles.add(sig)
+                    out.append({
+                        "kind": "cycle", "ids": [x.id for x in loop],
+                        "texts": [x.text for x in loop],
+                        "why": ("These rules form a loop — following all of "
+                                "them, work would have to come before itself. "
+                                "One of them is wrong or needs a scope."),
+                    })
+            elif c == WHITE:
+                walk(nxt, path + [d], seen_nodes + [nxt])
+        colour[node] = BLACK
+
+    for node in list(adj):
+        if colour.get(node, WHITE) == WHITE:
+            walk(node, [], [node])
+
+    # ── two dates on the same thing ──────────────────────────────────────────
+    by_subject: Dict[str, List[Directive]] = {}
+    for d in live:
+        if d.kind == REQUIREMENT and (d.spec or {}).get("kind") == "deadline":
+            by_subject.setdefault(_norm(d.spec.get("what") or ""), []).append(d)
+    for subj, ds in by_subject.items():
+        dates = {(x.spec or {}).get("date") for x in ds}
+        if len(dates) > 1:
+            out.append({
+                "kind": "dates", "ids": [x.id for x in ds],
+                "texts": [x.text for x in ds],
+                "why": (f"Two different finish dates for the same work "
+                        f"({', '.join(sorted(d for d in dates if d))}). "
+                        f"Only one can be the contract date."),
+            })
+
+    # ── stated order vs "sequential" on one family ───────────────────────────
+    fams: Dict[str, Dict[str, Directive]] = {}
+    for d in live:
+        if d.kind in (SEQUENCE, ROOM_ORDER) and d.family:
+            fams.setdefault(_norm(d.family), {})[d.kind] = d
+    for fam, kinds in fams.items():
+        ro, sq = kinds.get(ROOM_ORDER), kinds.get(SEQUENCE)
+        if ro and sq and ro.order and list(ro.order) != sorted(ro.order):
+            out.append({
+                "kind": "ordering", "ids": [ro.id, sq.id],
+                "texts": [ro.text, sq.text],
+                "why": (f"'{ro.family}' is stated to run "
+                        f"{' → '.join(str(n) for n in ro.order)}, which is not "
+                        f"number order — but another rule says the same family "
+                        f"runs sequentially."),
+            })
+    return out
+
+
 def check(project, directives: List[Directive], limit: int = 200) -> Dict[str, Any]:
     """
     Where does the schedule break these rules?
@@ -892,6 +1179,37 @@ class Brain:
                 if d.enabled and d.kind in (ORDER, SEQUENCE, ROOM_ORDER)]
 
     @property
+    def promises(self) -> List[Directive]:
+        """
+        Requirement-shaped rules taught in plain language.
+
+        Kept separate from `rules` because they carry different force and are
+        enforced by a different mechanism: an ORDER rule shifts the tie
+        ranking, a promise is CHECKED against the finished network. Merging
+        them would misreport both.
+
+        Deliberately NOT copied into self.requirements. That list is the store
+        the requirements action owns, and keeping a second copy of the same
+        spec in it would need syncing on every add, remove, toggle and
+        demotion — four chances to drift. Readers merge the two instead; see
+        active_specs().
+        """
+        return [d for d in self.directives
+                if d.enabled and d.kind == REQUIREMENT]
+
+    def active_specs(self) -> List[Dict[str, Any]]:
+        """
+        Every requirement in force, from both doors — the ones set as specs
+        through the action, and the ones taught as a sentence.
+
+        A promise demoted to a note by grounding is not here, which is the
+        point: it matches nothing, so there is nothing to hold to it.
+        """
+        out = list(getattr(self, "requirements", None) or [])
+        out.extend(d.spec for d in self.promises if d.spec)
+        return out
+
+    @property
     def notes(self) -> List[Directive]:
         """General knowledge about the job — facts, not enforceable rules."""
         return [d for d in self.directives
@@ -950,7 +1268,11 @@ class Brain:
         rules, notes, questions = self.rules, self.notes, self.open_questions
         scope = self.scope.context_block() if self.scope else ""
         catalogue = self.library.catalogue_block() if self.library else ""
-        if not (objective or rules or notes or questions or scope or catalogue):
+        # promises belongs in this guard: a brain holding nothing but checked
+        # promises would otherwise return an empty block and the agent would
+        # never hear about them at all.
+        if not (objective or rules or notes or questions or scope or catalogue
+                or self.promises):
             return ""
 
         def section(title, items, fmt):
@@ -984,6 +1306,11 @@ class Brain:
         lines += section(
             "RULES — HOW THIS JOB IS BUILT (stated by the user, ENFORCED):",
             rules, lambda d: f"  {d.text}   [{describe(d)}]")
+        lines += section(
+            "PROMISES — CHECKED AGAINST THE NETWORK. These are verifiable: run "
+            "requirements to see whether each still holds, and say which are "
+            "failing rather than assuming they pass:",
+            self.promises, lambda d: f"  {d.text}   [{describe(d)}]")
         lines += section(
             "WHAT YOU KNOW ABOUT THIS JOB (context, nothing enforced):",
             notes, lambda d: f"  {d.text}")

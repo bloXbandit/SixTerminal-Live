@@ -2825,7 +2825,10 @@ def brain_overview():
         checks["flow"] = None
     try:
         from engine import requirements as _rq
-        specs = list(getattr(brain, "requirements", []) or [])
+        # Both doors: specs set through the requirements action, and promises
+        # taught as a sentence. A reader that looked at only one would report
+        # a job as having no requirements while enforcing several.
+        specs = brain.active_specs()
         results, broken = [], 0
         for spec in specs:
             try:
@@ -2861,12 +2864,23 @@ def brain_overview():
     checks["documents"] = {"filed": len(docs),
                            "searchable": sum(1 for d in docs if d["searchable"])}
 
+    # Rules that cannot all be true at once. Nothing checked for this before,
+    # so two rules that disagreed were both enforced and the ranker quietly
+    # picked one — which is the worst way for a schedule to be wrong, because
+    # it looks decided.
+    try:
+        clashes = project_brain.contradictions(brain.directives)
+    except Exception:
+        clashes = []
+
     return jsonify({
         "success": True,
         "key": brain.key,
         "objective": brain.objective_line(project) or "",
         "cap": cap,
+        "contradictions": clashes,
         "piles": {
+            "promises": _pile(brain.promises, cap),
             "rules": _pile(rules, cap),
             "notes": _pile(notes, cap),
             "open": _pile(questions, cap),
@@ -2876,7 +2890,9 @@ def brain_overview():
         "scope": bool(brain.scope),
         "health": {
             "rules": len(rules), "notes": len(notes),
+            "promises": len(brain.promises),
             "open": len(questions), "contested": len(contested),
+            "contradictions": len(clashes),
             "dead_rules": len(dead),
             "hidden_from_prompt": sum(max(0, len(x) - cap)
                                       for x in (rules, notes, questions)),
