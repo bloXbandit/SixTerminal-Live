@@ -6486,6 +6486,9 @@ async function directEdit(commands, label, brainOverride, via){
     if(Array.isArray(d.colored_folders) && d.colored_folders.length){
       patchFolderColors(d.colored_folders);
     }
+    if(Array.isArray(d.prefixed_folders) && d.prefixed_folders.length){
+      patchFolderPrefixes(d.prefixed_folders);
+    }
     if(d.success && !d.structural && Array.isArray(d.changed_rows)){
       // Patch in place — no refetch, no full rebuild. Adds and deletes come
       // through here too now, so inserting a row costs the same as editing one.
@@ -7606,6 +7609,85 @@ function editLink(ev, predId, succId, dir){
  * actually enter a new date. Matches the app's existing popup convention
  * (constraint-pop id/class, closeConstraintEditor as the shared closer).
  */
+/**
+ * State the activity-id prefix for a folder.
+ *
+ * Inference reads the prefix off the ids a folder already holds — right for a
+ * folder with work in it, useless for a new one: an empty "MV 108" inherits
+ * from the nearest coded relative and collects a sibling's ER codes. Stating
+ * it settles that, and the same value then drives BOTH the next new activity
+ * and Normalize IDs, so the two cannot disagree.
+ */
+function openWbsPrefixEditor(ev, uid, name){
+  if(!uid) return;
+  const w = (lastSchedData?.wbs_sections || []).find(x => x.uid === uid);
+  const cur = (w && w.id_prefix) || '';
+  // What its rows are coded as today, so the field starts from the real
+  // pattern rather than empty — most of the time the answer is "this, but for
+  // my folder", and typing it from scratch invites a typo.
+  const sample = (w && (w.activities || []).map(a => a.activity_id)
+                    .find(id => /\d$/.test(id || ''))) || '';
+  const inferred = sample.replace(/\d+$/, '');
+
+  closeConstraintEditor();
+  const pop = document.createElement('div');
+  pop.id = 'constraint-pop';
+  pop.className = 'constraint-pop';
+  pop.style.borderColor = 'var(--accent)';
+  pop.style.flexWrap = 'wrap';
+  pop.style.maxWidth = '380px';
+  pop.innerHTML =
+    `<span style="font-size:10px;color:var(--text3);width:100%;">
+       Activity ID prefix for <b>${escHtml(name || 'this folder')}</b> — new rows
+       here get this plus the next free number</span>
+     <input id="wp-val" type="text" style="width:210px" placeholder="MDC1.PH2.MV."
+            value="${escAttr(cur)}">
+     <button class="mini-btn ok" id="wp-save">Set</button>
+     <button class="mini-btn no" id="wp-clear">Clear</button>
+     ${inferred ? `<div style="width:100%;font-size:10px;color:var(--text3);margin-top:3px;">
+        Currently coded <code>${escHtml(inferred)}####</code>
+        <a href="#" id="wp-use" style="color:var(--accent);">use this</a></div>` : ''}
+     <label style="display:flex;align-items:center;gap:6px;width:100%;font-size:10px;color:var(--text3);margin-top:4px;cursor:pointer;">
+       <input type="checkbox" id="wp-descend"> Apply to every sub-folder too
+       (state a phase once instead of forty rooms)</label>
+     <span style="font-size:10px;color:var(--text3);width:100%;margin-top:3px;">
+       Existing rows are not touched — run Normalize IDs to bring them onto it.</span>`;
+  document.body.appendChild(pop);
+
+  const target = (ev && ev.target) || document.getElementById('wbs-hdr-' + uid);
+  if(target && typeof target.getBoundingClientRect === 'function'){
+    const r = target.getBoundingClientRect();
+    pop.style.top  = (window.scrollY + r.bottom + 4) + 'px';
+    pop.style.left = (window.scrollX + Math.max(8, Math.min(r.left, window.innerWidth - 400))) + 'px';
+  } else { pop.style.top = '120px'; pop.style.left = '20px'; }
+
+  const use = pop.querySelector('#wp-use');
+  if(use) use.addEventListener('click', e => {
+    e.preventDefault(); pop.querySelector('#wp-val').value = inferred;
+  });
+
+  const send = async (value) => {
+    const descend = pop.querySelector('#wp-descend').checked;
+    closeConstraintEditor();
+    await directEdit([{action:'set_wbs_id_prefix', wbs_uid:uid,
+                       prefix:value, descend}],
+                     value ? `ID prefix ${value} on ${name}`
+                           : `Clear ID prefix on ${name}`);
+  };
+  pop.querySelector('#wp-save').addEventListener('click',
+    () => send(pop.querySelector('#wp-val').value.trim()));
+  pop.querySelector('#wp-clear').addEventListener('click', () => send(''));
+  setTimeout(() => pop.querySelector('#wp-val')?.focus(), 0);
+}
+
+/** Keep the cached folder records in step after a prefix change. */
+function patchFolderPrefixes(rows){
+  for(const f of (rows || [])){
+    const w = (lastSchedData?.wbs_sections || []).find(x => x.uid === f.uid);
+    if(w) w.id_prefix = f.id_prefix || null;
+  }
+}
+
 /**
  * Schedule ONE activity to a date and let its own path follow.
  *
@@ -8744,6 +8826,7 @@ function onSchedContextMenu(e){
     ['⧉ Duplicate folder',  () => duplicateSelectedWbs()],
     ['✎ Rename folder…',    () => beginWbsRename(tr)],
     ['🎨 Folder color…',    () => openWbsColorPicker(tr.dataset.wbsuid, tr.dataset.wbsname)],
+    ['🔖 Activity ID prefix…', (ev) => openWbsPrefixEditor(ev, tr.dataset.wbsuid, tr.dataset.wbsname)],
     ['⇱ Move to root',      () => moveSelectedWbs(true)],
     ['📌✕ Clear constraints', () => wbsClearConstraints()],
     ['✎+ Add text to names',  (ev) => openAppendNamePopup(ev, {wbsScope:true})],

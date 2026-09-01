@@ -166,11 +166,50 @@ def _new_uid() -> str:
     return str(uuid.uuid4().int)[:10]
 
 
-def _next_activity_id(project: Project) -> str:
+def _folder_prefix(project: Project, wbs_uid: Optional[str]) -> Optional[str]:
     """
-    Compute the next available activity ID following the project's dominant
-    prefix + 4-digit numbering (e.g. A1000 -> A1010), skipping any collisions.
-    Used when add_activity / paste are called without an explicit ID.
+    The prefix a new row in this folder should carry.
+
+    Stated wins over inferred, and inferred means "what this folder's own rows
+    already use" — walking up through parents when the folder is empty. The
+    project-wide fallback stays in _next_activity_id, so a job with no
+    convention behaves exactly as before.
+    """
+    by_uid = {w.uid: w for w in project.wbs_nodes}
+    node, guard = by_uid.get(wbs_uid), 0
+    while node is not None and guard < 200:
+        guard += 1
+        if (node.id_prefix or "").strip():
+            return node.id_prefix.strip()
+        node = by_uid.get(node.parent_uid)
+
+    pat = re.compile(r"^(.*?)(\d+)$")
+    node, guard = by_uid.get(wbs_uid), 0
+    while node is not None and guard < 200:
+        guard += 1
+        counts: Dict[str, int] = {}
+        for a in project.activities:
+            if a.wbs_uid != node.uid:
+                continue
+            m = pat.match((a.activity_id or "").strip())
+            if m:
+                counts[m.group(1)] = counts.get(m.group(1), 0) + 1
+        if counts:
+            return max(counts, key=counts.get)
+        node = by_uid.get(node.parent_uid)
+    return None
+
+
+def _next_activity_id(project: Project, wbs_uid: Optional[str] = None) -> str:
+    """
+    The next free activity id, following this FOLDER's scheme where it has one
+    and the project's otherwise.
+
+    It used to follow the project's dominant prefix regardless of where the
+    row was going, so a new activity in an MV room was coded like whichever
+    area happened to hold the most work. On a job coded per area that is
+    wrong the moment it is created, and then needs normalizing to fix
+    something that should never have drifted.
     """
     # Split each id into "everything before the trailing digits" + those digits.
     # Stripping leading letters instead breaks every real-world scheme:
@@ -186,8 +225,23 @@ def _next_activity_id(project: Project) -> str:
         counts[pre] = counts.get(pre, 0) + 1
         parsed.append((pre, int(digits), len(digits)))
 
-    if parsed:
+    folder_pre = _folder_prefix(project, wbs_uid)
+    if folder_pre and any(p == folder_pre for p, _, _ in parsed):
+        prefix = folder_pre
+    elif folder_pre:
+        # Stated for a folder that has no rows yet — nothing to read a width or
+        # a high-water mark from, so start it at the project's usual shape.
+        widths = [w for _, _, w in parsed] or [4]
+        prefix, width, current = folder_pre, max(widths), 1000
+        while project.get_activity(activity_id=f"{prefix}{current:0{width}d}"):
+            current += 10
+        return f"{prefix}{current:0{width}d}"
+    elif parsed:
         prefix = max(counts, key=counts.get)     # the project's dominant scheme
+    else:
+        prefix = None
+
+    if prefix is not None and parsed:
         same   = [(n, w) for (p, n, w) in parsed if p == prefix]
         top    = max(n for n, _ in same)
         width  = max(w for _, w in same)
@@ -383,6 +437,8 @@ def apply_command(project: Project, command: Dict[str, Any]) -> Tuple[bool, str]
             return _normalize_activity_ids(project, command)
         elif action == "set_wbs_color":
             return _set_wbs_color(project, command)
+        elif action in ("set_wbs_id_prefix", "set_folder_prefix"):
+            return _set_wbs_id_prefix(project, command)
         else:
             return False, f"Unknown action: '{action}'"
     except EditError as e:
@@ -664,7 +720,7 @@ def _add_activity(project: Project, cmd: Dict) -> Tuple[bool, str]:
     act_id = cmd.get("activity_id", "").strip()
     if not act_id:
         # Auto-assign the next available ID (quick-add / paste from the grid)
-        act_id = _next_activity_id(project)
+        act_id = _next_activity_id(project, wbs.uid)
     if project.get_activity(activity_id=act_id):
         raise EditError(f"Activity ID '{act_id}' already exists")
     name = cmd.get("name", "").strip()
@@ -811,6 +867,62 @@ def _set_wbs_color(project: Project, cmd: Dict) -> Tuple[bool, str]:
     if color:
         return True, f"Set color of '{wbs.name}' to {color}"
     return True, f"Cleared color on '{wbs.name}'"
+
+
+def _set_wbs_id_prefix(project: Project, cmd: Dict) -> Tuple[bool, str]:
+    """
+    State the activity-id prefix for a folder, instead of inferring it.
+
+    Inference reads the prefix off the ids a folder already holds, which is
+    right for a folder with work in it and useless for a new one: an empty
+    "MV 108" inherits from the nearest coded relative and collects a sibling's
+    ER codes. Stating it settles that, and the same value then drives both the
+    next new activity and the normalizer, so the two cannot disagree.
+
+    `descend` puts it on every sub-folder too, which is the usual intent for a
+    phase: state MDC1.PH2. once rather than on forty rooms.
+    """
+    wbs = _find_wbs(project, cmd.get("wbs_code"), cmd.get("wbs_name"),
+                    cmd.get("wbs_uid"))
+    if not wbs:
+        raise EditError(_no_wbs(project, cmd.get("wbs_code") or cmd.get("wbs_name")
+                                or cmd.get("wbs_uid")))
+    prefix = (cmd.get("prefix") or cmd.get("id_prefix") or "").strip()
+    # An id has to end in digits for anything here to parse it back, so a
+    # prefix that ends in one would make "MDC1.PH2.1" and "MDC1.PH2.10"
+    # ambiguous the moment they exist.
+    if prefix and prefix[-1].isdigit():
+        raise EditError(f"'{prefix}' ends in a digit — the id's number goes "
+                        f"there, so it could not be read back apart. Try "
+                        f"'{prefix}.' or a separator.")
+    if len(prefix) > 40:
+        raise EditError("Keep the prefix under 40 characters")
+
+    targets = [wbs]
+    if cmd.get("descend"):
+        scope = _descendants_of(project, wbs.uid)
+        targets = [w for w in project.wbs_nodes if w.uid in scope]
+    for w in targets:
+        w.id_prefix = prefix or None
+
+    where = (f"'{wbs.name}' and {len(targets) - 1} sub-folder(s)"
+             if len(targets) > 1 else f"'{wbs.name}'")
+    if not prefix:
+        return True, (f"Cleared the id prefix on {where} — new activities go "
+                      f"back to following whatever the folder already uses.")
+    return True, (f"New activities in {where} will be coded {prefix}####. "
+                  f"Run Normalize IDs to bring existing rows onto it.")
+
+
+def _descendants_of(project: Project, root_uid: str) -> set:
+    out, grew = {root_uid}, True
+    while grew:
+        grew = False
+        for w in project.wbs_nodes:
+            if w.parent_uid in out and w.uid not in out:
+                out.add(w.uid)
+                grew = True
+    return out
 
 
 def _match_subfolder_numbers(project: Project, cmd: Dict) -> Tuple[bool, str]:
@@ -1242,7 +1354,7 @@ def _duplicate_wbs(project: Project, cmd: Dict) -> Tuple[bool, str]:
 
         act_map: Dict[str, str] = {}
         for a in acts_in:
-            new_id = _next_activity_id(project)
+            new_id = _next_activity_id(project, wbs_map.get(a.wbs_uid, a.wbs_uid))
             new_uid = _new_uid()
             act_map[a.uid] = new_uid
             project.activities.append(Activity(
@@ -1375,7 +1487,7 @@ def _copy_activities(project: Project, cmd: Dict) -> Tuple[bool, str]:
         act_map: Dict[str, str] = {}
         for a in src_acts:
             new_uid = _new_uid()
-            new_id = _next_activity_id(project)
+            new_id = _next_activity_id(project, a.wbs_uid)
             act_map[a.uid] = new_uid
             project.activities.append(Activity(
                 uid=new_uid,
@@ -1555,7 +1667,7 @@ def _fill_folder_from_template(project: Project, cmd: Dict) -> Tuple[bool, str]:
                 name = name.replace(src.name, tgt.name)
 
             new = Activity(
-                uid=_new_uid(), activity_id=_next_activity_id(project),
+                uid=_new_uid(), activity_id=_next_activity_id(project, tgt.uid),
                 name=name, wbs_uid=tgt.uid, calendar_uid=a.calendar_uid,
                 activity_type=a.activity_type, status="Not Started",
                 planned_duration=a.planned_duration,

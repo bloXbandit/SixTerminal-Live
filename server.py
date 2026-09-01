@@ -2044,6 +2044,7 @@ def _apply_direct(commands, label):
         before_wbs = None if tree_changing else _wbs_signature(project)
         before_names = _wbs_names(project)
         before_colors = _wbs_colors(project)
+        before_prefixes = _wbs_prefixes(project)
         before_flow = _flow_signature(project)
 
         _push_undo(label)
@@ -2106,11 +2107,17 @@ def _apply_direct(commands, label):
             for uid, color in _wbs_colors(project).items()
             if uid in before_colors and before_colors[uid] != color]
 
+        prefixed_folders = [
+            {"uid": uid, "id_prefix": pre}
+            for uid, pre in _wbs_prefixes(project).items()
+            if uid in before_prefixes and before_prefixes[uid] != pre]
+
         return jsonify({
             "type":             "result",
             "changed_folders":  changed_folders,
             "renamed_folders":  renamed_folders,
             "colored_folders":  colored_folders,
+            "prefixed_folders": prefixed_folders,
             "success":          fail_count == 0,
             "commands_applied": success_count,
             "commands_failed":  fail_count,
@@ -3999,6 +4006,11 @@ def _wbs_colors(project):
     return {w.uid: (w.color or "") for w in project.wbs_nodes}
 
 
+def _wbs_prefixes(project):
+    """uid -> stated id prefix, diffed the same way so the header badge keeps up."""
+    return {w.uid: (w.id_prefix or "") for w in project.wbs_nodes}
+
+
 def _flow_signature(project) -> dict:
     """
     Each folder's connection verdict, for the grid's flow tint.
@@ -4231,6 +4243,7 @@ def _schedule_view_inner():
             "parent_uid": wbs.parent_uid,
             "depth":      wbs_depth(wbs.uid),
             "color":      wbs.color,
+            "id_prefix":  wbs.id_prefix,
             "activities": activities_out,
         })
 

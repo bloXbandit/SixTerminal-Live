@@ -225,11 +225,25 @@ def plan(project: Project, root_uid: Optional[str] = None) -> Dict[str, Any]:
 
     def target_prefix(wbs_uid: Optional[str]) -> Optional[str]:
         """
-        The prefix this folder's rows should carry: its own if it has one,
-        otherwise the nearest coded ancestor's, otherwise the project's.
+        The prefix this folder's rows should carry: STATED if the user set one,
+        else its own if it has one, else the nearest coded ancestor's, else the
+        project's.
+
+        Stated wins outright, and inheriting it down the tree matters as much
+        as the folder's own: a phase coded MDC1.PH2. once should reach forty
+        rooms without being restated, and inference would otherwise hand an
+        empty room a sibling's area segment.
         """
         if wbs_uid in prefix_cache:
             return prefix_cache[wbs_uid]
+        node, guard = by_uid.get(wbs_uid), 0
+        while node is not None and guard < 200:
+            guard += 1
+            stated = (node.id_prefix or "").strip()
+            if stated:
+                prefix_cache[wbs_uid] = stated
+                return stated
+            node = by_uid.get(node.parent_uid)
         own = direct.get(wbs_uid)
         if own:
             prefix_cache[wbs_uid] = own.most_common(1)[0][0]

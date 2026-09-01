@@ -419,3 +419,89 @@ def test_the_result_is_unique_and_stable():
         p.get_activity(activity_id=c["from"]).activity_id = c["to"]
     p.build_lookups()
     assert id_normalizer.plan(p)["changes"] == [], "re-running proposed more work"
+
+
+# ── a stated prefix beats inference ─────────────────────────────────────────
+# Inference reads the prefix off the ids a folder already holds, which is right
+# for a folder with work in it and useless for a new one: an empty "MV 108"
+# inherits from the nearest coded relative and collects a sibling's ER codes.
+
+from engine.edit_engine import _next_activity_id, apply_command
+
+
+def _phase():
+    p = Project(uid="1", name="DC", id="J", planned_start="2026-01-05")
+    p.calendars = [Calendar(uid="1", name="Std")]
+    p.wbs_nodes = [WBSNode(uid="ph2", name="Phase 2 (Build-Out)", code="PH2"),
+                   WBSNode(uid="er", name="ER R202", code="ER", parent_uid="ph2"),
+                   WBSNode(uid="mv", name="MV 108", code="MV", parent_uid="ph2")]
+    p.activities = []
+    for i, (aid, f) in enumerate([("MDC1.PH2.ER.1000", "er"),
+                                  ("MDC1.PH2.ER.1010", "er"),
+                                  ("A1000", "er"), ("A2000", "mv")]):
+        p.activities.append(Activity(
+            uid=f"u{i}", activity_id=aid, name="Work", wbs_uid=f,
+            calendar_uid="1", planned_duration=40.0, remaining_duration=40.0,
+            planned_start="2026-01-05", planned_finish="2026-01-09"))
+    p.relations = []
+    p.build_lookups()
+    return p
+
+
+def test_a_new_row_follows_its_own_folder_not_the_busiest_one():
+    """It used to take the project's dominant prefix wherever the row went, so
+    a new activity in an MV room was coded like whichever area held the most
+    work — wrong the moment it was created."""
+    p = _phase()
+    apply_command(p, {"action": "set_wbs_id_prefix", "wbs_uid": "mv",
+                      "prefix": "MDC1.PH2.MV."})
+    assert _next_activity_id(p, "mv").startswith("MDC1.PH2.MV.")
+    assert _next_activity_id(p, "er").startswith("MDC1.PH2.ER.")
+
+
+def test_an_unstated_folder_still_infers_as_before():
+    p = _phase()
+    assert _next_activity_id(p, "er").startswith("MDC1.PH2.ER.")
+
+
+def test_a_stated_prefix_drives_normalize_too():
+    """One value behind both, so the id a new row gets and the id normalize
+    would give it cannot disagree."""
+    p = _phase()
+    apply_command(p, {"action": "set_wbs_id_prefix", "wbs_uid": "mv",
+                      "prefix": "MDC1.PH2.MV."})
+    changes = {c["from"]: c["to"] for c in id_normalizer.plan(p, "ph2")["changes"]}
+    assert changes["A2000"].startswith("MDC1.PH2.MV.")
+    assert changes["A1000"].startswith("MDC1.PH2.ER.")
+
+
+def test_a_prefix_stated_on_a_phase_reaches_its_rooms():
+    p = _phase()
+    apply_command(p, {"action": "set_wbs_id_prefix", "wbs_uid": "ph2",
+                      "prefix": "MDC1.PH2.", "descend": True})
+    assert _next_activity_id(p, "mv").startswith("MDC1.PH2.")
+
+
+def test_a_prefix_ending_in_a_digit_is_refused():
+    """The id's number goes there — 'MDC1.PH2.1' and 'MDC1.PH2.10' could not
+    be read back apart."""
+    p = _phase()
+    ok, msg = apply_command(p, {"action": "set_wbs_id_prefix", "wbs_uid": "mv",
+                                "prefix": "MDC1.PH2.1"})
+    assert not ok and "digit" in msg
+
+
+def test_clearing_it_goes_back_to_inference():
+    p = _phase()
+    apply_command(p, {"action": "set_wbs_id_prefix", "wbs_uid": "mv",
+                      "prefix": "MDC1.PH2.MV."})
+    apply_command(p, {"action": "set_wbs_id_prefix", "wbs_uid": "mv", "prefix": ""})
+    assert p.get_wbs("mv").id_prefix is None
+
+
+def test_setting_a_prefix_renames_nothing_on_its_own():
+    p = _phase()
+    before = [a.activity_id for a in p.activities]
+    apply_command(p, {"action": "set_wbs_id_prefix", "wbs_uid": "mv",
+                      "prefix": "MDC1.PH2.MV."})
+    assert [a.activity_id for a in p.activities] == before

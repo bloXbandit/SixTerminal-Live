@@ -33,6 +33,14 @@ class WBSNode:
     parent_uid: Optional[str] = None
     sequence_num: int = 0
     color: Optional[str] = None
+    # The activity-id prefix this folder's work should carry — "MDC1.PH2.ER."
+    #
+    # Inference reads the prefix off the ids already in a folder, which is
+    # right for a folder that HAS work and useless for a new one: an empty
+    # "MV 108" inherits the nearest coded relative, so it collects ER codes
+    # from a sibling. Stating it settles that, and the same value then drives
+    # both the next new activity and the normalizer, so they cannot disagree.
+    id_prefix: Optional[str] = None
 
 
 @dataclass
