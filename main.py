@@ -22,27 +22,12 @@ ROOT = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, ROOT)
 
 
-def load_env_file(path: str):
-    """Read KEY=VALUE lines from a .env file into os.environ.
-
-    The shell environment wins: a key already set is left alone, so an
-    exported override still works. No dependency on python-dotenv."""
-    if not os.path.exists(path):
-        return
-    with open(path) as f:
-        for line in f:
-            line = line.strip()
-            if not line or line.startswith("#") or "=" not in line:
-                continue
-            if line.startswith("export "):
-                line = line[len("export "):]
-            key, _, val = line.partition("=")
-            key, val = key.strip(), val.strip().strip('"').strip("'")
-            if key and key not in os.environ:
-                os.environ[key] = val
-
-
-load_env_file(os.path.join(ROOT, ".env"))
+# .env is loaded in main() below, via engine/envfile.py — the same loader
+# server.py uses. A second copy lived here briefly and was a no-op after the
+# first ran, but it only covered `python main.py`: under gunicorn nothing
+# imports this file, so the shared one has to do the work anyway. One loader
+# also means .env.local, the precedence rule and the "=" in a secret are
+# handled the same way whoever starts the app.
 
 
 def parse_args():
