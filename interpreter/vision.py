@@ -565,8 +565,64 @@ def _iso(v) -> Optional[str]:
     return s
 
 
+# What the bytes actually ARE, which is not always what the name says.
+#
+# A phone photo is the common case: iOS names a share "IMG_1234.jpeg" while
+# the bytes are HEIC, and a filename-only check hands that to the model as
+# image/jpeg. The provider then rejects it with something like "Invalid base64
+# image_url", which reads as a bug in this app rather than "your photo is in a
+# format the model cannot read".
+_MAGIC = (
+    (b"\x89PNG\r\n\x1a\n", ".png"),
+    (b"\xff\xd8\xff", ".jpg"),
+    (b"GIF87a", ".gif"),
+    (b"GIF89a", ".gif"),
+    (b"%PDF-", ".pdf"),
+)
+_HEIC_BRANDS = (b"heic", b"heix", b"hevc", b"hevx", b"mif1", b"msf1")
+
+
+def sniff_format(file_bytes: bytes) -> Optional[str]:
+    """The real extension for these bytes, or None if unrecognised."""
+    head = file_bytes[:16] if file_bytes else b""
+    for magic, ext in _MAGIC:
+        if head.startswith(magic):
+            return ext
+    if head[:4] == b"RIFF" and file_bytes[8:12] == b"WEBP":
+        return ".webp"
+    # ISO-BMFF: "....ftyp<brand>" — HEIC and friends
+    if file_bytes[4:8] == b"ftyp":
+        brand = file_bytes[8:12]
+        if brand in _HEIC_BRANDS:
+            return ".heic"
+    return None
+
+
 def _check(file_bytes: bytes, filename: str):
     ext = os.path.splitext(filename or "")[1].lower()
+
+    # An empty upload used to be encoded to an empty string and posted as
+    # "data:image/jpeg;base64," — which is exactly the "Invalid base64" the
+    # provider complains about, after the round trip and the token spend.
+    if not file_bytes:
+        raise RuntimeError("That file came through empty. Re-attach it, or "
+                           "drag it in rather than pasting a link to it.")
+
+    # The bytes win. A name is a hint; this is what the model will actually be
+    # handed, and disagreeing with it is how a readable image gets refused.
+    real = sniff_format(file_bytes)
+    if real == ".heic":
+        raise RuntimeError(
+            "That is an iPhone HEIC photo, even though it is named "
+            f"'{filename}' — no model reads HEIC. On the phone: Settings > "
+            "Camera > Formats > Most Compatible, or open it and share as JPEG. "
+            "A screenshot of the same thing also works.")
+    if real:
+        ext = real
+    elif ext not in _IMAGE_TYPES and ext != ".pdf":
+        raise RuntimeError(f"'{ext or filename}' is not a readable image — "
+                           f"send a PNG/JPG screenshot or a PDF sheet.")
+
     is_pdf = ext == ".pdf"
     if not is_pdf and ext not in _IMAGE_TYPES:
         raise RuntimeError(f"'{ext or filename}' is not a readable image — "
