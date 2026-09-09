@@ -4425,7 +4425,41 @@ function downloadUrl(){
   return u;
 }
 
+/**
+ * Dates P6 will refuse, before the file leaves.
+ *
+ * P6 stores dates in SQL Server `datetime`, which starts at 1753-01-01. One
+ * date below that floor fails the WHOLE import and P6 reports only "the
+ * conversion of a datetime2 data type to a datetime data type resulted in an
+ * out-of-range value" — naming no activity, no field and no value. Finding it
+ * afterwards means bisecting a 2,400-row schedule by hand.
+ */
+async function checkExportDates(){
+  try{
+    const d = await fetch('/api/export/check').then(_readJson);
+    if(d.error || !d.count) return true;
+    const rows = d.problems.slice(0, 12)
+      .map(p => `  ${p.activity_id}  ${p.field} = ${p.value}\n      ${p.why}`)
+      .join('\n');
+    const more = d.count > 12 ? `\n  …and ${d.count - 12} more` : '';
+    addMsg('system',
+      `<strong>⚠ ${d.count} date${d.count === 1 ? '' : 's'} P6 cannot store.</strong>`
+      + `<pre style="white-space:pre-wrap;font-size:11px;margin:6px 0 0;">`
+      + escHtml(rows + more) + `</pre>`
+      + `<div style="font-size:11px;color:var(--text3);margin-top:6px;">`
+      + `They are left blank in the export rather than failing your import. `
+      + `Fixing the dates is the real answer — ask the agent to.</div>`);
+    return confirm(
+      `${d.count} date${d.count === 1 ? '' : 's'} in this schedule are outside `
+      + `the range P6 can store (it starts at 1753-01-01).\n\n`
+      + `They will be left BLANK in the export. Sent as they are, P6 fails the `
+      + `whole import with an out-of-range error that names nothing.\n\n`
+      + `The list is in the chat. Download anyway?`);
+  }catch(_){ return true; }   // never let the check block an export
+}
+
 async function startDownload() {
+  if(!(await checkExportDates())) return;
   try {
     const report = await fetch('/api/report').then(_readJson);
     if (report.error) { window.location.href = downloadUrl(); return; }

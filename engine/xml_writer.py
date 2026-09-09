@@ -28,6 +28,7 @@ Built to exactly mirror the structure of a native P6 V23.12 XML export:
 
 import uuid
 import threading
+from datetime import date as _date
 import xml.etree.ElementTree as ET
 from xml.dom import minidom
 from typing import Optional, List, Any, Dict, Tuple
@@ -511,22 +512,107 @@ def _guid() -> str:
     return "{" + str(uuid.uuid4()).upper() + "}"
 
 
-def _dt_start(d: Optional[str]) -> Optional[str]:
-    if not d:
-        return None
-    try:
-        return d[:10] + "T08:00:00"
-    except Exception:
-        return None
+# P6 stores dates in SQL Server `datetime`, whose range starts at 1753-01-01 —
+# not the 0001-01-01 that `datetime2` and Python's date both allow. A date
+# below that floor imports as:
+#
+#   XMLImporterException: executeUpdateBatch: The conversion of a datetime2
+#   data type to a datetime data type resulted in an out-of-range value.
+#
+# which names no activity, no field and no date, and fails the whole batch
+# after it has run. The upper bound is 9999-12-31 and is not reachable in
+# practice; the floor is, because a zeroed or malformed date lands there.
+_SQL_DATETIME_MIN = "1753-01-01"
+_SQL_DATETIME_MAX = "9999-12-31"
+
+# Dates the writer refused, as (why, value). Collected per-write so the caller
+# can tell the user which rows were dropped instead of shipping an XML that
+# P6 rejects — see date_problems().
+_BAD_DATES: List[Tuple[str, str]] = []
 
 
-def _dt_finish(d: Optional[str]) -> Optional[str]:
+def _valid_date(d: Optional[str], where: str = "") -> Optional[str]:
+    """
+    The date part of `d`, or None when P6 could not store it.
+
+    Emitting it anyway is the worse option by a distance: the import fails as
+    a batch, so one bad row takes the whole schedule with it, and the message
+    P6 gives back does not say which row.
+    """
     if not d:
         return None
+    s = str(d)[:10]
     try:
-        return d[:10] + "T17:00:00"
-    except Exception:
+        _date.fromisoformat(s)
+    except ValueError:
+        _BAD_DATES.append((where or "date", str(d)))
         return None
+    if s < _SQL_DATETIME_MIN or s > _SQL_DATETIME_MAX:
+        _BAD_DATES.append((where or "date", s))
+        return None
+    return s
+
+
+def _dt_start(d: Optional[str], where: str = "") -> Optional[str]:
+    s = _valid_date(d, where)
+    return s + "T08:00:00" if s else None
+
+
+def _dt_finish(d: Optional[str], where: str = "") -> Optional[str]:
+    s = _valid_date(d, where)
+    return s + "T17:00:00" if s else None
+
+
+def date_problems(project: Project) -> List[Dict[str, str]]:
+    """
+    Every date in the project P6 could not store, named by activity and field.
+
+    Read-only, and worth running BEFORE handing someone an export: P6 fails
+    the import as a batch and reports only "the conversion of a datetime2 data
+    type to a datetime data type resulted in an out-of-range value" — no
+    activity, no field, no value. One bad row takes the whole schedule with
+    it and gives you nothing to go on.
+    """
+    fields = ("planned_start", "planned_finish", "actual_start",
+              "actual_finish", "early_start", "early_finish",
+              "late_start", "late_finish", "constraint_date")
+    out: List[Dict[str, str]] = []
+    for a in getattr(project, "activities", None) or []:
+        for f in fields:
+            raw = getattr(a, f, None)
+            if not raw:
+                continue
+            s = str(raw)[:10]
+            why = ""
+            try:
+                _date.fromisoformat(s)
+            except ValueError:
+                why = "not a real date"
+            else:
+                if s < _SQL_DATETIME_MIN:
+                    why = f"before {_SQL_DATETIME_MIN}, which is as far back as P6 stores"
+                elif s > _SQL_DATETIME_MAX:
+                    why = f"after {_SQL_DATETIME_MAX}"
+            if why:
+                out.append({"activity_id": a.activity_id, "name": a.name,
+                            "field": f, "value": str(raw), "why": why})
+    for f, label in (("data_date", "data date"),
+                     ("planned_start", "project start"),
+                     ("must_finish_by", "must finish by")):
+        raw = getattr(project, f, None)
+        if not raw:
+            continue
+        s = str(raw)[:10]
+        try:
+            _date.fromisoformat(s)
+            bad = s < _SQL_DATETIME_MIN or s > _SQL_DATETIME_MAX
+        except ValueError:
+            bad = True
+        if bad:
+            out.append({"activity_id": "—", "name": f"project {label}",
+                        "field": f, "value": str(raw),
+                        "why": "P6 cannot store this date"})
+    return out
 
 
 def _activity_type_name(act: Any) -> str:

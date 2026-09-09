@@ -3437,6 +3437,39 @@ def download():
         return jsonify({"error": f"Export failed: {str(e)}"}), 500
 
 
+@app.route("/api/export/check", methods=["GET"])
+def export_check():
+    """
+    Dates P6 will refuse, named, before the export leaves.
+
+    P6 stores dates in SQL Server `datetime`, which starts at 1753-01-01. A
+    date below that floor fails the import as a BATCH and reports only "the
+    conversion of a datetime2 data type to a datetime data type resulted in an
+    out-of-range value" — no activity, no field, no value. One bad row takes
+    the whole schedule with it and leaves nothing to go on.
+    """
+    sess = _get_session()
+    if sess is None or sess["project"] is None:
+        return jsonify({"error": "No schedule loaded"}), 400
+    from engine.xml_writer import date_problems
+    problems = date_problems(sess["project"])
+    if problems:
+        _append_chat(
+            "system_result",
+            f"Export check — {len(problems)} date(s) P6 cannot store",
+            context=("Dates outside SQL Server's `datetime` range (which starts "
+                     "1753-01-01) were found before export. P6 fails the whole "
+                     "import on these and names none of them:\n"
+                     + "\n".join(f"  {p['activity_id']} {p['field']} = "
+                                 f"{p['value']} — {p['why']}"
+                                 for p in problems[:20])
+                     + "\nThe export leaves them blank rather than shipping a "
+                       "file P6 will reject. Fixing the dates is the real "
+                       "answer; offer to do it."))
+    return jsonify({"success": True, "problems": problems,
+                    "count": len(problems)})
+
+
 @app.route("/api/schedule/preview", methods=["GET"])
 def schedule_preview_route():
     """
