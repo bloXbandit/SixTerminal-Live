@@ -3437,6 +3437,46 @@ def download():
         return jsonify({"error": f"Export failed: {str(e)}"}), 500
 
 
+@app.route("/api/download/excel", methods=["GET"])
+def download_excel():
+    """
+    The field progress tracker, built from the schedule loaded right now.
+
+    P6 is not where a foreman reports progress, and a tracker cut by hand is
+    stale the moment the schedule moves. This is the same button as the XML
+    export pointed the other way: the workbook goes out to the field, the
+    Update tab comes back, and the XML export closes the loop.
+
+    Nothing about any one job is baked in — the code, phases, areas, contract
+    dates and driving chains all come out of the project handed in — so this
+    works on the next job without a code change. `code`, `title` and `crew`
+    are the only preferences, and all three have defaults.
+    """
+    sess = _get_session()
+    if sess is None or sess["project"] is None:
+        return jsonify({"error": "No schedule loaded"}), 400
+    from engine.excel_export import build_workbook
+    project = sess["project"]
+    stem = Path(sess.get("source_name", "schedule")).stem
+    tmp = tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False)
+    tmp.close()
+    try:
+        build_workbook(
+            project, tmp.name,
+            project_code=(request.args.get("code") or None),
+            title=(request.args.get("title") or None),
+            own_crew=(request.args.get("crew") or None) or "Richards",
+        )
+        return send_file(
+            tmp.name, as_attachment=True,
+            download_name=f"{stem}_Progress_Tracker.xlsx",
+            mimetype=("application/vnd.openxmlformats-officedocument."
+                      "spreadsheetml.sheet"))
+    except Exception as e:
+        return jsonify({"error": f"Excel export failed: {str(e)}",
+                        "trace": traceback.format_exc()}), 500
+
+
 @app.route("/api/export/check", methods=["GET"])
 def export_check():
     """

@@ -2176,6 +2176,13 @@
       <button class="btn btn-primary btn-full" id="download-btn" disabled onclick="startDownload()">
         ↓ Export XML
       </button>
+      <!-- The same export pointed at the field instead of at P6. The workbook
+           is built from the schedule loaded right now, so it is never stale. -->
+      <button class="btn btn-ghost btn-full" id="excel-btn" disabled
+              onclick="startExcelDownload()"
+              title="Build the field progress tracker from the schedule as it stands now — phases, areas, milestones, driving chains and contract dates all come from this project. Foremen fill the Update tab; paste it back to bring the actuals in.">
+        ↓ Export Excel tracker
+      </button>
       <!-- P6 can reject a whole import over its user-defined fields alone.
            The schedule itself is fine, so this writes it without them. -->
       <label style="display:flex;align-items:center;gap:6px;font-size:10.5px;
@@ -4457,6 +4464,65 @@ async function checkExportDates(){
       + `The list is in the chat. Download anyway?`);
   }catch(_){ return true; }   // never let the check block an export
 }
+
+/**
+ * The field tracker, built from the schedule as it stands.
+ *
+ * Unlike the XML export this takes a few seconds — a 2,400-activity job is
+ * around 8,000 formulas — so it cannot be a bare `location.href`, which shows
+ * nothing at all while the server works and reads as a dead button. It is
+ * fetched as a blob with the button held, and any server-side failure comes
+ * back as JSON and is shown rather than saved as a corrupt .xlsx.
+ *
+ * The tracker reports progress; it does not reschedule anything. Nothing here
+ * touches the loaded project.
+ */
+async function startExcelDownload(){
+  const btn = document.getElementById('excel-btn');
+  if(!btn || btn.disabled) return;
+  const label = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = '⏳ Building tracker…';
+  try{
+    const res = await fetch('/api/download/excel');
+    const type = res.headers.get('content-type') || '';
+    if(!res.ok || type.indexOf('json') >= 0){
+      let msg = 'Excel export failed';
+      try { msg = (await res.json()).error || msg; } catch(_){}
+      addMsg('system', `<strong>⚠ ${escHtml(msg)}</strong>`);
+      flashSched('Excel export failed');
+      return;
+    }
+    // The filename the server chose, so it carries the source file's name.
+    let name = 'Progress_Tracker.xlsx';
+    const cd = res.headers.get('content-disposition') || '';
+    const m = /filename\*?=(?:UTF-8'')?"?([^";]+)"?/i.exec(cd);
+    if(m) name = decodeURIComponent(m[1]);
+    const url = URL.createObjectURL(await res.blob());
+    const a = document.createElement('a');
+    a.href = url; a.download = name;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
+    flashSched('Tracker exported — ' + name);
+  }catch(e){
+    addMsg('system', `<strong>⚠ Excel export failed:</strong> ${escHtml(String(e))}`);
+  }finally{
+    btn.disabled = false;
+    btn.textContent = label;
+  }
+}
+
+/* The Excel button is available exactly when the XML one is. Mirroring it here
+   rather than at each of the four places that enable it keeps that logic
+   untouched and means a fifth site would be picked up for free. */
+(function mirrorExportButtons(){
+  const src = document.getElementById('download-btn');
+  const dst = document.getElementById('excel-btn');
+  if(!src || !dst || typeof MutationObserver === 'undefined') return;
+  const sync = () => { if(dst.textContent.indexOf('⏳') < 0) dst.disabled = src.disabled; };
+  new MutationObserver(sync).observe(src, {attributes: true, attributeFilter: ['disabled']});
+  sync();
+})();
 
 async function startDownload() {
   if(!(await checkExportDates())) return;
