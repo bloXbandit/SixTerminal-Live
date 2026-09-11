@@ -4083,6 +4083,102 @@ def apply_relations():
                         "trace": traceback.format_exc()}), 500
 
 
+@app.route("/api/resources/audit", methods=["GET"])
+def resources_audit():
+    """
+    Where the labour stands, before anything is changed.
+
+    Answers "how much was lost and how much can be got back" in one call
+    rather than by scrolling two thousand rows. The number that matters is
+    started_without_actual: work already under way carrying no record of what
+    it cost, which is exactly what an emptied usage profile looks like.
+    """
+    sess = _get_session()
+    if sess is None or sess["project"] is None:
+        return jsonify({"error": "No schedule loaded"}), 400
+    from engine.resource_restore import audit
+    return jsonify({"success": True,
+                    "audit": audit(sess["project"],
+                                   request.args.get("crew_field") or None)})
+
+
+@app.route("/api/resources/restore", methods=["POST"])
+def resources_restore():
+    """
+    Put the labour back — from a donor schedule, from crew counts, or both.
+
+    Reports by default and only changes the schedule when `apply` is true, so
+    the split between "real data from the donor", "derived from a headcount"
+    and "neither, a person has to decide" can be read before agreeing to it.
+    Body: {
+      "donor_project_id" (optional — another loaded schedule that still has
+                          its assignments), "crew_field" (optional),
+      "overwrite": false, "apply": false,
+      "resource_id", "resource_name"   (what a derived crew is called)
+    }
+    """
+    sess = _get_session()
+    if sess is None or sess["project"] is None:
+        return jsonify({"error": "No schedule loaded"}), 400
+    from engine.resource_restore import plan as _plan, restore as _restore
+
+    data = request.get_json() or {}
+    donor = None
+    donor_pid = data.get("donor_project_id")
+    if donor_pid:
+        d = _projects.get(donor_pid)
+        if not d or not d["project"]:
+            return jsonify({"error": f"Donor project '{donor_pid}' not found"}), 404
+        if d["project"] is sess["project"]:
+            return jsonify({"error": "The donor and the target are the same "
+                                     "schedule"}), 400
+        donor = d["project"]
+
+    kw = dict(crew_field=data.get("crew_field") or None,
+              overwrite=bool(data.get("overwrite")))
+    try:
+        if not data.get("apply"):
+            return jsonify({"success": True, "applied": False,
+                            "plan": _plan(sess["project"], donor, **kw)})
+
+        pid = _active_id[0]
+        stack = sess["undo_stack"]
+        stack.append(("Restore resources", _snapshot_project(sess["project"])))
+        if len(stack) > _MAX_UNDO:
+            stack.pop(0)
+
+        ok, msg, detail = _restore(
+            sess["project"], donor,
+            resource_id=(data.get("resource_id") or "ELEC"),
+            resource_name=(data.get("resource_name") or "Electrician"), **kw)
+        if not ok:
+            stack.pop()
+            return jsonify({"error": msg}), 400
+
+        sess["redo_stack"].clear()
+        sess["last_undone"] = None
+        sess["edit_history"].append({
+            "instruction": f"[restore-resources] {msg}", "commands": [],
+            "results": [{"action": "restore_resources", "success": True,
+                         "message": msg}],
+        })
+        _mark_dirty(pid)
+        _append_chat("system_result", msg,
+                     context=("Labour was put back on the schedule. The donor's "
+                              "assignments are real data; anything marked "
+                              "'crew' was derived as headcount x duration and "
+                              "split by the activity's own progress. Activities "
+                              "with neither were left alone — offer to list "
+                              "them if asked."))
+        return jsonify({"success": True, "applied": True, "message": msg,
+                        "plan": detail,
+                        "undo_count": len(sess["undo_stack"]),
+                        "redo_count": len(sess["redo_stack"])})
+    except Exception as e:
+        return jsonify({"error": f"Restore failed: {str(e)}",
+                        "trace": traceback.format_exc()}), 500
+
+
 @app.route("/api/revise", methods=["POST"])
 def revise_project():
     """

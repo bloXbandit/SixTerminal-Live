@@ -238,6 +238,38 @@
     #revise-btn:hover:not(:disabled){border-color:var(--purple,#a371f7);background:rgba(163,113,247,.08);}
     #revise-btn:disabled{opacity:.35;cursor:not-allowed;}
 
+    #resources-btn{
+      width:100%;display:flex;align-items:center;justify-content:center;gap:5px;
+      margin-top:6px;padding:7px;border-radius:var(--r-sm);
+      border:1px dashed rgba(255,196,61,.3);background:transparent;
+      color:var(--yellow,#ffc43d);font-size:11px;cursor:pointer;font-family:var(--font);
+      transition:border-color .15s,background .15s,opacity .15s;
+    }
+    #resources-btn:hover:not(:disabled){border-color:var(--yellow,#ffc43d);background:rgba(255,196,61,.08);}
+    #resources-btn:disabled{opacity:.35;cursor:not-allowed;}
+
+    .res-modal{position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:200;
+      display:flex;align-items:center;justify-content:center;}
+    .res-inner{background:var(--surface2,#111820);border:1px solid var(--border2);
+      border-radius:var(--r-md,8px);padding:20px;width:min(680px,92vw);
+      max-height:86vh;overflow:auto;}
+    .res-inner h3{margin:0 0 4px;font-size:15px;color:var(--text);}
+    .res-sub{font-size:11px;color:var(--text3);margin-bottom:14px;line-height:1.5;}
+    .res-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:14px;}
+    .res-card{background:var(--surface3,#0d1117);border:1px solid var(--border);
+      border-radius:6px;padding:9px 11px;}
+    .res-card .v{font-size:19px;font-weight:700;font-family:var(--mono);line-height:1;}
+    .res-card .l{font-size:9px;letter-spacing:.1em;text-transform:uppercase;
+      color:var(--text3);margin-top:4px;}
+    .res-row{display:flex;align-items:center;gap:8px;margin:9px 0;font-size:11.5px;
+      color:var(--text2);}
+    .res-row select{flex:1;background:var(--surface3,#0d1117);color:var(--text);
+      border:1px solid var(--border2);border-radius:4px;font-size:11px;padding:4px 6px;}
+    .res-plan{background:var(--surface3,#0d1117);border:1px solid var(--border);
+      border-radius:6px;padding:10px 12px;font-size:11.5px;line-height:1.7;margin:12px 0;}
+    .res-plan b{font-family:var(--mono);}
+    .res-actions{display:flex;gap:8px;justify-content:flex-end;margin-top:14px;}
+
     /* Metric cards */
     .metric-grid{display:grid;grid-template-columns:1fr 1fr;gap:6px;}
     .metric-card{
@@ -2151,6 +2183,13 @@
         <span>⟳</span> Revise from newer file
       </button>
       <input type="file" id="revise-input" accept=".xer,.xml" style="display:none;" />
+      <!-- Labour that an earlier round trip stripped. Reports first: the split
+           between real donor data, derived crew counts and "neither" is the
+           whole decision, and it should be read before it is agreed to. -->
+      <button id="resources-btn" disabled onclick="openResourceRestore()"
+              title="Check what labour this schedule is carrying, and put back what an earlier export stripped — from another loaded schedule, from crew counts, or both.">
+        <span>⚡</span> Resources &amp; man-hours
+      </button>
     </div>
 
     <div class="sidebar-section" id="project-info">
@@ -3016,6 +3055,147 @@ async function reviseProject(file) {
   } catch(e) {
     document.getElementById('upload-loading')?.remove();
     addMsg('system', errorCard(e.message));
+  }
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   Resources & man-hours — checking what labour is here, and putting back what
+   an earlier round trip stripped.
+
+   Report first, always. The split between "real data from a donor schedule",
+   "derived from a crew count" and "neither, a person has to decide" IS the
+   decision, and it has to be readable before anything is written. Applying is
+   a second, deliberate click, and one Undo away after that.
+   ═══════════════════════════════════════════════════════════════════════════ */
+let _resModalEl = null;
+
+async function openResourceRestore() {
+  if (_resModalEl) _resModalEl.remove();
+  let audit, projects = [];
+  try {
+    audit = (await fetch('/api/resources/audit').then(_readJson)).audit;
+    projects = (await fetch('/api/projects').then(_readJson)).projects || [];
+  } catch(e) { flashSched(e.message, true); return; }
+  if (!audit) { flashSched('Could not read the schedule', true); return; }
+
+  const others = projects.filter(p => p.id !== _activeProjectId);
+  const n = v => (v || 0).toLocaleString();
+  const m = document.createElement('div');
+  m.className = 'res-modal';
+  m.innerHTML = `
+    <div class="res-inner">
+      <h3>⚡ Resources &amp; man-hours</h3>
+      <div class="res-sub">
+        What this schedule is carrying right now. <b>Started without hours</b> is
+        the one that empties a usage profile — work already under way with no
+        record of what it cost.
+      </div>
+      <div class="res-grid">
+        <div class="res-card"><div class="v">${n(audit.assignments)}</div>
+          <div class="l">Resource assignments</div></div>
+        <div class="res-card"><div class="v">${n(audit.with_crew_count)}</div>
+          <div class="l">Carrying a crew count</div></div>
+        <div class="res-card"><div class="v" style="color:${audit.started_without_actual ? 'var(--red)' : 'var(--green)'};">${n(audit.started_without_actual)}</div>
+          <div class="l">Started without hours</div></div>
+        <div class="res-card"><div class="v" style="color:${audit.orphaned_budget ? 'var(--orange)' : 'var(--text)'};">${n(audit.orphaned_budget)}</div>
+          <div class="l">Budget with no assignment</div></div>
+      </div>
+      <div class="res-row">
+        <span style="white-space:nowrap;">Donor schedule</span>
+        <select id="res-donor">
+          <option value="">— none, use crew counts only —</option>
+          ${others.map(p => `<option value="${escAttr(p.id)}">${escHtml(p.project_name)} (${p.activity_count} acts)</option>`).join('')}
+        </select>
+      </div>
+      <div class="res-sub" style="margin:0 0 6px;">
+        A donor is an earlier export that still has its assignments — real data,
+        used wherever it reaches. Crew counts${audit.crew_field ? ` (read from <b>${escHtml(audit.crew_field)}</b>)` : ''}
+        fill the rest as headcount × duration, split by each activity's own progress.
+        Anything with neither is left alone rather than guessed at.
+      </div>
+      <label class="res-row" style="cursor:pointer;">
+        <input type="checkbox" id="res-overwrite">
+        <span>Replace labour that is already there (otherwise only gaps are filled)</span>
+      </label>
+      <div id="res-plan" class="res-plan">Checking…</div>
+      <div class="res-actions">
+        <button class="btn btn-ghost" onclick="closeResourceRestore()">Close</button>
+        <button class="btn btn-primary" id="res-apply" disabled
+                onclick="applyResourceRestore()">Apply</button>
+      </div>
+    </div>`;
+  document.body.appendChild(m);
+  _resModalEl = m;
+  m.addEventListener('click', e => { if (e.target === m) closeResourceRestore(); });
+  document.getElementById('res-donor').addEventListener('change', refreshResourcePlan);
+  document.getElementById('res-overwrite').addEventListener('change', refreshResourcePlan);
+  refreshResourcePlan();
+}
+
+function closeResourceRestore() {
+  if (_resModalEl) _resModalEl.remove();
+  _resModalEl = null;
+}
+
+function _resBody(apply) {
+  return {
+    donor_project_id: document.getElementById('res-donor').value || null,
+    overwrite: document.getElementById('res-overwrite').checked,
+    apply: !!apply,
+  };
+}
+
+async function refreshResourcePlan() {
+  const box = document.getElementById('res-plan');
+  const btn = document.getElementById('res-apply');
+  box.textContent = 'Checking…';
+  btn.disabled = true;
+  try {
+    const d = await fetch('/api/resources/restore', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(_resBody(false)),
+    }).then(_readJson);
+    if (d.error) { box.innerHTML = `<span style="color:var(--red);">${escHtml(d.error)}</span>`; return; }
+    const c = d.plan.counts || {}, h = d.plan.hours || {};
+    const hrs = v => v ? ` — <b>${Math.round(v).toLocaleString()}</b> man-hours` : '';
+    const line = (k, label, colour) => (c[k] ? `<div style="color:${colour};">
+      <b>${c[k].toLocaleString()}</b> ${label}${hrs(h[k])}</div>` : '');
+    box.innerHTML =
+        line('donor', 'from the donor schedule (real data)', 'var(--green)')
+      + line('crew',  'derived from crew counts', 'var(--yellow,#ffc43d)')
+      + line('keep',  'already have labour — left as they are', 'var(--text3)')
+      + line('none',  'have neither; left alone for you to decide', 'var(--text3)')
+      + (c.none ? `<div style="font-size:10.5px;color:var(--text3);margin-top:6px;">
+           e.g. ${escHtml((d.plan.uncovered || []).slice(0, 6).join(', '))}</div>` : '')
+      + (!(c.donor || c.crew) ? `<div style="color:var(--text3);">Nothing to put back —
+           either it is all here already, or there is no donor and no crew count to work from.</div>` : '');
+    btn.disabled = !(c.donor || c.crew);
+  } catch(e) {
+    box.innerHTML = `<span style="color:var(--red);">${escHtml(e.message)}</span>`;
+  }
+}
+
+async function applyResourceRestore() {
+  const btn = document.getElementById('res-apply');
+  btn.disabled = true;
+  btn.textContent = 'Applying…';
+  try {
+    const d = await fetch('/api/resources/restore', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(_resBody(true)),
+    }).then(_readJson);
+    if (d.error) { flashSched(d.error, true); btn.disabled = false; btn.textContent = 'Apply'; return; }
+    closeResourceRestore();
+    addMsg('system',
+      `<strong>⚡ ${escHtml(d.message)}</strong>`
+      + `<div style="font-size:11px;color:var(--text3);margin-top:5px;">`
+      + `${Math.round(d.plan.total_hours || 0).toLocaleString()} budgeted man-hours on the schedule now. `
+      + `Undo puts it back the way it was.</div>`);
+    flashSched(d.message);
+    markScheduleStale();
+  } catch(e) {
+    flashSched(e.message, true);
+    btn.disabled = false; btn.textContent = 'Apply';
   }
 }
 
@@ -4604,7 +4784,7 @@ async function startExcelDownload(){
 (function mirrorExportButtons(){
   const src = document.getElementById('download-btn');
   if(!src || typeof MutationObserver === 'undefined') return;
-  const targets = ['excel-btn', 'revise-btn']
+  const targets = ['excel-btn', 'revise-btn', 'resources-btn']
     .map(id => document.getElementById(id)).filter(Boolean);
   if(!targets.length) return;
   const sync = () => targets.forEach(dst => {
