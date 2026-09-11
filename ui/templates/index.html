@@ -226,6 +226,18 @@
     }
     #new-project-btn:hover{border-color:var(--accent);color:var(--accent);background:var(--accent-glow2);}
 
+    /* Same shape as New from Description — it is the same kind of choice, made
+       about a project that already exists rather than one that does not. */
+    #revise-btn{
+      width:100%;display:flex;align-items:center;justify-content:center;gap:5px;
+      margin-top:6px;padding:7px;border-radius:var(--r-sm);
+      border:1px dashed rgba(163,113,247,.3);background:transparent;
+      color:var(--purple,#a371f7);font-size:11px;cursor:pointer;font-family:var(--font);
+      transition:border-color .15s,color .15s,background .15s,opacity .15s;
+    }
+    #revise-btn:hover:not(:disabled){border-color:var(--purple,#a371f7);background:rgba(163,113,247,.08);}
+    #revise-btn:disabled{opacity:.35;cursor:not-allowed;}
+
     /* Metric cards */
     .metric-grid{display:grid;grid-template-columns:1fr 1fr;gap:6px;}
     .metric-card{
@@ -2131,6 +2143,14 @@
       <button id="new-project-btn" onclick="openModal('create-modal')">
         <span>✦</span> New from Description
       </button>
+      <!-- Dropping a file opens a SECOND project, which is right for comparing
+           two revs and wrong when you meant "this job, updated". This is the
+           other intent, said out loud. -->
+      <button id="revise-btn" disabled onclick="document.getElementById('revise-input').click()"
+              title="Move this project forward onto a newer XER or XML, in place — same tab, same chat, what you taught me kept. One Undo puts the old schedule back.">
+        <span>⟳</span> Revise from newer file
+      </button>
+      <input type="file" id="revise-input" accept=".xer,.xml" style="display:none;" />
     </div>
 
     <div class="sidebar-section" id="project-info">
@@ -2586,6 +2606,11 @@
         <div class="cmp-stat removed"><span class="cmp-stat-val" id="cmp-stat-removed">0</span><span class="cmp-stat-label">Removed</span></div>
         <div class="cmp-stat changed"><span class="cmp-stat-val" id="cmp-stat-changed">0</span><span class="cmp-stat-label">Changed</span></div>
         <div class="cmp-stat unchanged"><span class="cmp-stat-val" id="cmp-stat-unchanged">0</span><span class="cmp-stat-label">Unchanged</span></div>
+        <!-- Logic is counted on its own. A rev that moved a date by adding a
+             predecessor reads the same as one moved by hand until you see it. -->
+        <div class="cmp-stat" title="Logic ties added, removed or retyped between the two schedules">
+          <span class="cmp-stat-val" id="cmp-stat-logic" style="color:var(--purple,#a371f7);">0</span>
+          <span class="cmp-stat-label">Logic ⛓</span></div>
       </div>
       <div class="cmp-body" id="cmp-body">
         <div class="cmp-empty">Select two loaded schedules above and click Compare.</div>
@@ -2932,6 +2957,66 @@ async function uploadFile(file) {
     onProjectLoaded(d);
     renderServerChat(d.chat);
   } catch(e) { document.getElementById('upload-loading')?.remove(); addMsg('system', errorCard(e.message)); }
+}
+
+/**
+ * Move this project forward onto a newer file, in place.
+ *
+ * A plain drop opens a SECOND project — right when you want two revs side by
+ * side to compare, wrong when what you meant was "this job, updated", which
+ * left the brain attached to a schedule nobody was looking at any more.
+ *
+ * This keeps the slot: same project, same chat, same position in the switcher.
+ * The schedule underneath is swapped and the swap is one Undo away, so it is
+ * confirmed rather than guarded — the way out is cheap and obvious.
+ */
+const reviseInput = document.getElementById('revise-input');
+if (reviseInput) {
+  reviseInput.addEventListener('change', e => {
+    const file = e.target.files?.[0];
+    e.target.value = '';        // so the same file can be picked twice
+    if (file) reviseProject(file);
+  });
+}
+
+async function reviseProject(file) {
+  const name = document.getElementById('project-badge')?.textContent?.trim() || 'this project';
+  if (!confirm(
+      `Replace the schedule in "${name}" with ${file.name}?\n\n`
+      + `The new file wins outright — nothing is merged. You keep the same `
+      + `project tab, its chat, and everything you taught me about the job.\n\n`
+      + `Undo puts the old schedule straight back.`)) return;
+
+  const fd = new FormData();
+  fd.append('file', file);
+  if (_activeProjectId) fd.append('project_id', _activeProjectId);
+  const box = document.createElement('div');
+  box.id = 'upload-loading';
+  box.style.cssText = 'position:fixed;bottom:80px;left:50%;transform:translateX(-50%);background:var(--surface2);border:1px solid var(--border2);border-radius:var(--r-md);padding:10px 18px;font-size:12px;color:var(--text2);z-index:50;display:flex;align-items:center;gap:8px;';
+  box.innerHTML = `<span class="spinner"></span> Revising onto <strong style="color:var(--text)">${escHtml(file.name)}</strong>…`;
+  document.body.appendChild(box);
+  try {
+    const d = await fetch('/api/revise', {method:'POST', body: fd}).then(_readJson);
+    document.getElementById('upload-loading')?.remove();
+    if (d.error) { addMsg('system', errorCard(d.error)); return; }
+    clearMessages();
+    onProjectLoaded(d);
+    renderServerChat(d.chat);
+    // What actually moved, in one line, rather than leaving it to be found.
+    const s = d.diff;
+    if (s) {
+      const logic = (s.logic_added || 0) + (s.logic_removed || 0) + (s.logic_changed || 0);
+      addMsg('system',
+        `<strong>⟳ Revised onto ${escHtml(d.source_name || file.name)}</strong>`
+        + `<div style="font-size:11px;color:var(--text3);margin-top:5px;">`
+        + `${s.added} activit${s.added === 1 ? 'y' : 'ies'} added · ${s.removed} removed · `
+        + `${s.changed} changed · ${logic} logic tie${logic === 1 ? '' : 's'} moved`
+        + `<br>Undo restores the schedule you had.</div>`);
+    }
+  } catch(e) {
+    document.getElementById('upload-loading')?.remove();
+    addMsg('system', errorCard(e.message));
+  }
 }
 
 // Render chat entries exactly as the server recorded them — the live view
@@ -4512,14 +4597,19 @@ async function startExcelDownload(){
   }
 }
 
-/* The Excel button is available exactly when the XML one is. Mirroring it here
-   rather than at each of the four places that enable it keeps that logic
+/* The Excel export and Revise buttons are available exactly when the XML export
+   is — all three need a schedule loaded and nothing else. Mirroring here rather
+   than at each of the four places that enable the XML button keeps that logic
    untouched and means a fifth site would be picked up for free. */
 (function mirrorExportButtons(){
   const src = document.getElementById('download-btn');
-  const dst = document.getElementById('excel-btn');
-  if(!src || !dst || typeof MutationObserver === 'undefined') return;
-  const sync = () => { if(dst.textContent.indexOf('⏳') < 0) dst.disabled = src.disabled; };
+  if(!src || typeof MutationObserver === 'undefined') return;
+  const targets = ['excel-btn', 'revise-btn']
+    .map(id => document.getElementById(id)).filter(Boolean);
+  if(!targets.length) return;
+  const sync = () => targets.forEach(dst => {
+    if(dst.textContent.indexOf('⏳') < 0) dst.disabled = src.disabled;
+  });
   new MutationObserver(sync).observe(src, {attributes: true, attributeFilter: ['disabled']});
   sync();
 })();
@@ -9158,6 +9248,12 @@ function renderCompare(d) {
   document.getElementById('cmp-stat-removed').textContent = s.removed;
   document.getElementById('cmp-stat-changed').textContent = s.changed;
   document.getElementById('cmp-stat-unchanged').textContent = s.unchanged;
+  const logicN = (s.logic_added || 0) + (s.logic_removed || 0) + (s.logic_changed || 0);
+  const logicEl = document.getElementById('cmp-stat-logic');
+  logicEl.textContent = logicN;
+  logicEl.parentElement.title =
+    `${s.logic_added || 0} tie(s) added, ${s.logic_removed || 0} removed, `
+    + `${s.logic_changed || 0} retyped or relagged  (${s.total_rels_a || 0} → ${s.total_rels_b || 0} total)`;
 
   const body = document.getElementById('cmp-body');
   const sections = diff.sections || [];
@@ -9181,6 +9277,9 @@ function renderCompare(d) {
     if (sec.removed.length) counts.push(`<span class="removed">-${sec.removed.length}</span>`);
     if (sec.changed.length) counts.push(`<span class="changed">~${sec.changed.length}</span>`);
     if (sec.unchanged_count) counts.push(`<span style="color:var(--text3);">=${sec.unchanged_count}</span>`);
+    const relCount = (sec.logic_added || []).length + (sec.logic_removed || []).length
+                   + (sec.logic_changed || []).length;
+    if (relCount) counts.push(`<span style="color:var(--purple,#a371f7);" title="logic ties added, removed or retyped">⛓${relCount}</span>`);
 
     const hasContent = sec.added.length || sec.removed.length || sec.changed.length;
     const stop = 'event.stopPropagation();';
@@ -9190,6 +9289,8 @@ function renderCompare(d) {
       onclick="${stop}openReplaceModal('${escAttr(sec.wbs_code)}','${escAttr(sec.wbs_name)}')" title="Replace A's version of this section with B's, keeping the surrounding logic">⇄ Replace in A</button>` : '';
     const applyAllBtn = sec.changed.length ? `<button class="cmp-btn" style="margin-left:6px;padding:2px 10px;font-size:10px;"
       onclick="${stop}applyAllInSection('${escAttr(sec.wbs_code)}')" title="Pull every changed field in this section from B into A">✓ Apply all changes</button>` : '';
+    const applyLogicBtn = relCount ? `<button class="cmp-btn" style="margin-left:6px;padding:2px 10px;font-size:10px;"
+      onclick="${stop}applyAllLogicInSection('${escAttr(sec.wbs_code)}')" title="Pull every logic tie added, removed or retyped in this section from B into A">⛓ Apply all logic</button>` : '';
 
     let rows = '';
     if (sec.added.length) {
@@ -9233,13 +9334,49 @@ function renderCompare(d) {
       }
     }
 
+    // ── Logic ties ──────────────────────────────────────────────────────
+    // The field rows above cover dates and progress. A revision that moved a
+    // date by adding a predecessor looks identical to one moved by hand
+    // unless the ties are shown too, so they get their own rows, keyed on the
+    // activity IDs at each end rather than on uids (which are per-file).
+    const relRow = (r, kind) => {
+      const label = {added: 'TIE ADDED', removed: 'TIE REMOVED', changed: 'TIE CHANGED'}[kind];
+      const colour = {added: 'var(--green)', removed: 'var(--red)', changed: 'var(--orange)'}[kind];
+      const op = {added: 'add', removed: 'remove', changed: 'update'}[kind];
+      const what = kind === 'changed'
+        ? `<span class="cmp-diff-from">${escHtml((r.from_type || '') + (r.from_lag || ''))}</span>
+           <span class="cmp-arrow">→</span>
+           <span class="cmp-diff-to">${escHtml((r.type || '') + (r.lag || ''))}</span>`
+        : `<span style="color:${colour};">${escHtml((r.type || '') + (r.lag || ''))}</span>`;
+      return `<tr class="cmp-row-${kind === 'changed' ? 'changed' : kind}">
+        <td class="cmp-id">${escHtml(r.pred)}</td>
+        <td style="font-size:10px;color:var(--text3);">${escHtml(r.pred_name || '')}</td>
+        <td colspan="3" style="font-size:10px;">
+          <span class="cmp-arrow">⟶</span>
+          <span class="cmp-id">${escHtml(r.succ)}</span>
+          <span style="color:var(--text3);">${escHtml(r.succ_name || '')}</span>
+          &nbsp; ${what}
+        </td>
+        <td><button class="cmp-btn" style="padding:1px 8px;font-size:9px;"
+          onclick="applyRelation('${escAttr(r.pred)}','${escAttr(r.succ)}','${op}')"
+          title="${kind === 'removed'
+            ? 'Drop this tie from A, the way B has'
+            : 'Put the B version of this tie into A'}">apply →A</button></td>
+        <td style="color:${colour};font-size:10px;">${label}</td>
+      </tr>`;
+    };
+    for (const [kind, list] of [['added', sec.logic_added], ['removed', sec.logic_removed],
+                                ['changed', sec.logic_changed]]) {
+      for (const r of (list || [])) rows += relRow(r, kind);
+    }
+
     return `<div class="cmp-section">
       <div class="cmp-section-header" onclick="this.parentElement.classList.toggle('collapsed')">
         <span class="cmp-wbs-code">${escHtml(sec.wbs_code)}</span>
         <span class="cmp-wbs-name">${escHtml(sec.wbs_name)}</span>
         <span class="cmp-wbs-path">${escHtml(sec.wbs_path)}</span>
         <span class="cmp-section-counts">${counts.join(' ')}</span>
-        ${applyAllBtn}${copyBtn}${replaceBtn}
+        ${applyAllBtn}${applyLogicBtn}${copyBtn}${replaceBtn}
       </div>
       <div class="cmp-section-body">
         <table class="cmp-table">
@@ -9409,6 +9546,50 @@ function applyAllInSection(wbsCode) {
   if (!sec || !sec.changed.length) return;
   const changes = sec.changed.map(c => ({activity_id: c.activity_id, attrs: ['*']}));
   _postApply(changes, `Applied all changes in ${sec.wbs_name}`);
+}
+
+// ── Logic-tie apply: the half the field diff cannot see ─────────────────────
+async function _postApplyRelations(changes, label) {
+  const { src, tgt } = _cmpEnds();
+  if (!src || !tgt) { flashSched('Run a comparison first', true); return; }
+  try {
+    const d = await fetch('/api/apply-relations', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({source_project_id: src, target_project_id: tgt, changes}),
+    }).then(_readJson);
+    if (d.error) { flashSched(d.error, true); return; }
+    flashSched(label ? `${label} — ${d.message}` : d.message);
+    // Anything the engine would not do is worth seeing rather than guessing at
+    // from a count: a tie naming an activity this schedule does not have, or
+    // one already identical, is skipped and says which and why.
+    const skipped = d.detail?.skipped || [];
+    if (skipped.length) {
+      addMsg('system',
+        `<strong>⛓ ${skipped.length} logic tie${skipped.length === 1 ? '' : 's'} skipped</strong>`
+        + `<pre style="white-space:pre-wrap;font-size:11px;margin:6px 0 0;">`
+        + escHtml(skipped.slice(0, 12).map(s => `  ${s.pred} → ${s.succ}: ${s.why}`).join('\n'))
+        + (skipped.length > 12 ? `\n  …and ${skipped.length - 12} more` : '')
+        + `</pre>`);
+    }
+    if (tgt === _activeProjectId) markScheduleStale();
+    await runCompare();   // refresh so applied ties disappear
+  } catch(e) { flashSched(e.message, true); }
+}
+
+function applyRelation(pred, succ, op) {
+  _postApplyRelations([{pred, succ, op}], `${pred} → ${succ}`);
+}
+
+function applyAllLogicInSection(wbsCode) {
+  const sec = (_cmpData?.diff?.sections || []).find(s => s.wbs_code === wbsCode);
+  if (!sec) return;
+  const changes = [
+    ...(sec.logic_added   || []).map(r => ({pred: r.pred, succ: r.succ, op: 'add'})),
+    ...(sec.logic_changed || []).map(r => ({pred: r.pred, succ: r.succ, op: 'update'})),
+    ...(sec.logic_removed || []).map(r => ({pred: r.pred, succ: r.succ, op: 'remove'})),
+  ];
+  if (!changes.length) return;
+  _postApplyRelations(changes, `All logic in ${sec.wbs_name}`);
 }
 
 // ── Replace section (Feature C — seam-preserving) ──────────────────────────

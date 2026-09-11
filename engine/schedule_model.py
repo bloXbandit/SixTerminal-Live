@@ -97,6 +97,53 @@ class UDFType:
 
 
 @dataclass
+class Resource:
+    """
+    One entry in P6's resource library — a crew, a person, a piece of plant, a
+    cost account. Held so a round trip gives back what it was given.
+
+    `rate` and `max_units` are the one rate P6 needs to accept the resource;
+    a resource with several rate periods keeps the first, which is enough to
+    import and is honest about being less than P6 stores. `extras` carries any
+    field this app does not model so the writer can put it back untouched.
+    """
+    uid: str
+    id: str                          # the short code, e.g. "ELEC-JW"
+    name: str
+    type: str = "Labor"              # Labor | Nonlabor | Material
+    calendar_uid: Optional[str] = None
+    unit_of_measure: Optional[str] = None
+    max_units: float = 1.0           # units per time, P6's "Max Units/Time"
+    rate: float = 0.0                # price per unit
+    parent_uid: Optional[str] = None
+    is_active: bool = True
+    extras: Dict[str, str] = field(default_factory=dict)
+
+
+@dataclass
+class ResourceAssignment:
+    """
+    One resource on one activity, with the units it is budgeted for.
+
+    This is where the hours actually live. `planned_units` is P6's Budgeted
+    Units — the same number the XER reader already rolls up into an activity's
+    planned_labor_units, kept here per assignment as well so the export can
+    write it back to the resource it belonged to rather than to a total.
+    """
+    uid: str
+    activity_uid: str
+    resource_uid: str
+    planned_units: float = 0.0
+    actual_units: float = 0.0
+    remaining_units: float = 0.0
+    planned_cost: float = 0.0
+    actual_cost: float = 0.0
+    rate: float = 0.0
+    role_uid: Optional[str] = None
+    extras: Dict[str, str] = field(default_factory=dict)
+
+
+@dataclass
 class Project:
     uid: str
     name: str
@@ -110,6 +157,12 @@ class Project:
     wbs_nodes: List[WBSNode] = field(default_factory=list)
     activities: List[Activity] = field(default_factory=list)
     relations: List[Relation] = field(default_factory=list)
+    # The resource library and who is assigned to what. Carried so that an
+    # export can put back what the import found: a P6 file with crews, costs
+    # or equipment on it used to come through here and go out with none of it,
+    # which is silent data loss on a round trip nobody would think to check.
+    resources: List["Resource"] = field(default_factory=list)
+    resource_assignments: List["ResourceAssignment"] = field(default_factory=list)
 
     # Lookup helpers (populated after load)
     _activity_by_uid: Dict[str, Activity] = field(default_factory=dict, repr=False)

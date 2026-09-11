@@ -88,6 +88,11 @@ _WBS_OID_START = 26059       # first explicit WBS block starts after hidden proj
 _ACTIVITY_OID_START = 101923 # mirrors clean native XML range
 _RELATIONSHIP_OID_START = 41150
 _ASSIGNMENT_OID_START = 83399
+# Real resources read off an import get their own range, clear of the single
+# synthetic _RES_OID / _RRATE_OID stub above (which stays for the case where
+# the app has assignments but no library to go with them).
+_RESOURCE_OID_START = 6900
+_RESOURCE_RATE_OID_START = 7200
 _PROJECT_OID_FALLBACK = "4510"
 _INT32_MAX = 2_147_483_647
 
@@ -1166,6 +1171,85 @@ def _section_resource(root: ET.Element):
     _nil(r, "UserObjectId")
 
 
+_RES_TYPES = {"Labor", "Nonlabor", "Material"}
+
+
+def _section_real_resources(root: ET.Element, project: Project) -> Dict[str, str]:
+    """
+    Write the resource library the import actually found, and return
+    {resource uid -> the ObjectId it was written with}.
+
+    This exists because the alternative was worse than nothing: the export
+    used to write ONE synthetic "Costs MLCB" resource and point every
+    assignment at it, so a file that arrived with six crews on it came back
+    with six assignments to a made-up nonlabor line. Now each resource is
+    written as itself, and the assignment block points at the right one.
+
+    Every resource gets a rate block whether or not it has a rate: P6 reads
+    Max Units/Time off the rate, and a resource without one imports with a
+    zero availability that quietly breaks levelling.
+    """
+    res_oid: Dict[str, str] = {}
+    for i, r in enumerate(project.resources):
+        oid = str(_RESOURCE_OID_START + i)
+        res_oid[_key(r.uid)] = oid
+        el = _sub(root, "Resource")
+        _sub(el, "AutoComputeActuals",     "1")
+        _sub(el, "CalculateCostFromUnits", "1")
+        _sub(el, "CalendarObjectId",       _GCAL_OID)
+        _sub(el, "CurrencyObjectId",       _CUR_OID)
+        _sub(el, "DefaultUnitsPerTime",    _num(r.max_units, 1))
+        _nil(el, "EmailAddress")
+        _nil(el, "EmployeeId")
+        _sub(el, "GUID",                   _guid())
+        _sub(el, "Id",                     r.id or f"RSRC-{i + 1}")
+        _sub(el, "IsActive",               "1" if r.is_active else "0")
+        _sub(el, "IsOverTimeAllowed",      "0")
+        _sub(el, "Name",                   r.name or r.id or f"Resource {i + 1}")
+        _sub(el, "ObjectId",               oid)
+        _nil(el, "OfficePhone")
+        _nil(el, "OtherPhone")
+        _sub(el, "OvertimeFactor",         "0")
+        # A parent outside this library would dangle, so an unknown parent is
+        # written as no parent rather than as a reference P6 cannot resolve.
+        parent = res_oid.get(_key(r.parent_uid)) if r.parent_uid else None
+        if parent:
+            _sub(el, "ParentObjectId", parent)
+        else:
+            _nil(el, "ParentObjectId")
+        _nil(el, "PrimaryRoleObjectId")
+        _nil(el, "ResourceNotes")
+        _sub(el, "ResourceType", r.type if r.type in _RES_TYPES else "Labor")
+        _sub(el, "SequenceNumber",         str((i + 1) * 10))
+        _nil(el, "ShiftObjectId")
+        _nil(el, "TimesheetApprovalManagerObjectId")
+        _nil(el, "Title")
+        _nil(el, "UnitOfMeasureObjectId")
+        _sub(el, "UseTimesheets",          "0")
+        _nil(el, "UserObjectId")
+
+    for i, r in enumerate(project.resources):
+        rr = _sub(root, "ResourceRate")
+        _sub(rr, "EffectiveDate",    "2024-01-01T00:00:00")
+        _sub(rr, "MaxUnitsPerTime",  _num(r.max_units, 1))
+        _sub(rr, "ObjectId",         str(_RESOURCE_RATE_OID_START + i))
+        _sub(rr, "PricePerUnit",     _num(r.rate, 0))
+        for n in range(2, 6):
+            _sub(rr, f"PricePerUnit{n}", "0")
+        _sub(rr, "ResourceObjectId", res_oid[_key(r.uid)])
+        _nil(rr, "ShiftPeriodObjectId")
+    return res_oid
+
+
+def _num(v: Any, default: float = 0.0) -> str:
+    """A number P6 will read: no exponent, no trailing noise, never blank."""
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        f = float(default)
+    return str(int(f)) if f == int(f) else f"{f:.6f}".rstrip("0").rstrip(".")
+
+
 def _section_resource_rate(root: ET.Element):
     rr = _sub(root, "ResourceRate")
     _sub(rr, "EffectiveDate",       "2024-01-01T00:00:00")
@@ -1567,6 +1651,8 @@ def _write_resource_assignment(
     activity_oid_map: Dict[str, str],
     wbs_oid_map: Dict[str, str],
     activity_by_uid: Dict[str, Activity],
+    res_oid_map: Optional[Dict[str, str]] = None,
+    res_type_by_uid: Optional[Dict[str, str]] = None,
 ) -> bool:
     """Write a native-style ResourceAssignment if assignment data exists in the model."""
     activity_uid = _get_any(
@@ -1597,19 +1683,33 @@ def _write_resource_assignment(
     remaining_cost = _get_any(assignment, "remaining_cost", default=planned_cost)
     remaining_duration = _get_any(assignment, "remaining_duration", default=getattr(act, "remaining_duration", None) or getattr(act, "planned_duration", 0))
 
+    # Which resource this is actually for. With a real library the assignment
+    # points at the resource it came in on; with only the synthetic stub there
+    # is one to point at, and that is the old behaviour left intact.
+    res_key = _key(_get_any(assignment, "resource_uid", "resource_object_id",
+                            "rsrc_id", default=None))
+    res_oid = (res_oid_map or {}).get(res_key) or _RES_OID
+    res_type = (res_type_by_uid or {}).get(res_key) or "Nonlabor"
+
+    # Actuals as recorded. Zeroing these threw away progress that the file
+    # arrived with — on a job part-built, that is the difference between what
+    # has been spent and a clean sheet.
+    act_units = float(_get_any(assignment, "actual_units", default=0) or 0)
+    act_cost = float(_get_any(assignment, "actual_cost", default=0) or 0)
+
     ra = _sub(proj_el, "ResourceAssignment")
     _sub(ra, "ActivityObjectId", activity_oid_map[activity_key])
-    _sub(ra, "ActualCost", "0")
+    _sub(ra, "ActualCost", _num(act_cost))
     _nil(ra, "ActualCurve")
     _nil(ra, "ActualFinishDate")
     _sub(ra, "ActualOvertimeCost", "0")
     _sub(ra, "ActualOvertimeUnits", "0")
-    _sub(ra, "ActualRegularCost", "0")
-    _sub(ra, "ActualRegularUnits", "0")
+    _sub(ra, "ActualRegularCost", _num(act_cost))
+    _sub(ra, "ActualRegularUnits", _num(act_units))
     _nil(ra, "ActualStartDate")
     _sub(ra, "ActualThisPeriodCost", "0")
     _sub(ra, "ActualThisPeriodUnits", "0")
-    _sub(ra, "ActualUnits", "0")
+    _sub(ra, "ActualUnits", _num(act_units))
     _sub(ra, "AtCompletionCost", str(planned_cost or 0))
     _sub(ra, "AtCompletionUnits", str(planned_units or 0))
     _nil(ra, "CostAccountObjectId")
@@ -1636,7 +1736,7 @@ def _write_resource_assignment(
         _nil(ra, "PlannedStartDate")
     _sub(ra, "PlannedUnits", str(planned_units or 0))
     _sub(ra, "PlannedUnitsPerTime", str(_get_any(assignment, "planned_units_per_time", default=0) or 0))
-    _sub(ra, "PricePerUnit", "1")
+    _sub(ra, "PricePerUnit", _num(_get_any(assignment, "rate", "price_per_unit", default=1) or 1))
     _sub(ra, "Proficiency", "3 - Skilled")
     _sub(ra, "ProjectObjectId", proj_uid)
     _sub(ra, "RateSource", "Resource")
@@ -1656,8 +1756,8 @@ def _write_resource_assignment(
     _sub(ra, "RemainingUnits", str(remaining_units or 0))
     _sub(ra, "RemainingUnitsPerTime", str(_get_any(assignment, "remaining_units_per_time", default=0) or 0))
     _nil(ra, "ResourceCurveObjectId")
-    _sub(ra, "ResourceObjectId", _RES_OID)
-    _sub(ra, "ResourceType", "Nonlabor")
+    _sub(ra, "ResourceObjectId", res_oid)
+    _sub(ra, "ResourceType", res_type)
     _nil(ra, "RoleObjectId")
     if planned_start:
         _sub(ra, "StartDate", _dt_start(planned_start))
@@ -1778,9 +1878,19 @@ def _write_p6_xml_impl(project: Project, output_path: str,
     _section_obs(root)
     _section_global_calendars(root, project)
 
-    # Resource blocks are only written when assignments exist.
-    # This avoids an orphan resource/resource-rate stub when the app has no assignment data.
-    if assignments:
+    # The resource library, when the import brought one. Each resource is
+    # written as itself and the assignments below point at the right one —
+    # before this, everything was pinned to a single synthetic "Costs MLCB"
+    # line, so a file that arrived with six crews came back with six
+    # assignments to a nonlabor account nobody had ever created.
+    #
+    # With assignments but no library (an app-built schedule, or an XER whose
+    # RSRC table was not in the file) the original stub still stands: it is
+    # what makes those assignments importable at all.
+    res_oid_map: Dict[str, str] = {}
+    if getattr(project, "resources", None):
+        res_oid_map = _section_real_resources(root, project)
+    elif assignments:
         _section_resource(root)
         _section_resource_rate(root)
 
@@ -1905,6 +2015,8 @@ def _write_p6_xml_impl(project: Project, output_path: str,
 
     # If the app carries assignments, export them with safe 83400+ ObjectIds.
     # If not, no orphan Resource/ResourceRate blocks are written above.
+    res_type_by_uid = {_key(r.uid): (r.type if r.type in _RES_TYPES else "Labor")
+                       for r in (getattr(project, "resources", None) or [])}
     for idx, assignment in enumerate(assignments):
         _write_resource_assignment(
             proj_el,
@@ -1914,6 +2026,8 @@ def _write_p6_xml_impl(project: Project, output_path: str,
             activity_oid_map,
             wbs_oid_map,
             activity_by_uid,
+            res_oid_map,
+            res_type_by_uid,
         )
 
     # Native export includes ScheduleOptions after relationships/assignments.

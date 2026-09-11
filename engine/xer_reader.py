@@ -10,7 +10,8 @@ All writes go through xml_writer.py (P6 XML output).
 
 import re
 from typing import Dict, List, Optional, Tuple
-from .schedule_model import Project, WBSNode, Activity, Relation, Calendar, UDFType
+from .schedule_model import (Project, WBSNode, Activity, Relation, Calendar,
+                             UDFType, Resource, ResourceAssignment)
 
 
 def _parse_xer_tables(path: str) -> Dict[str, List[Dict]]:
@@ -192,6 +193,63 @@ def load_xer(path: str) -> Project:
     for a in project.activities:
         if a.uid in blu_map:
             a.planned_labor_units = blu_map[a.uid]
+
+    # --- The resource library and the assignments themselves ---
+    #
+    # The roll-up above keeps working exactly as it did: it is the per-activity
+    # total, which is what the grid shows. This keeps the assignments as well,
+    # so an export can put each one back on the resource it belonged to instead
+    # of writing a total to nobody. Without it a P6 file with crews on it came
+    # through here and went out with none — silent loss on a round trip.
+    rate_of: Dict[str, float] = {}
+    for row in tables.get("RSRCRATE", []):
+        rid = row.get("rsrc_id", "")
+        if rid and rid not in rate_of:
+            rate_of[rid] = _safe_float(row.get("cost_per_qty", "0"))
+
+    _RTYPE = {"RT_Labor": "Labor", "RT_Equip": "Nonlabor", "RT_Mat": "Material"}
+    for row in tables.get("RSRC", []):
+        rid = row.get("rsrc_id", "")
+        if not rid:
+            continue
+        project.resources.append(Resource(
+            uid=rid,
+            id=row.get("rsrc_short_name", "") or rid,
+            name=row.get("rsrc_name", "") or row.get("rsrc_short_name", "") or rid,
+            type=_RTYPE.get(row.get("rsrc_type", ""), "Labor"),
+            calendar_uid=row.get("clndr_id", "") or None,
+            unit_of_measure=row.get("unit_id", "") or None,
+            max_units=_safe_float(row.get("def_qty_per_hr", "1"), 1.0),
+            rate=rate_of.get(rid, 0.0),
+            parent_uid=row.get("parent_rsrc_id", "") or None,
+            is_active=row.get("active_flag", "Y") != "N",
+        ))
+
+    # The library is global in an XER, so a resource may belong to another
+    # project in the same file. Assignments are filtered to this project and to
+    # activities it actually has, the same way relations are.
+    known_res = {r.uid for r in project.resources}
+    act_uids = {a.uid for a in project.activities}
+    for row in tables.get("TASKRSRC", []):
+        if row.get("proj_id", "") != proj_uid:
+            continue
+        tid, rid = row.get("task_id", ""), row.get("rsrc_id", "")
+        if tid not in act_uids or rid not in known_res:
+            continue
+        project.resource_assignments.append(ResourceAssignment(
+            uid=row.get("taskrsrc_id", "") or f"RA-{len(project.resource_assignments) + 1}",
+            activity_uid=tid,
+            resource_uid=rid,
+            planned_units=_safe_float(row.get("target_qty", "0")),
+            actual_units=_safe_float(row.get("act_reg_qty", "0"))
+                         + _safe_float(row.get("act_ot_qty", "0")),
+            remaining_units=_safe_float(row.get("remain_qty", "0")),
+            planned_cost=_safe_float(row.get("target_cost", "0")),
+            actual_cost=_safe_float(row.get("act_reg_cost", "0"))
+                        + _safe_float(row.get("act_ot_cost", "0")),
+            rate=_safe_float(row.get("cost_per_qty", "0")),
+            role_uid=row.get("role_id", "") or None,
+        ))
 
     # --- Relations ---
     rel_type_map = {

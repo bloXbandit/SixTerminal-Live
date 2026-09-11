@@ -50,7 +50,8 @@ from engine.importer import extract as import_extract, build_project_from_contra
     _pdf_page_count, _read_pdf_pages, _rows_to_contract, _text_layer_present, \
     open_pdf_handle, _read_pdf_pages_from_handle, _text_layer_from_handle
 from engine.compare import (compare_projects, copy_wbs_branch,
-                            replace_wbs_branch, apply_activity_changes)
+                            replace_wbs_branch, apply_activity_changes,
+                            apply_relation_changes)
 from engine import cloud_store
 from engine import objectives
 from engine import edit_engine as edit_engine_module
@@ -4020,6 +4021,188 @@ def apply_changes():
         })
     except Exception as e:
         return jsonify({"error": f"Apply failed: {str(e)}",
+                        "trace": traceback.format_exc()}), 500
+
+
+@app.route("/api/apply-relations", methods=["POST"])
+def apply_relations():
+    """
+    Pull individual logic ties from the source schedule into the target.
+
+    The field diff covers dates and progress and says nothing about the ties,
+    so a revision that moved a date by adding a predecessor looked exactly
+    like one that moved it by hand. This is the other half.
+    Body: {
+      "source_project_id", "target_project_id" (optional — defaults to active),
+      "changes": [{"pred": "A1000", "succ": "A1010", "op": "add"|"remove"|"update"}]
+    }
+    """
+    data = request.get_json() or {}
+    src_pid = data.get("source_project_id")
+    changes = data.get("changes") or []
+    if not src_pid or not changes:
+        return jsonify({"error": "source_project_id and a non-empty changes list "
+                                 "are required"}), 400
+    tgt_pid = data.get("target_project_id") or _active_id[0]
+    sess_src = _projects.get(src_pid)
+    sess_tgt = _projects.get(tgt_pid)
+    if not sess_src or not sess_src["project"]:
+        return jsonify({"error": f"Source project '{src_pid}' not found"}), 404
+    if not sess_tgt or not sess_tgt["project"]:
+        return jsonify({"error": f"Target project '{tgt_pid}' not found"}), 404
+
+    try:
+        tgt_stack = sess_tgt["undo_stack"]
+        tgt_stack.append((f"Apply logic from {sess_src['project'].name}",
+                          _snapshot_project(sess_tgt["project"])))
+        if len(tgt_stack) > _MAX_UNDO:
+            tgt_stack.pop(0)
+
+        ok, msg, detail = apply_relation_changes(
+            sess_src["project"], sess_tgt["project"], changes)
+        if not ok:
+            sess_tgt["undo_stack"].pop()
+            return jsonify({"error": msg}), 400
+
+        sess_tgt["redo_stack"].clear()
+        sess_tgt["last_undone"] = None
+        sess_tgt["edit_history"].append({
+            "instruction": f"[apply-relations] {msg}", "commands": [],
+            "results": [{"action": "apply_relation_changes", "success": True,
+                         "message": msg}],
+        })
+        _mark_dirty(tgt_pid)
+        return jsonify({
+            "success": True, "message": msg, "detail": detail,
+            "undo_count": len(sess_tgt["undo_stack"]),
+            "redo_count": len(sess_tgt["redo_stack"]),
+            "relation_count": len(sess_tgt["project"].relations),
+        })
+    except Exception as e:
+        return jsonify({"error": f"Apply failed: {str(e)}",
+                        "trace": traceback.format_exc()}), 500
+
+
+@app.route("/api/revise", methods=["POST"])
+def revise_project():
+    """
+    Move a project forward onto a newer XER or XML, in place.
+
+    A plain upload gives you a SECOND project and leaves the first alone, which
+    is right when you want to compare two revs and wrong when what you meant
+    was "this job, updated". That left the brain attached to a schedule nobody
+    was looking at any more and the tab list filling up with revs.
+
+    This keeps the slot: same project id, same chat, same undo stack, same
+    place in the switcher — the schedule underneath is swapped for the one in
+    the uploaded file, and the swap is one Undo away like any other edit. What
+    was taught about the job is re-grounded against the new file rather than
+    carried over unchecked, since the counts a rule was taught with were true
+    of the old export.
+
+    Nothing is merged. The new file wins outright, which is the honest
+    behaviour for "here is the current schedule" — the diff against what you
+    had is returned so you can see exactly what moved, and Undo puts it back
+    if the answer is "not that".
+    """
+    if "file" not in request.files:
+        return jsonify({"error": "No file provided"}), 400
+    pid = request.form.get("project_id") or _active_id[0]
+    if not pid or pid not in _projects:
+        return jsonify({"error": "No project to revise — load a schedule first"}), 400
+    sess = _projects[pid]
+    if sess["project"] is None:
+        return jsonify({"error": f"Project '{pid}' has no schedule loaded"}), 400
+
+    f = request.files["file"]
+    filename = f.filename or "schedule"
+    ext = Path(filename).suffix.lower()
+    if ext not in (".xer", ".xml"):
+        return jsonify({"error": f"Unsupported file type '{ext}'. "
+                                 "Upload an XER or P6 XML file."}), 400
+
+    tmp = tempfile.NamedTemporaryFile(suffix=ext, delete=False)
+    f.save(tmp.name)
+    tmp.close()
+
+    try:
+        fresh = load_xer(tmp.name) if ext == ".xer" else load_xml(tmp.name)
+        try:
+            from engine.schedule_model import compute_dates as _cd
+            _cd(fresh, apply_dates=False)
+        except Exception:
+            pass
+
+        old = sess["project"]
+        # The diff BEFORE the swap, so the answer describes the move that is
+        # about to happen rather than a schedule compared with itself.
+        try:
+            diff = compare_projects(old, fresh)
+        except Exception:
+            diff = None
+
+        stack = sess["undo_stack"]
+        stack.append((f"Revise from {filename}", _snapshot_project(old)))
+        if len(stack) > _MAX_UNDO:
+            stack.pop(0)
+        sess["redo_stack"].clear()
+        sess["last_undone"] = None
+
+        sess["project"] = fresh
+        sess["source_path"] = tmp.name
+        sess["source_name"] = filename
+        _active_id[0] = pid
+        _mark_dirty(pid)
+
+        carried = ""
+        brain = _brain_for(fresh)
+        if not brain.is_empty():
+            try:
+                brain.reground(fresh)
+            except Exception:
+                pass
+            n = len(brain.rules)
+            carried = (f" Kept what you taught me about this job"
+                       + (f" ({n} rule{'s' if n != 1 else ''})" if n else "") + ".")
+
+        s = (diff or {}).get("summary") or {}
+        moved = (f"{s.get('added', 0)} added, {s.get('removed', 0)} removed, "
+                 f"{s.get('changed', 0)} changed, "
+                 f"{s.get('logic_added', 0)}/{s.get('logic_removed', 0)} ties in/out"
+                 if diff else "")
+        sess["edit_history"].append({
+            "instruction": f"[revise] {filename}", "commands": [],
+            "results": [{"action": "revise_project", "success": True,
+                         "message": moved or filename}],
+        })
+        _append_chat("user", f"[revised schedule from: {filename}]")
+        _append_chat("assistant",
+                     f"Moved {fresh.name} forward onto {filename} — "
+                     f"{len(fresh.activities)} activities, {len(fresh.wbs_nodes)} folders, "
+                     f"{len(fresh.relations)} ties"
+                     + (f", data date {str(fresh.data_date)[:10]}." if fresh.data_date else ".")
+                     + (f" Against what you had: {moved}." if moved else "")
+                     + carried
+                     + " Undo puts the previous schedule back.")
+
+        return jsonify({
+            "success": True,
+            "project_id": pid,
+            "summary": fresh.summary(),
+            "project_name": fresh.name,
+            "source_name": filename,
+            "activity_count": len(fresh.activities),
+            "wbs_count": len(fresh.wbs_nodes),
+            "relation_count": len(fresh.relations),
+            "data_date": fresh.data_date,
+            "diff": (diff or {}).get("summary"),
+            "undo_count": len(sess["undo_stack"]),
+            "redo_count": len(sess["redo_stack"]),
+            "chat": sess["chat_history"],
+            "projects": [_project_list_item(k) for k in _projects],
+        })
+    except Exception as e:
+        return jsonify({"error": f"Revise failed: {str(e)}",
                         "trace": traceback.format_exc()}), 500
 
 
