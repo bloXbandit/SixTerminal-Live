@@ -353,3 +353,70 @@ def test_a_schedule_with_no_dates_exports(book):
         a.planned_start = a.planned_finish = a.early_finish = None
     p.build_lookups()
     book(p)
+
+
+# ── the Flag column ──────────────────────────────────────────────────────────
+#
+# It was a locked formula headed "Flag", blank on most rows: it looked like
+# something to click, did nothing when clicked, and showed nothing most of the
+# time. Now there are two columns — one you set, one worked out for you — and
+# the names say which is which.
+
+def _col(path, sheet, letter, first=5, last=None):
+    from openpyxl import load_workbook
+    ws = load_workbook(path)[sheet]
+    return [ws[f"{letter}{r}"].value
+            for r in range(first, (last or ws.max_row) + 1)]
+
+
+def test_the_flag_is_a_cell_the_field_can_actually_type_in(book):
+    from openpyxl import load_workbook
+    ws = load_workbook(book())["Update"]
+    assert ws["W4"].value.startswith("Flag")
+    assert ws["W5"].protection.locked is False, "the flag cannot be set"
+    assert ws["W5"].value in (None, ""), "a flag is raised by a person, not seeded"
+
+
+def test_the_flag_offers_the_reasons_work_stops_without_gating_them(book):
+    """A dropdown that refuses anything else is a dropdown the field fights."""
+    from openpyxl import load_workbook
+    from engine.excel_export import FLAGS
+    ws = load_workbook(book())["Update"]
+    dv = [d for d in ws.data_validations.dataValidation if "W5" in str(d.sqref)]
+    assert dv, "no dropdown on the flag column"
+    assert all(f in dv[0].formula1 for f in FLAGS)
+    assert dv[0].showErrorMessage is False, "typed text would be refused"
+
+
+def test_the_column_that_is_computed_no_longer_calls_itself_a_flag(book):
+    from openpyxl import load_workbook
+    ws = load_workbook(book())["Update"]
+    assert ws["V4"].value == "Next Step"
+
+
+def test_the_computed_column_says_something_on_every_row(book):
+    """Blank on most rows is why it read as broken. Every branch now lands."""
+    joined = " ".join(f for f in _formulas(book()) if "Next Step" not in f)
+    v = [f for f in _formulas(book()) if '"Done"' in f]
+    assert v, "the Next Step formula is missing"
+    assert '"Later"' in v[0], "the final branch still falls through to blank"
+
+
+def test_a_raised_flag_reaches_the_dashboard(book):
+    """Somewhere to type that nobody reads is worse than nowhere."""
+    from openpyxl import load_workbook
+    ws = load_workbook(book())["Dashboard"]
+    assert ws["M6"].value.startswith("Flags")
+    assert "$W$" in str(ws["M7"].value), "the count does not look at the flag column"
+
+
+def test_blocked_outranks_complete_in_the_row_colouring(book):
+    """Excel gives the first rule precedence, and a blocked row is the one
+    thing that must not be painted over."""
+    from openpyxl import load_workbook
+    ws = load_workbook(book())["Update"]
+    body = [rng for rng in ws.conditional_formatting
+            if str(rng.sqref).startswith("A5:W")]
+    assert body
+    first = body[0].rules[0].formula[0]
+    assert 'W5="Blocked"' in first, f"first rule is {first}"

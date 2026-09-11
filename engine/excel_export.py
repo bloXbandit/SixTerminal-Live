@@ -51,6 +51,7 @@ BAD_BG, BAD_TX = 'FFC7CE', '9C0006'
 WARN_BG, WARN_TX = 'FFEB9C', '9C6500'
 WBO_BG, WBO_TX = 'E4DFEC', '5F497A'
 TBD_BG, TBD_TX = 'FFF2CC', '806000'
+FLAG_BG, FLAG_TX = 'FCE4D6', '974706'
 ENTRY = 'FFF9E3'
 FONT = 'Arial'
 
@@ -60,6 +61,12 @@ FONT = 'Arial'
 CREW_TBD, CREW_WBO, CREW_OWN = 'TBD', 'Work by others', 'Richards'
 def _crew_options(own: str) -> str:
     return f'"{CREW_TBD},{CREW_WBO},{own}"'
+
+# Why work actually stops, in the words the field uses. Short enough to pick
+# from a dropdown on a phone, specific enough that the count is worth reading
+# — "Blocked" and "Material" are different problems with different owners.
+FLAGS = ['Blocked', 'Needs info', 'Material', 'Manpower', 'Access',
+         'Rework', 'Watch']
 
 # The roster, not a rule. Passed in per export so a new job needs no code
 # change — this is only the default for the jobs already running.
@@ -316,7 +323,11 @@ def build_workbook(project, out_path: str, project_code: Optional[str] = None,
     ws[f'A{hr}'].font = _f(11, True, NAVY)
     guide = [
         ('Update', 'The tab the field fills in. Yellow cells only: By, Status, % Complete, '
-                   'Actual Start, Actual Finish, Notes, Updated By.'),
+                   'Actual Start, Actual Finish, Notes, Updated By and Flag.'),
+        ('', 'Flag \u2691 is yours to set — pick a reason from the dropdown (or type your '
+             'own) on anything that needs attention. Filter that column to see only '
+             'flagged work; the Dashboard counts them per phase. "Next Step" beside it '
+             'is worked out for you and cannot be typed in.'),
         ('', 'Filter with the header arrows — Phase, Area, Work Type, By or Window. '
              'Clear them to see the whole schedule again.'),
         ('Dashboard', 'Read-only rollup: phases, milestones, and where the job stands '
@@ -337,7 +348,8 @@ def build_workbook(project, out_path: str, project_code: Optional[str] = None,
             ('Complete', OK_BG, OK_TX), ('In Progress', WIP_BG, WIP_TX),
             ('Not Started', NEW_BG, NEW_TX), ('OVERDUE', BAD_BG, BAD_TX),
             ('Due this week', WARN_BG, WARN_TX), (CREW_WBO, WBO_BG, WBO_TX),
-            ('Nobody assigned (TBD)', TBD_BG, TBD_TX), ('Type in yellow cells', ENTRY, INK)]):
+            ('Nobody assigned (TBD)', TBD_BG, TBD_TX),
+            ('Flagged \u2691', FLAG_BG, FLAG_TX), ('Type in yellow cells', ENTRY, INK)]):
         c = ws.cell(row=lr + 1 + i, column=1, value=lab)
         c.fill = _fill(bg); c.font = _f(10, True, tx); c.border = BOX; c.alignment = CTR
     ws.freeze_panes = 'A4'
@@ -346,13 +358,15 @@ def build_workbook(project, out_path: str, project_code: Optional[str] = None,
     up = wb.create_sheet('Update')
     _title(up, 'Update — field entry',
            'Fill the yellow columns only. Filter with the header arrows; clear the '
-           'filters to see the whole schedule.', 22)
+           'filters to see the whole schedule. Raise a Flag \u2691 on the far right for '
+           'anything that needs attention — it colours the row and counts on the '
+           'Dashboard. "Next Step" is worked out for you.', 23)
     HDR = ['Project', 'Lead', 'Phase', 'Area', 'Room', 'Work Type', 'Activity ID',
            'Activity Name', 'By', 'BL Start', 'BL Finish', 'Days', 'Crew',
            'Status', '% Comp', 'Act Start', 'Act Finish', 'Notes', 'Updated By',
-           'Var (d)', 'Window', 'Flag']
+           'Var (d)', 'Window', 'Next Step', 'Flag ⚑']
     _head(up, 4, HDR, [9, 9, 15, 22, 11, 26, 22, 46, 15, 11, 11, 7, 7,
-                       14, 8, 11, 11, 34, 12, 9, 13, 14])
+                       14, 8, 11, 11, 34, 12, 9, 13, 14, 15])
     HR = 4
     for i, rec in enumerate(ROWS):
         r = HR + 1 + i
@@ -398,19 +412,33 @@ def build_workbook(project, out_path: str, project_code: Optional[str] = None,
                       f'IF($K{r}<StatusDate,"OVERDUE",IF($J{r}<=StatusDate+7,"This Week",'
                       f'IF($J{r}<=StatusDate+14,"2-Week",'
                       f'IF($J{r}<=StatusDate+LookaheadWeeks*7,"Lookahead","Later"))))))')
+        # What this row wants doing, worked out rather than typed. It used to
+        # be headed "Flag", which read as something to click and was blank on
+        # most rows — a column that shows nothing is worse than no column, so
+        # every row now lands somewhere and the name says it is a suggestion.
         up.cell(row=r, column=22,
                 value=f'=IF($N{r}="Complete","Done",'
                       f'IF($U{r}="OVERDUE","Behind",'
                       f'IF(AND($N{r}="In Progress",$O{r}>0),"Running",'
+                      f'IF($N{r}="On Hold","On hold",'
+                      f'IF($I{r}="{CREW_WBO}","By others",'
                       f'IF($U{r}="This Week","Start now",'
-                      f'IF($I{r}="{CREW_WBO}","By others","")))))')
+                      f'IF(AND($I{r}="{CREW_TBD}",OR($U{r}="2-Week",$U{r}="Lookahead")),"Needs a crew",'
+                      f'IF($U{r}="2-Week","Coming up",'
+                      f'IF($U{r}="Lookahead","In lookahead",'
+                      f'IF($U{r}="No dates","No dates","Later"))))))))))')
         for j in (20, 21, 22):
             c = up.cell(row=r, column=j); c.font = _f(9); c.border = BOX; c.alignment = CTR
         up.cell(row=r, column=20).number_format = '+0;-0;;@'
+        # The flag the FIELD raises — the column that was being looked for.
+        # Yellow, unlocked, a dropdown that still takes typed text.
+        c = up.cell(row=r, column=23)
+        c.fill = _fill(ENTRY); c.border = BOX; c.font = _f(9, True); c.alignment = CTR
+        c.protection = Protection(locked=False)
 
     LAST = HR + len(ROWS)
     up.freeze_panes = 'H5'
-    t = Table(displayName='UpdateTbl', ref=f'A{HR}:V{LAST}')
+    t = Table(displayName='UpdateTbl', ref=f'A{HR}:W{LAST}')
     t.tableStyleInfo = TableStyleInfo(name='TableStyleLight1', showRowStripes=True)
     up.add_table(t)
 
@@ -426,8 +454,21 @@ def build_workbook(project, out_path: str, project_code: Optional[str] = None,
                          allow_blank=True)
     dvp.error = 'Enter a percent between 0% and 100%'
     up.add_data_validation(dvp); dvp.add(f'O{HR+1}:O{LAST}')
+    # The reasons work actually stops, in the words the field uses. Like the
+    # By column this suggests rather than gates, so anything else can be typed.
+    dvflag = DataValidation(type='list', formula1=f'"{",".join(FLAGS)}"',
+                            allow_blank=True, showDropDown=False,
+                            showErrorMessage=False)
+    dvflag.prompt = ('Raise a flag when this activity needs attention. Pick one '
+                     'or type your own, then filter the column to see them all.')
+    dvflag.promptTitle = 'Flag this activity'
+    dvflag.showInputMessage = True
+    up.add_data_validation(dvflag); dvflag.add(f'W{HR+1}:W{LAST}')
 
-    BODY = f'A{HR+1}:V{LAST}'
+    BODY = f'A{HR+1}:W{LAST}'
+    # First rule wins in Excel, and a blocked row is the one you must not miss
+    # — it goes ahead of Complete, which would otherwise paint over it.
+    _cf(up, BODY, f'$W{HR+1}="Blocked"', BAD_BG, BAD_TX, bold=True)
     _cf(up, BODY, f'$N{HR+1}="Complete"', OK_BG, OK_TX)
     _cf(up, BODY, f'AND($N{HR+1}<>"Complete",$I{HR+1}="{CREW_WBO}")', WBO_BG, WBO_TX, italic=True)
     _cf(up, BODY, f'AND($N{HR+1}<>"Complete",$U{HR+1}="OVERDUE")', BAD_BG, BAD_TX, bold=True)
@@ -435,6 +476,8 @@ def build_workbook(project, out_path: str, project_code: Optional[str] = None,
     _cf(up, BODY, f'AND($N{HR+1}="Not Started",$U{HR+1}="This Week")', WARN_BG, WARN_TX)
     _cf(up, BODY, f'$N{HR+1}="On Hold"', 'FFE0CC', '974706')
     _cf(up, f'I{HR+1}:I{LAST}', f'$I{HR+1}="{CREW_TBD}"', TBD_BG, TBD_TX, bold=True)
+    # Any flag at all stands out in its own column, whatever was typed there.
+    _cf(up, f'W{HR+1}:W{LAST}', f'$W{HR+1}<>""', FLAG_BG, FLAG_TX, bold=True)
     up.conditional_formatting.add(f'O{HR+1}:O{LAST}', DataBarRule(
         start_type='num', start_value=0, end_type='num', end_value=1, color=ACCENT))
     up.protection.sheet = True
@@ -450,8 +493,9 @@ def build_workbook(project, out_path: str, project_code: Optional[str] = None,
     _title(db, f'{title or project_code} — Dashboard',
            'Read-only. Every figure recalculates from the Update tab.', 12)
     _head(db, 6, ['Phase', 'Activities', 'Complete', 'Running', 'Not Started', 'By others',
-                  '% Complete', 'Overdue', 'This Week', 'Lookahead', 'Earliest', 'Latest'],
-          [26, 11, 11, 11, 12, 11, 12, 10, 11, 11, 12, 12])
+                  '% Complete', 'Overdue', 'This Week', 'Lookahead', 'Earliest', 'Latest',
+                  'Flags ⚑'],
+          [26, 11, 11, 11, 12, 11, 12, 10, 11, 11, 12, 12, 10])
     db.cell(row=5, column=1, value='BY PHASE').font = _f(11, True, NAVY)
     phases, seen = [], set()
     for rec in ROWS:
@@ -471,9 +515,12 @@ def build_workbook(project, out_path: str, project_code: Optional[str] = None,
                       (9, f'=COUNTIFS({q},{R("U")},"This Week")'),
                       (10, f'=COUNTIFS({q},{R("U")},"Lookahead")'),
                       (11, f'=IFERROR(_xlfn.MINIFS({R("J")},{q}),"")'),
-                      (12, f'=IFERROR(_xlfn.MAXIFS({R("K")},{q}),"")')):
+                      (12, f'=IFERROR(_xlfn.MAXIFS({R("K")},{q}),"")'),
+                      # Flags raised by the field, so they are not typed into
+                      # a column nobody reads. "<>" is COUNTIFS for non-blank.
+                      (13, f'=COUNTIFS({q},{R("W")},"<>")')):
             db.cell(row=r, column=j, value=fx)
-        for j in range(1, 13):
+        for j in range(1, 14):
             c = db.cell(row=r, column=j); c.border = BOX
             c.font = _f(10, j == 1); c.alignment = LEFT if j == 1 else CTR
             if j == 7:
@@ -486,9 +533,10 @@ def build_workbook(project, out_path: str, project_code: Optional[str] = None,
                   (4, f'=COUNTIFS({R("N")},"In Progress")'), (5, f'=COUNTIFS({R("N")},"Not Started")'),
                   (6, f'=COUNTIFS({R("I")},"{CREW_WBO}")'), (7, f'=IFERROR(AVERAGE({R("O")}),0)'),
                   (8, f'=COUNTIFS({R("U")},"OVERDUE")'), (9, f'=COUNTIFS({R("U")},"This Week")'),
-                  (10, f'=COUNTIFS({R("U")},"Lookahead")')):
+                  (10, f'=COUNTIFS({R("U")},"Lookahead")'),
+                  (13, f'=COUNTIFS({R("W")},"<>")')):
         db.cell(row=rT, column=j, value=fx)
-    for j in range(1, 13):
+    for j in range(1, 14):
         c = db.cell(row=rT, column=j)
         c.fill = _fill(NAVY); c.font = _f(10, True, 'FFFFFF'); c.border = BOX
         c.alignment = LEFT if j == 1 else CTR
@@ -497,6 +545,9 @@ def build_workbook(project, out_path: str, project_code: Optional[str] = None,
     db.conditional_formatting.add(f'H7:H{rT}', CellIsRule(
         operator='greaterThan', formula=['0'], fill=_fill(BAD_BG),
         font=Font(name=FONT, size=10, color=BAD_TX, bold=True)))
+    db.conditional_formatting.add(f'M7:M{rT}', CellIsRule(
+        operator='greaterThan', formula=['0'], fill=_fill(FLAG_BG),
+        font=Font(name=FONT, size=10, color=FLAG_TX, bold=True)))
     db.conditional_formatting.add(f'G7:G{rT-1}', DataBarRule(
         start_type='num', start_value=0, end_type='num', end_value=1, color='70AD47'))
 
