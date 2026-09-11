@@ -248,3 +248,68 @@ def test_a_parent_outside_the_library_is_written_as_no_parent(roundtrip):
     p.resources[0].parent_uid = "not-in-this-file"
     back, _ = roundtrip(p)
     assert next(r for r in back.resources if r.id == "ELEC-JW").parent_uid is None
+
+
+# ── the three labour numbers on the activity itself ──────────────────────────
+#
+# P6 keeps Budgeted, Actual and Remaining Labor Units separately, and the
+# usage profile plots the last two: actual behind the data date, remaining in
+# front of it. The exporter wrote both out as a hard "0" and the reader never
+# read them, so every round trip erased the history of a job already under way
+# and forecast no labour at all — while keeping the budget, which made the
+# result look populated. This is what produced a profile that started at the
+# data date with nothing behind it.
+
+def _underway():
+    p = _job(resources=False)
+    a = p.activities[0]
+    a.status, a.percent_complete = "In Progress", 0.25
+    a.actual_start, a.remaining_duration = "2026-01-02", 30
+    a.planned_labor_units = 320
+    a.actual_labor_units = 80
+    a.remaining_labor_units = 240
+    return p
+
+
+def test_hours_already_spent_survive_the_export(roundtrip):
+    back, _ = roundtrip(_underway())
+    assert back.activities[0].actual_labor_units == 80
+
+
+def test_hours_still_to_spend_survive_the_export(roundtrip):
+    back, _ = roundtrip(_underway())
+    assert back.activities[0].remaining_labor_units == 240
+
+
+def test_the_budget_still_survives(roundtrip):
+    """It was the one field that did. Keeping the other two must not cost it."""
+    back, _ = roundtrip(_underway())
+    assert back.activities[0].planned_labor_units == 320
+
+
+def test_at_completion_is_spent_plus_remaining(roundtrip):
+    """P6's own definition. Left at zero it contradicted the other two."""
+    import re
+    _, path = roundtrip(_underway())
+    got = re.search(r"<AtCompletionLaborUnits>([^<]*)<",
+                    open(path, encoding="utf-8").read()).group(1)
+    assert float(got) == 320
+
+
+def test_an_activity_with_no_hours_still_writes_zeroes(roundtrip):
+    back, _ = roundtrip(_job(resources=False))
+    a = back.activities[0]
+    assert (a.actual_labor_units, a.remaining_labor_units) == (0, 0)
+
+
+def test_an_xer_rolls_up_all_three_not_just_the_budget(xer):
+    a = xer.activities[0]
+    assert a.planned_labor_units == 360, "the budget roll-up changed"
+    assert a.actual_labor_units == 80
+    assert a.remaining_labor_units == 280
+
+
+def test_an_xer_round_trip_keeps_the_history(roundtrip, xer):
+    back, _ = roundtrip(xer)
+    assert back.activities[0].actual_labor_units == 80
+    assert back.activities[0].remaining_labor_units == 280

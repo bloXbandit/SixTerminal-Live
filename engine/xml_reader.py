@@ -457,6 +457,8 @@ def load_xml(path: str) -> Project:
             constraint_date=_iso_date(_text(act_el, "PrimaryConstraintDate")) or None,
             notes=_text(act_el, "NotebookTopic") or _text(act_el, "NotesToResources") or None,
             planned_labor_units=_float(act_el, "PlannedLaborUnits"),
+            actual_labor_units=_float(act_el, "ActualLaborUnits"),
+            remaining_labor_units=_float(act_el, "RemainingLaborUnits"),
             udfs=_read_udfs(act_el, udf_titles),
         ))
 

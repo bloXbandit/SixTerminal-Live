@@ -1490,7 +1490,11 @@ def _write_activity(
         _nil(a, "ActualFinishDate")
 
     _sub(a, "ActualLaborCost",    "0")
-    _sub(a, "ActualLaborUnits",   "0")
+    # What has actually been spent. Written as a hard zero until now, which
+    # erased the history of any job already under way: the usage profile plots
+    # Actual Units BEHIND the data date, so a schedule with 79 finished
+    # activities came back with nothing before the data date and no clue why.
+    _sub(a, "ActualLaborUnits",   _num(act.actual_labor_units))
     _sub(a, "ActualNonLaborCost", "0")
     _sub(a, "ActualNonLaborUnits","0")
 
@@ -1508,7 +1512,10 @@ def _write_activity(
     _sub(a, "AtCompletionDuration",         _as_int_text(act.planned_duration, 0))
     _sub(a, "AtCompletionExpenseCost",      "0")
     _sub(a, "AtCompletionLaborCost",        "0")
-    _sub(a, "AtCompletionLaborUnits",       "0")
+    # P6's own definition, so the three agree rather than contradicting:
+    # at completion is what has been spent plus what is left.
+    _sub(a, "AtCompletionLaborUnits",
+         _num((act.actual_labor_units or 0) + (act.remaining_labor_units or 0)))
     _sub(a, "AtCompletionNonLaborCost",     "0")
     _sub(a, "AtCompletionNonLaborUnits",    "0")
     _sub(a, "AutoComputeActuals",           "0")
@@ -1581,7 +1588,9 @@ def _write_activity(
         _nil(a, "RemainingEarlyStartDate")
 
     _sub(a, "RemainingLaborCost",    "0")
-    _sub(a, "RemainingLaborUnits",   "0")
+    # What is left to spend — the half of the profile in front of the data
+    # date. Zeroing it meant an imported schedule forecast no labour at all.
+    _sub(a, "RemainingLaborUnits",   _num(act.remaining_labor_units))
 
     if act.late_finish:
         _sub(a, "RemainingLateFinishDate", _dt_activity_finish(act.late_finish, act))

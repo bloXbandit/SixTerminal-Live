@@ -194,6 +194,31 @@ def load_xer(path: str) -> Project:
         if a.uid in blu_map:
             a.planned_labor_units = blu_map[a.uid]
 
+    # Actual and remaining roll up the same way. P6 keeps all three and the
+    # usage profile plots the last two — actual behind the data date, remaining
+    # in front — so a schedule that arrived with only the budget forecast no
+    # labour and showed no history.
+    act_map: Dict[str, float] = {}
+    rem_map: Dict[str, float] = {}
+    for row in tables.get("TASKRSRC", []):
+        if row.get("proj_id", "") != proj_uid:
+            continue
+        tid = row.get("task_id", "")
+        if not tid:
+            continue
+        spent = (_safe_float(row.get("act_reg_qty", "0"))
+                 + _safe_float(row.get("act_ot_qty", "0")))
+        if spent:
+            act_map[tid] = act_map.get(tid, 0.0) + spent
+        left = _safe_float(row.get("remain_qty", "0"))
+        if left:
+            rem_map[tid] = rem_map.get(tid, 0.0) + left
+    for a in project.activities:
+        if a.uid in act_map:
+            a.actual_labor_units = act_map[a.uid]
+        if a.uid in rem_map:
+            a.remaining_labor_units = rem_map[a.uid]
+
     # --- The resource library and the assignments themselves ---
     #
     # The roll-up above keeps working exactly as it did: it is the per-activity

@@ -72,6 +72,14 @@ class Activity:
     constraint_date: Optional[str] = None
     notes: Optional[str] = None
     planned_labor_units: float = 0.0       # Budgeted Labor Units (BLU)
+    # The other two thirds of the same number. P6 keeps Budgeted, Actual and
+    # Remaining separately, and the usage profile plots the last two: Actual
+    # behind the data date, Remaining in front of it. Both used to be written
+    # out as a hard zero, so every export erased the history of a job that had
+    # already started while keeping the budget — the profile came back empty
+    # before the data date and nothing said why.
+    actual_labor_units: float = 0.0        # spent, behind the data date
+    remaining_labor_units: float = 0.0     # left to spend, in front of it
     # P6 user-defined fields, keyed by their TITLE as it appears in P6
     # ("Number of Electricians"). Kept generic so an imported schedule keeps
     # every UDF it arrived with rather than only the ones this app knows.
