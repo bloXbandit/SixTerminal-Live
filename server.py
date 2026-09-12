@@ -2571,22 +2571,30 @@ def _keep_document_file(pid, doc, blob, filename, content_type=""):
             _local_doc_path(pid, doc.id, ext).write_bytes(blob)
         lib = getattr(_brain_for(_projects[pid]["project"]), "library", None)
         if lib is not None:
-            lib.mark_file(doc.id, ext, len(blob))
+            lib.mark_file(doc.id, ext, len(blob), filename or "")
     except Exception:
         pass
 
 
 def _fetch_document_file(pid, doc):
-    """(bytes, filename) or None."""
+    """
+    (bytes, filename) or None.
+
+    The filename is the one it ARRIVED with, not the library's label for it.
+    A drawing is filed under its sheet number, so returning doc.name handed
+    back a file called "E-101" with no extension — bytes intact and useless,
+    because nothing on the user's machine will open it.
+    """
     ext = getattr(doc, "file_ext", "") or ""
+    want = (getattr(doc, "file_name", "") or "").strip() or (doc.name + ext)
     try:
         if cloud_store.is_configured():
             got = cloud_store.load_document(pid, doc.id, ext)
             if got:
-                return got
+                return got[0], (got[1] or want)
         path = _local_doc_path(pid, doc.id, ext)
         if path.exists():
-            return path.read_bytes(), doc.name
+            return path.read_bytes(), want
     except Exception:
         pass
     return None
@@ -2633,7 +2641,11 @@ def documents_list():
          "line_count": d.line_count, "pages": d.pages, "sheets": d.sheets,
          "added_at": d.added_at, "truncated": d.truncated,
          "has_file": getattr(d, "has_file", False),
-         "file_bytes": getattr(d, "file_bytes", 0)} for d in reversed(docs)]})
+         "file_bytes": getattr(d, "file_bytes", 0),
+         # A drawing is filed under its sheet number, which is what someone
+         # looking for it will say — but they sent a file with a name, and
+         # not showing it means they cannot tell which upload this was.
+         "file_name": getattr(d, "file_name", "")} for d in reversed(docs)]})
 
 
 @app.route("/api/documents/search", methods=["GET"])

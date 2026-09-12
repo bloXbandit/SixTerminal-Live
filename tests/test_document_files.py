@@ -226,3 +226,41 @@ def test_a_scope_pdf_keeps_its_file_too(app, monkeypatch):
     assert r.status_code == 200, r.get_data(as_text=True)[:200]
     docs = app.get("/api/documents").get_json()["documents"]
     assert docs[0]["has_file"] is True
+
+
+def test_the_download_comes_back_under_the_name_it_was_sent_with(app, monkeypatch):
+    """
+    A drawing is filed under its sheet number, because "E-101" is what anyone
+    looking for it will say. But the DOWNLOAD has to be the file that was sent
+    — "E-101" with no extension is bytes the user's machine will not open, so
+    the round trip fails at the last step while looking like it worked.
+    """
+    from interpreter import vision as _vision
+    monkeypatch.setattr(_vision, "classify_image_intent", lambda *a, **k: "drawing")
+    monkeypatch.setattr(_vision, "read_drawing", lambda *a, **k: {
+        "sheet_number": "E-101", "sheet_title": "Power Plan",
+        "discipline": "electrical", "summary": "s", "facts": [], "directives": []})
+
+    blob = b"%PDF-1.4 sheet"
+    app.post("/api/brain/image",
+             data={"file": (io.BytesIO(blob), "MDC1 Lookahead Wk45.pdf")},
+             content_type="multipart/form-data")
+    doc = app.get("/api/documents").get_json()["documents"][0]
+    assert doc["name"] == "E-101", "filed under something other than the sheet"
+    assert doc["file_name"] == "MDC1 Lookahead Wk45.pdf", \
+        "the library cannot say which upload this was"
+
+    r = app.get(f"/api/documents/{doc['id']}/file")
+    assert r.data == blob
+    assert "MDC1 Lookahead Wk45.pdf" in r.headers["Content-Disposition"]
+
+
+def test_a_document_kept_before_the_name_was_recorded_still_downloads(app):
+    """An older manifest has no file_name. It must fall back, not 500."""
+    doc = _upload(app, _pdf(), "old.pdf")
+    lib = __import__("server")._brain_for(
+        __import__("server")._projects["J"]["project"]).library
+    lib.docs[0].file_name = ""                 # as an old manifest loads
+    r = app.get(f"/api/documents/{doc['id']}/file")
+    assert r.status_code == 200
+    assert "old" in r.headers["Content-Disposition"]
