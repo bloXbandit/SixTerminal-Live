@@ -801,6 +801,38 @@ def _calendar_target_from_name(name: str) -> str:
     return _PCAL_5_NOHOL
 
 
+
+def _keep_or_mint(uids, start: int) -> Dict[str, str]:
+    """
+    Map each source uid to the ObjectId it should be written with.
+
+    A uid that is already a plausible P6 ObjectId is KEPT. That matters most
+    for resources, which are enterprise-global: P6 matches an imported one to
+    the library by its Id, but handing it a fabricated ObjectId invites it to
+    match — or overwrite — whatever else happens to hold that number. Anything
+    the app minted itself gets a fresh id from `start`, stepping over numbers
+    already claimed above so the two schemes cannot collide.
+    """
+    out: Dict[str, str] = {}
+    taken = set()
+    for u in uids:
+        key = _key(u)
+        if key.isdigit() and 0 < int(key) <= _INT32_MAX:
+            out[key] = key
+            taken.add(key)
+    nxt = start
+    for u in uids:
+        key = _key(u)
+        if key in out:
+            continue
+        while str(nxt) in taken:
+            nxt += 1
+        out[key] = str(nxt)
+        taken.add(str(nxt))
+        nxt += 1
+    return out
+
+
 def _own_calendars(project) -> list:
     """
     The calendars this project actually carries, if any are usable.
@@ -834,8 +866,7 @@ def _build_calendar_oid_map(project: Project) -> Dict[str, str]:
         # was matched to one of three canned ones BY NAME and a six-day
         # ten-hour week had nowhere to land — which is why every import came
         # back on P6 5-day and had to be set by hand.
-        mapping = {_key(cal.uid): str(_PCAL_OID_START + i)
-                   for i, cal in enumerate(own)}
+        mapping = _keep_or_mint([c.uid for c in own], _PCAL_OID_START)
         # An activity naming a calendar this project does not have must land on
         # one that WAS written. Falling through to the fixed P5-DAY id when the
         # fixed calendars are no longer emitted gives P6 "Referenced business
@@ -1283,10 +1314,10 @@ def _section_real_resources(root: ET.Element, project: Project) -> Dict[str, str
     Max Units/Time off the rate, and a resource without one imports with a
     zero availability that quietly breaks levelling.
     """
-    res_oid: Dict[str, str] = {}
+    res_oid = _keep_or_mint([r.uid for r in project.resources],
+                            _RESOURCE_OID_START)
     for i, r in enumerate(project.resources):
-        oid = str(_RESOURCE_OID_START + i)
-        res_oid[_key(r.uid)] = oid
+        oid = res_oid[_key(r.uid)]
         el = _sub(root, "Resource")
         _sub(el, "AutoComputeActuals",     "1")
         _sub(el, "CalculateCostFromUnits", "1")
@@ -1437,8 +1468,9 @@ def _section_project_calendars(proj_el: ET.Element, proj_uid: str, project=None)
     """
     own = _own_calendars(project)
     if own:
-        for i, cal in enumerate(own):
-            _project_calendar(proj_el, cal, proj_uid, str(_PCAL_OID_START + i))
+        oids = _keep_or_mint([c.uid for c in own], _PCAL_OID_START)
+        for cal in own:
+            _project_calendar(proj_el, cal, proj_uid, oids[_key(cal.uid)])
         return
 
     hol = frozenset()

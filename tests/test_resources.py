@@ -313,3 +313,73 @@ def test_an_xer_round_trip_keeps_the_history(roundtrip, xer):
     back, _ = roundtrip(xer)
     assert back.activities[0].actual_labor_units == 80
     assert back.activities[0].remaining_labor_units == 280
+
+
+# ── the identity P6 matches on ───────────────────────────────────────────────
+#
+# Resources are enterprise-global in P6: an imported one is matched against the
+# library rather than created alongside it. Both halves of its identity have to
+# survive — the Id, which is what P6 usually matches on, and the ObjectId,
+# because handing P6 a fabricated one invites it to match, or overwrite,
+# whatever else in the database happens to hold that number.
+
+def _with(*resources):
+    p = _job(resources=False)
+    p.resources = list(resources)
+    p.resource_assignments = [
+        ResourceAssignment(uid="ra1", activity_uid="u1",
+                           resource_uid=resources[0].uid, planned_units=320)]
+    p.build_lookups()
+    return p
+
+
+def _oids(path):
+    import re
+    xml = open(path, encoding="utf-8").read()
+    return dict(re.findall(r"<Resource>.*?<Id>([^<]*)</Id>.*?<ObjectId>(\d+)</ObjectId>",
+                           xml, re.S))
+
+
+def test_a_resource_that_came_from_p6_keeps_its_object_id(roundtrip):
+    """The one that matters: a fabricated ObjectId is how an import lands on
+    the wrong row of somebody's enterprise library."""
+    _, path = roundtrip(_with(Resource(uid="4521", id="MDC-ELEC",
+                                       name="MDC Electrician", type="Labor")))
+    assert _oids(path) == {"MDC-ELEC": "4521"}
+
+
+def test_the_resource_id_survives_too(roundtrip):
+    """P6 matches the library on Id. Losing it makes a duplicate certain."""
+    back, _ = roundtrip(_with(Resource(uid="4521", id="MDC-ELEC",
+                                       name="MDC Electrician", type="Labor")))
+    assert back.resources[0].id == "MDC-ELEC"
+    assert back.resources[0].name == "MDC Electrician"
+
+
+def test_a_resource_the_app_invented_gets_an_id_from_the_safe_range(roundtrip):
+    """It has no P6 identity to keep, and must not squat on a number that
+    might mean something in the target database."""
+    _, path = roundtrip(_with(Resource(uid="RSRC-ELEC", id="ELEC",
+                                       name="Electrician", type="Labor")))
+    assert _oids(path) == {"ELEC": "6900"}
+
+
+def test_kept_and_minted_ids_cannot_collide(roundtrip):
+    p = _with(Resource(uid="6900", id="FROM-P6", name="From P6", type="Labor"),
+              Resource(uid="RSRC-NEW", id="NEW", name="New", type="Labor"))
+    got = _oids(roundtrip(p)[1])
+    assert got["FROM-P6"] == "6900"
+    assert got["NEW"] != "6900", "a minted id landed on a kept one"
+    assert len(set(got.values())) == 2
+
+
+def test_every_assignment_points_at_a_resource_that_was_written(roundtrip):
+    import re
+    p = _with(Resource(uid="4521", id="MDC-ELEC", name="MDC Electrician",
+                       type="Labor"),
+              Resource(uid="RSRC-NEW", id="NEW", name="New", type="Labor"))
+    _, path = roundtrip(p)
+    xml = open(path, encoding="utf-8").read()
+    written = set(_oids(path).values())
+    refs = set(re.findall(r"<ResourceObjectId>(\d+)<", xml))
+    assert not (refs - written), f"dangling resource refs: {sorted(refs - written)}"
