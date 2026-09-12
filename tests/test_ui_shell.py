@@ -197,3 +197,33 @@ def test_scheduling_one_activity_is_reachable_from_the_grid():
     assert "Schedule this to a date" in HTML
     assert "function scheduleActivityTo(" in HTML
     assert "ripple_preview" in HTML and "'ripple'" in HTML
+
+
+# ── an endpoint with no caller is a feature nobody can use ───────────────────
+
+def test_a_document_can_be_filed_from_the_page_not_only_read_back():
+    """
+    The library had a viewer, a search, a download and a delete — and no way
+    to put anything in. Every PDF a user dropped went to the schedule importer
+    or the drawing reader instead, so the list stayed empty and the storage
+    behind it was unreachable. Reading an endpoint's tests proves it works;
+    only this proves anyone can get to it.
+    """
+    assert "/api/documents" in HTML, "the page cannot see the library at all"
+    post = re.search(r"fetch\(\s*'/api/documents'\s*,\s*\{[^}]*method:\s*'POST'",
+                     HTML)
+    assert post, "nothing on the page POSTs a document — the library is write-only from the server"
+
+
+def test_the_upload_control_is_wired_to_something_that_exists():
+    m = re.search(r"onchange=\"(\w+)\(this\.files\[0\]\)\"", HTML)
+    assert m, "the document file input has no handler"
+    assert f"function {m.group(1)}(" in HTML or f"async function {m.group(1)}(" in HTML
+
+
+def test_the_empty_state_does_not_recommend_the_path_that_does_not_work():
+    """It used to say "drop a PDF into the chat", which is exactly what a user
+    does before finding the list still empty."""
+    i = HTML.find("Nothing has been filed for this job yet")
+    assert i > 0, "the empty state was reworded without updating this"
+    assert "Add document" in HTML[i:i + 400]
