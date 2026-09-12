@@ -150,9 +150,64 @@ def test_six_day_export_adds_calendar_and_holidays(tmp_path):
     p.build_lookups()
     xml = _export(p, tmp_path, "six.xml")
     assert "G6-DAY WITH HOLIDAY" in xml
-    assert "P6-DAY WITH HOLIDAY" in xml
+    # The project calendar now goes out under ITS OWN name rather than being
+    # matched to a canned "P6-DAY WITH HOLIDAY". That is the point: a calendar
+    # that is written as itself is a calendar P6 does not have to be told about
+    # again after every import.
+    assert "<Name>6-DAY WITH HOLIDAY</Name>" in xml
     assert "<Date>2026-07-03T00:00:00</Date>" in xml      # observed 4 Jul
-    assert xml.count("<HolidayOrException>") == len(hols) * 4   # 2 global + 2 project
+    # 2 global sets (5-day-with-hol, 6-day-with-hol) + the project's own one
+    assert xml.count("<HolidayOrException>") == len(hols) * 3
+
+
+def test_a_six_day_week_actually_leaves_as_six_days(tmp_path):
+    """
+    The symptom this was found through: every import landed on P6 5-day and the
+    calendar had to be set by hand afterwards. The export wrote one of three
+    canned calendars, matched to the schedule's BY NAME, each hardcoded to
+    Monday-Friday and eight hours — so a six-day or ten-hour week could not be
+    expressed at all, whatever the schedule said.
+    """
+    from engine.xml_reader import load_xml
+    p = Project(uid="1", name="six", id="SIX", planned_start="2026-06-29")
+    p.calendars = [Calendar(uid="1", name="6-Day 10hr", work_days=WORKWEEK_6_DAY,
+                            hours_per_day=10.0, hours_per_week=60.0)]
+    p.wbs_nodes = [WBSNode(uid="10", name="W", code="W")]
+    p.activities = [Activity(uid="100", activity_id="A1000", name="Task",
+                             wbs_uid="10", calendar_uid="1",
+                             planned_duration=80.0, remaining_duration=80.0)]
+    p.build_lookups()
+    out = os.path.join(str(tmp_path), "sixten.xml")
+    from engine.xml_writer import write_p6_xml
+    write_p6_xml(p, out)
+    back = load_xml(out)
+
+    cal = next(c for c in back.calendars if c.name == "6-Day 10hr")
+    assert len(cal.work_days) == 6, "Saturday was dropped on the way out"
+    assert 5 in cal.work_days, "the six-day week came back without its Saturday"
+    assert cal.hours_per_day == 10, "a ten-hour day came back as eight"
+
+
+def test_the_activity_points_at_the_calendar_it_is_actually_on(tmp_path):
+    """A calendar written correctly that nothing references is no better than
+    one written wrong."""
+    from engine.xml_reader import load_xml
+    from engine.xml_writer import write_p6_xml
+    p = Project(uid="1", name="two", id="TWO", planned_start="2026-06-29")
+    p.calendars = [Calendar(uid="c5", name="5-Day"),
+                   Calendar(uid="c6", name="6-Day 10hr",
+                            work_days=WORKWEEK_6_DAY, hours_per_day=10.0)]
+    p.wbs_nodes = [WBSNode(uid="10", name="W", code="W")]
+    p.activities = [Activity(uid="100", activity_id="A1000", name="Task",
+                             wbs_uid="10", calendar_uid="c6",
+                             planned_duration=80.0, remaining_duration=80.0)]
+    p.build_lookups()
+    out = os.path.join(str(tmp_path), "two.xml")
+    write_p6_xml(p, out)
+    back = load_xml(out)
+    cal = {c.uid: c for c in back.calendars}[back.activities[0].calendar_uid]
+    assert cal.name == "6-Day 10hr"
+    assert len(cal.work_days) == 6 and cal.hours_per_day == 10
 
 
 # ── WBS re-parenting (move_wbs) ──────────────────────────────────────────────

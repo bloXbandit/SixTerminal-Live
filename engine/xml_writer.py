@@ -91,6 +91,9 @@ _ASSIGNMENT_OID_START = 83399
 # Real resources read off an import get their own range, clear of the single
 # synthetic _RES_OID / _RRATE_OID stub above (which stays for the case where
 # the app has assignments but no library to go with them).
+# The project's OWN calendars, written as themselves. Clear of the fixed
+# P6603/6604/6602/6605 block below, which stays for a project that has none.
+_PCAL_OID_START = 6700
 _RESOURCE_OID_START = 6900
 _RESOURCE_RATE_OID_START = 7200
 _PROJECT_OID_FALLBACK = "4510"
@@ -659,20 +662,62 @@ def _nil(parent: ET.Element, tag: str) -> ET.Element:
     return el
 
 
-def _workweek(parent: ET.Element, days_on: tuple):
+_DAY_NAMES = ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday",
+              "Saturday", "Sunday")          # index == Calendar.work_days value
+
+
+def _days_on(cal) -> tuple:
+    """The day NAMES this calendar works, from the pattern it was read with."""
+    wd = getattr(cal, "work_days", None)
+    if not wd:
+        return _DAY_NAMES[:5]
+    return tuple(_DAY_NAMES[d] for d in sorted(wd) if 0 <= d < 7)
+
+
+def _shifts(hours_per_day: float) -> list:
+    """
+    The work times that add up to a day of this length.
+
+    Hardcoded 08:00-11:59 + 13:00-16:59 meant every exported calendar was an
+    eight-hour day whatever the schedule said, so a 6-day 10-hour job came back
+    from P6 as 5-day 8-hour and every duration re-read as a different number of
+    days. The shape is kept — a morning, an hour for lunch, an afternoon — and
+    only the length moves.
+
+    P6 writes a shift's Finish as the last working minute (11:59, not 12:00),
+    so the same convention is used here.
+    """
+    h = float(hours_per_day or 8.0)
+    if h <= 0:
+        h = 8.0
+    half = h / 2.0
+    start = 8 * 60                       # 08:00
+    m_end = start + int(round(half * 60))
+    a_start = m_end + 60                 # an hour for lunch
+    a_end = a_start + int(round((h - half) * 60))
+    if a_end > 24 * 60 - 1:              # a very long day: run it straight
+        m_end = start + int(round(h * 60))
+        return [(start, m_end)]
+    return [(start, m_end), (a_start, a_end)]
+
+
+def _hhmm(minutes: int) -> str:
+    return f"{minutes // 60:02d}:{minutes % 60:02d}:00"
+
+
+def _workweek(parent: ET.Element, days_on: tuple, hours_per_day: float = 8.0):
     """Write StandardWorkWeek. days_on is tuple of day names that are working."""
     all_days = ("Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday")
+    shifts = _shifts(hours_per_day)
     sww = _sub(parent, "StandardWorkWeek")
     for day in all_days:
         swh = _sub(sww, "StandardWorkHours")
         _sub(swh, "DayOfWeek", day)
         if day in days_on:
-            wt1 = _sub(swh, "WorkTime")
-            _sub(wt1, "Start", "08:00:00")
-            _sub(wt1, "Finish", "11:59:00")
-            wt2 = _sub(swh, "WorkTime")
-            _sub(wt2, "Start", "13:00:00")
-            _sub(wt2, "Finish", "16:59:00")
+            for s, e in shifts:
+                wt = _sub(swh, "WorkTime")
+                _sub(wt, "Start", _hhmm(s))
+                _sub(wt, "Finish", _hhmm(e - 1))
         else:
             _nil(swh, "WorkTime")
 
@@ -756,6 +801,21 @@ def _calendar_target_from_name(name: str) -> str:
     return _PCAL_5_NOHOL
 
 
+def _own_calendars(project) -> list:
+    """
+    The calendars this project actually carries, if any are usable.
+
+    A calendar needs a uid to be pointed at and a name to be recognised in P6.
+    With none that qualify the export falls back to the fixed set below, which
+    is what an app-built schedule with no calendar data has always had.
+    """
+    out = []
+    for c in (getattr(project, "calendars", None) or []):
+        if getattr(c, "uid", None) and (getattr(c, "name", "") or "").strip():
+            out.append(c)
+    return out
+
+
 def _build_calendar_oid_map(project: Project) -> Dict[str, str]:
     """
     Map app/XER calendar ids to the fixed project calendar ids written below.
@@ -767,6 +827,18 @@ def _build_calendar_oid_map(project: Project) -> Dict[str, str]:
     "Referenced business object Calendar ... cannot be found, ignoring field
     CalendarObjectId", leaving the activity with no calendar at all.
     """
+    own = _own_calendars(project)
+    if own:
+        # The project's calendars are written as themselves, so an activity
+        # points at the calendar it is actually on. Before this, every calendar
+        # was matched to one of three canned ones BY NAME and a six-day
+        # ten-hour week had nowhere to land — which is why every import came
+        # back on P6 5-day and had to be set by hand.
+        mapping = {_key(cal.uid): str(_PCAL_OID_START + i)
+                   for i, cal in enumerate(own)}
+        mapping.setdefault("", mapping[_key(own[0].uid)])
+        return mapping
+
     six = _project_uses_6day(project)
     mapping: Dict[str, str] = {}
     for cal in getattr(project, "calendars", []) or []:
@@ -1098,20 +1170,29 @@ def _cal_is_6day(cal) -> bool:
     return bool(wd) and len(wd) == 6
 
 
-def _global_calendar(root: ET.Element, oid: str, name: str, days_on: tuple, holidays=()):
+def _global_calendar(root: ET.Element, oid: str, name: str, days_on: tuple,
+                     holidays=(), hours_per_day: float = 8.0):
+    """
+    A global calendar the project calendars sit on top of.
+
+    The hours follow the project rather than being fixed at eight: a project
+    calendar inheriting from a base that disagrees with it about the length of
+    a day is how a 10-hour job reads back as an 8-hour one.
+    """
+    h = float(hours_per_day or 8.0)
     cal = _sub(root, "Calendar")
     _nil(cal, "BaseCalendarObjectId")
-    _sub(cal, "HoursPerDay",   "8")
-    _sub(cal, "HoursPerMonth", "172")
-    _sub(cal, "HoursPerWeek",  "40")
-    _sub(cal, "HoursPerYear",  "2000")
+    _sub(cal, "HoursPerDay",   str(int(h)))
+    _sub(cal, "HoursPerMonth", str(int(round(h * len(days_on) * 4.333))))
+    _sub(cal, "HoursPerWeek",  str(int(round(h * len(days_on)))))
+    _sub(cal, "HoursPerYear",  str(int(round(h * len(days_on) * 52))))
     _sub(cal, "IsDefault",     "0")
     _sub(cal, "IsPersonal",    "0")
     _sub(cal, "Name",          name)
     _sub(cal, "ObjectId",      oid)
     _nil(cal, "ProjectObjectId")
     _sub(cal, "Type",          "Global")
-    _workweek(cal, days_on)
+    _workweek(cal, days_on, h)
     _holiday_exceptions(cal, holidays)
 
 
@@ -1272,13 +1353,35 @@ def _section_fpt(root: ET.Element):
 
 # ── Project calendar (nested inside <Project>) ─────────────────────────────────
 
-def _project_calendar(proj_el: ET.Element, cal: Calendar, proj_uid: str):
-    """Write a project-scoped calendar inside the Project block."""
+def _project_calendar(proj_el: ET.Element, cal: Calendar, proj_uid: str,
+                      oid: Optional[str] = None):
+    """
+    Write a project-scoped calendar inside the Project block.
+
+    This used to write Monday-to-Friday regardless of what the calendar said,
+    and pick its base calendar by looking for a "7" in the NAME. So a six-day
+    calendar went out as five-day, every import landed back on P6 5-day, and
+    the working pattern had to be set by hand after every single import. The
+    reader gets the pattern right and the app's own CPM uses it; only the
+    export was throwing it away.
+
+    Both now come off the calendar itself: the days it works, and the hours it
+    works them. Holidays are written too — a calendar named for its holiday
+    set that observes none of them is the same bug one level down.
+    """
     c = _sub(proj_el, "Calendar")
-    lname = (cal.name or "").lower()
-    base_oid = _GCAL_7_NOHOL if "7" in lname or "seven" in lname else _GCAL_5_NOHOL
-    if "hol" in lname and "no hol" not in lname:
-        base_oid = _GCAL_5_HOL
+    days = _days_on(cal)
+    hol = _cal_holidays(cal)
+    # The base calendar is chosen by what this calendar DOES, not by what it is
+    # called. A job named "6-Day 10hr" has no "7" in it and was landing on the
+    # five-day base.
+    n = len(days)
+    if n >= 7:
+        base_oid = _GCAL_7_NOHOL
+    elif n == 6:
+        base_oid = _GCAL_6_HOL if hol else _GCAL_7_NOHOL
+    else:
+        base_oid = _GCAL_5_HOL if hol else _GCAL_5_NOHOL
     _sub(c, "BaseCalendarObjectId", base_oid)
     _sub(c, "HoursPerDay",          str(int(cal.hours_per_day)))
     _sub(c, "HoursPerMonth",        str(int(cal.hours_per_month)))
@@ -1287,10 +1390,11 @@ def _project_calendar(proj_el: ET.Element, cal: Calendar, proj_uid: str):
     _sub(c, "IsDefault",            "0")
     _sub(c, "IsPersonal",           "0")
     _sub(c, "Name",                 cal.name)
-    _sub(c, "ObjectId",             cal.uid)
+    _sub(c, "ObjectId",             oid or str(cal.uid))
     _sub(c, "ProjectObjectId",      proj_uid)     # must equal the Project ObjectId
     _sub(c, "Type",                 "Project")    # NOT Global
-    _workweek(c, ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday"))
+    _workweek(c, days, cal.hours_per_day)
+    _holiday_exceptions(c, hol)
 
 
 
@@ -1318,6 +1422,12 @@ def _section_project_calendars(proj_el: ET.Element, proj_uid: str, project=None)
     when the project uses it. Holidays are attached only when present, keeping
     output unchanged for schedules that do not use them.
     """
+    own = _own_calendars(project)
+    if own:
+        for i, cal in enumerate(own):
+            _project_calendar(proj_el, cal, proj_uid, str(_PCAL_OID_START + i))
+        return
+
     hol = frozenset()
     six = False
     if project is not None:
