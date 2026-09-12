@@ -3651,8 +3651,16 @@ def export_check():
     # correctly typed, and points at nothing. P6 does not fail on one — it logs
     # it and leaves the field empty, so the import reports success and an
     # activity quietly has no calendar.
+    #
+    # OFF BY DEFAULT, because finding those means writing the whole file and
+    # parsing it back — 6.6 seconds on a 2,400-activity job here and worse on
+    # the host. This runs on the export BUTTON, which then sat dead for the
+    # duration with nothing on screen, and a dead button is indistinguishable
+    # from a broken one. The date scan is a pass over the activities and is
+    # what the button actually needs; the audit is a diagnostic and is asked
+    # for by name.
     refs = []
-    try:
+    if request.args.get("references") in ("1", "true", "yes"):
         from engine.xml_audit import audit_project
         a = audit_project(sess["project"])
         refs = a["dangling_references"] + a["duplicate_object_ids"]
@@ -3666,8 +3674,6 @@ def export_check():
                          + "\n".join(f"  {r.get('field') or r.get('element')} "
                                      f"{r.get('value')} — {r['why']}"
                                      for r in refs[:20])))
-    except Exception:
-        pass
     if problems:
         _append_chat(
             "system_result",

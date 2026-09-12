@@ -189,13 +189,50 @@ def test_a_clean_file_says_so():
 
 # ── the endpoint ─────────────────────────────────────────────────────────────
 
-def test_the_export_check_reports_references_alongside_dates():
+def _serve(project=None):
     import server
     server._projects.clear()
     server._projects["J"] = server._make_session("J", "t.xml")
-    server._projects["J"]["project"] = _job()
+    server._projects["J"]["project"] = project or _job()
     server._active_id[0] = "J"
-    d = server.app.test_client().get("/api/export/check").get_json()
+    return server.app.test_client()
+
+
+def test_the_export_check_reports_references_when_asked_for_them():
+    d = _serve().get("/api/export/check?references=1").get_json()
     assert d["success"]
     assert d["reference_count"] == 0
     assert d["reference_problems"] == []
+
+
+def test_the_export_button_does_not_pay_for_the_audit():
+    """
+    Finding a dangling reference means writing the whole file and parsing it
+    back — 6.6 seconds on a 2,400-activity job, and worse on the host. This
+    endpoint runs on the export BUTTON, which then sat there doing nothing
+    visible for the duration; a dead button is indistinguishable from a broken
+    one, and it was reported as exactly that. The date scan is what the button
+    needs. The audit is a diagnostic and is asked for by name.
+    """
+    import time
+
+    c = _serve()
+    t = time.time()
+    d = c.get("/api/export/check").get_json()
+    elapsed = time.time() - t
+    assert d["success"] and d["reference_count"] == 0
+    assert elapsed < 1.0, f"the default check took {elapsed:.1f}s — it writes the file"
+
+    # and the caller cannot get the audit by accident
+    import server
+    calls = []
+    import engine.xml_audit as _xa
+    real = _xa.audit_project
+    _xa.audit_project = lambda *a, **k: (calls.append(1), real(*a, **k))[1]
+    try:
+        c.get("/api/export/check")
+        assert not calls, "the default path ran the audit anyway"
+        c.get("/api/export/check?references=1")
+        assert calls, "asking for references did not run the audit"
+    finally:
+        _xa.audit_project = real
