@@ -20,6 +20,7 @@ Supported actions (must match edit_engine.py):
   update_labor_units, bulk_clear_constraints, bulk_append_name
   tag_by_folder, group_into_subfolder, align_child_tokens  (per-folder pattern edits)
   connect_folders  (does every folder reach its own governing activity?)
+  actualize  (status the schedule from a statement of progress or a lookahead)
   excel_customise  (changes to the Excel tracker that survive the next export)
 
 Supported models: claude, gpt-4.1-mini, gpt-4.1-nano, gpt-5.4-mini
@@ -711,6 +712,12 @@ EXAMPLES:
    not twenty-eight add_relations you would have to guess the particulars of)
   -> [{"action": "connect_folders", "folder_pattern": "^Gen\\\\s*\\\\d+", "target_pattern": "commission"}]
 
+  User: "gens 315 through 319 are done, and we're out to terminations in 320"
+   (a front, not a row list — and the second half is a different front in a
+   different folder, so it is two commands, both previewing)
+  -> [{"action": "actualize", "folder_pattern": "^Gen 31[5-9]$"},
+      {"action": "actualize", "folder_pattern": "^Gen 320$", "through": "Terminate"}]
+
   User: "you choose the durations" (user defers — NEVER clarify)
   -> Execute with industry-standard durations, mention choices in chat. Do NOT ask for confirmation.
 
@@ -1367,6 +1374,40 @@ tag_by_folder:
   - replace_existing (default true): an activity already ending in "(...)" has
     that CORRECTED, not a second tag appended — this is how a wrong room tag
     gets fixed. A folder whose token cannot be read is reported, never guessed.
+
+actualize  (aliases: actualise, status_from_evidence):
+  Status the schedule from a STATEMENT OF PROGRESS rather than a list of rows.
+  Use it whenever the user tells you where the work has got to: "gens 315
+  through 319 are complete", "we're out to terminations in ER 208", "here's the
+  lookahead, we're further along than the app thinks", "precast is done on the
+  east side".
+  {"action": "actualize", "folder_pattern": "^Gen 31[5-9]$"}
+  {"action": "actualize", "folder_pattern": "^ER 208$", "through": "Terminate"}
+  {"action": "actualize", "folder_pattern": "^Gen \\d+$", "as_of": "2026-01-15", "apply": true}
+  {"action": "actualize", "activity_ids": ["A1230", "A1240"]}
+  - folder_pattern: regex over folder names the evidence is about
+  - activity_ids:   explicit activities said to be complete
+  - through:        the activity the work has REACHED in each folder. That one
+                    goes In Progress, everything feeding it goes Complete, and
+                    work past it is left alone — "out to X".
+  - as_of:          the date the evidence describes. A lookahead's data date
+                    goes here. The project's own data date is NOT moved.
+  - preserve:       an activity whose finish the user wants held; where it
+                    lands is reported.
+  - include_predecessors: default true. Leave it on.
+  THE POINT IS THE CLOSURE. "Gen 315 is complete" is also saying its feeders
+  are pulled, its gear is set and the precast under it went in months ago.
+  Nobody lists that, and it is not a guess — it is what the named work depends
+  on, transitively, over the whole network, including other folders and other
+  phases. This computes it. That is why you must NOT answer this kind of
+  request with a string of set_progress calls: you would be statusing only
+  what was literally said and leaving the schedule internally contradictory,
+  with completed work sitting on top of predecessors that never started.
+  PREVIEWS BY DEFAULT, and the preview separates what the user named from what
+  follows from it. Relay both counts — the implied list is the surprising part
+  and is what they are really saying yes to. Then re-send with "apply": true.
+  Use set_progress instead only for one or two specific rows the user pointed
+  at with no wider claim behind it.
 
 connect_folders  (aliases: ensure_connected, check_connected):
   "Do all my X actually tie into their Y?" — asked of the LOGIC, once per

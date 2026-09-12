@@ -528,6 +528,8 @@ def apply_command(project: Project, command: Dict[str, Any]) -> Tuple[bool, str]
             return _excel_customise(project, command)
         elif action in ("connect_folders", "ensure_connected", "check_connected"):
             return _connect_folders(project, command)
+        elif action in ("actualize", "actualise", "status_from_evidence"):
+            return _actualize(project, command)
         elif action == "set_wbs_color":
             return _set_wbs_color(project, command)
         elif action in ("set_wbs_id_prefix", "set_folder_prefix"):
@@ -4340,6 +4342,65 @@ def _connect_folders(project: Project, cmd: Dict) -> Tuple[bool, str]:
                            }.get((cmd.get("type") or "fs").lower(),
                                  "Finish to Start"),
             lag_days=float(cmd.get("lag_days") or 0),
+            apply=not _pattern_preview(cmd),
+        )
+    except ValueError as e:
+        raise EditError(str(e))
+    return True, describe(res)
+
+
+def _actualize(project: Project, cmd: Dict) -> Tuple[bool, str]:
+    """
+    Status the schedule from a statement of progress.
+
+    What the user sends is never a list of activity IDs — it is a front.
+    "Several gens are complete", "we're out to terminations in ER 208", a
+    lookahead whose data date is three weeks past the app's. Each of those
+    implies far more than it says: a finished room is also saying its feeders
+    are pulled, its gear is set and the precast under it went in months ago.
+
+    Nobody lists that, and it is not a judgement call — it is what the named
+    work DEPENDS ON, transitively, which is a computation over the whole
+    network. That closure is the reason to use this instead of a string of
+    set_progress calls.
+
+      folder_pattern       regex over folder names the evidence is about
+      activity_ids         explicit activities said to be complete
+      through              the activity the work has REACHED in each folder.
+                           It goes In Progress, everything feeding it goes
+                           Complete, and work past it is left alone.
+      as_of                the date the evidence describes — a lookahead's
+                           data date. Defaults to the project's own, and the
+                           project's data date is never moved by this.
+      include_predecessors default true. Off makes it status only what was
+                           named, which is rarely what the evidence means.
+      preserve             an activity whose finish the user wants held; its
+                           date before and after is reported.
+      under_wbs            hold it to one branch
+      preview              reports by default; send apply:true to write
+
+    It never un-completes anything: work already statused keeps its own actual
+    dates. The implied set is reported SEPARATELY from what was named, because
+    a closure reaching somewhere it should not is something to catch by
+    reading it, not after three hundred rows have actual dates on them.
+    """
+    from .actualize import actualize, describe
+    ids = cmd.get("activity_ids") or ([cmd["activity_id"]]
+                                      if cmd.get("activity_id") else None)
+    if not cmd.get("folder_pattern") and not cmd.get("folders") and not ids:
+        raise EditError(
+            "actualize needs something to go on — folder_pattern (the folders "
+            "the evidence is about, e.g. '^Gen\\\\s*\\\\d+') or activity_ids.")
+    try:
+        res = actualize(
+            project,
+            folder_pattern=cmd.get("folder_pattern") or cmd.get("folders"),
+            activity_ids=ids,
+            through=cmd.get("through"),
+            as_of=cmd.get("as_of") or cmd.get("data_date"),
+            include_predecessors=cmd.get("include_predecessors", True),
+            under=_pattern_scope(project, cmd),
+            preserve=cmd.get("preserve"),
             apply=not _pattern_preview(cmd),
         )
     except ValueError as e:
