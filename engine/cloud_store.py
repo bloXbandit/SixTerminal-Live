@@ -224,3 +224,71 @@ def load_all() -> List[Dict[str, Any]]:
     except Exception:
         return []
     return out
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# The documents themselves
+# ──────────────────────────────────────────────────────────────────────────────
+#
+# A PDF used to be read for its text and then dropped on the floor. That is
+# fine right up to the first time somebody asks "can I see the drawing again" —
+# and then there is nothing to show, because what was kept is a list of lines
+# with the layout, the tables and the figures gone.
+#
+# The original now lives beside the schedule it belongs to, under the same
+# project key, so re-reading it later with a better extractor, opening it, or
+# handing it to somebody else are all possible. It is stored as it arrived: no
+# gzip, because a PDF is already compressed and spending CPU to add 1% is not a
+# trade worth making.
+
+def _doc_key(pid: str, doc_id: str, ext: str = "") -> str:
+    return f"{_PREFIX}{pid}/docs/{doc_id}{ext}"
+
+
+def save_document(pid: str, doc_id: str, blob: bytes,
+                  filename: str = "", content_type: str = "") -> Tuple[bool, str]:
+    """Keep the file a document was read from. Returns (ok, message)."""
+    client = _client()
+    if client is None:
+        return False, "cloud storage not configured"
+    import os as _os
+    ext = _os.path.splitext(filename or "")[1][:10]
+    try:
+        client.put_object(
+            Bucket=os.environ["R2_BUCKET"], Key=_doc_key(pid, doc_id, ext),
+            Body=blob,
+            ContentType=(content_type or "application/octet-stream"),
+            # The name is carried on the object rather than in the key, so a
+            # file called "RFI 214 — rev B.pdf" keeps its name without every
+            # reader having to agree on how to escape it.
+            Metadata={"filename": filename or doc_id})
+        return True, f"stored {len(blob)} bytes"
+    except Exception as e:
+        return False, f"document save failed: {e}"
+
+
+def load_document(pid: str, doc_id: str, ext: str = "") -> Optional[Tuple[bytes, str]]:
+    """The file back, with the name it came in under. None if it is not there."""
+    client = _client()
+    if client is None:
+        return None
+    try:
+        obj = client.get_object(Bucket=os.environ["R2_BUCKET"],
+                                Key=_doc_key(pid, doc_id, ext))
+        body = obj["Body"].read()
+        name = (obj.get("Metadata") or {}).get("filename") or f"{doc_id}{ext}"
+        return body, name
+    except Exception:
+        return None
+
+
+def delete_document(pid: str, doc_id: str, ext: str = "") -> Tuple[bool, str]:
+    client = _client()
+    if client is None:
+        return False, "cloud storage not configured"
+    try:
+        client.delete_object(Bucket=os.environ["R2_BUCKET"],
+                             Key=_doc_key(pid, doc_id, ext))
+        return True, "deleted"
+    except Exception as e:
+        return False, f"document delete failed: {e}"

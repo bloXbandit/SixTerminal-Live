@@ -2488,6 +2488,10 @@ def document_upload():
 
     brain = _brain_for(sess["project"])
     doc = brain.docs().add_text(name, kind, read)
+    # Keep the file itself, not only what was read out of it. The extraction
+    # is lossy — layout, tables and figures do not survive it — so without the
+    # original "can I see that drawing again" has no answer.
+    _keep_document_file(_active_id[0], doc, blob, name, f.mimetype or "")
     _mark_dirty(_active_id[0])
 
     where = (f"{len(doc.sheets)} sheets: {', '.join(doc.sheets[:8])}"
@@ -2507,6 +2511,84 @@ def document_upload():
         "chat": sess["chat_history"][-2:]})
 
 
+
+# ── the file a document was read from ────────────────────────────────────────
+#
+# R2 when it is configured, a local directory when it is not. The local copy is
+# not a substitute — this container is reclaimed when the session ends — but it
+# is what makes the feature work at all on a laptop with no bucket, and it is
+# better than the previous behaviour of keeping nothing anywhere.
+
+_DOC_DIR = Path(os.environ.get("DOC_DIR") or (Path(tempfile.gettempdir()) / "sixterm_docs"))
+
+
+def _local_doc_path(pid: str, doc_id: str, ext: str = "") -> Path:
+    d = _DOC_DIR / (pid or "_")
+    d.mkdir(parents=True, exist_ok=True)
+    return d / f"{doc_id}{ext}"
+
+
+def _keep_document_file(pid, doc, blob, filename, content_type=""):
+    """Store the original. Never raises — a failed keep must not lose the read."""
+    ext = Path(filename or "").suffix[:10]
+    try:
+        ok = False
+        if cloud_store.is_configured():
+            ok, _ = cloud_store.save_document(pid, doc.id, blob, filename, content_type)
+        if not ok:
+            _local_doc_path(pid, doc.id, ext).write_bytes(blob)
+        lib = getattr(_brain_for(_projects[pid]["project"]), "library", None)
+        if lib is not None:
+            lib.mark_file(doc.id, ext, len(blob))
+    except Exception:
+        pass
+
+
+def _fetch_document_file(pid, doc):
+    """(bytes, filename) or None."""
+    ext = getattr(doc, "file_ext", "") or ""
+    try:
+        if cloud_store.is_configured():
+            got = cloud_store.load_document(pid, doc.id, ext)
+            if got:
+                return got
+        path = _local_doc_path(pid, doc.id, ext)
+        if path.exists():
+            return path.read_bytes(), doc.name
+    except Exception:
+        pass
+    return None
+
+
+@app.route("/api/documents/<doc_id>/file", methods=["GET"])
+def document_file(doc_id):
+    """
+    The document back as it arrived.
+
+    The whole point of keeping it: a PDF read for its text has lost its
+    drawings, and the answer to "let me look at that again" should not be
+    "it is gone".
+    """
+    sess = _get_session()
+    if sess is None or sess["project"] is None:
+        return jsonify({"error": "No schedule loaded"}), 400
+    lib = getattr(_brain_for(sess["project"]), "library", None)
+    doc = next((d for d in (lib.docs if lib else []) if d.id == doc_id), None)
+    if doc is None:
+        return jsonify({"error": "No such document"}), 404
+    got = _fetch_document_file(_active_id[0], doc)
+    if got is None:
+        return jsonify({"error": "The file for this document was not kept. "
+                                 "Documents added before file storage existed "
+                                 "have their text but not the original — "
+                                 "re-upload it to keep the file too."}), 404
+    blob, name = got
+    import io
+    return send_file(io.BytesIO(blob), as_attachment=True,
+                     download_name=name or f"{doc_id}{doc.file_ext}",
+                     mimetype="application/octet-stream")
+
+
 @app.route("/api/documents", methods=["GET"])
 def documents_list():
     sess = _get_session()
@@ -2517,7 +2599,9 @@ def documents_list():
     return jsonify({"success": True, "documents": [
         {"id": d.id, "name": d.name, "kind": d.kind, "label": d.label(),
          "line_count": d.line_count, "pages": d.pages, "sheets": d.sheets,
-         "added_at": d.added_at} for d in reversed(docs)]})
+         "added_at": d.added_at, "truncated": d.truncated,
+         "has_file": getattr(d, "has_file", False),
+         "file_bytes": getattr(d, "file_bytes", 0)} for d in reversed(docs)]})
 
 
 @app.route("/api/documents/search", methods=["GET"])
@@ -2547,8 +2631,21 @@ def document_delete(doc_id):
     if sess is None or sess["project"] is None:
         return jsonify({"error": "No schedule loaded"}), 400
     lib = getattr(_brain_for(sess["project"]), "library", None)
+    doc = next((d for d in (lib.docs if lib else []) if d.id == doc_id), None)
     if lib is None or not lib.remove(doc_id):
         return jsonify({"error": "No such document"}), 404
+    # Take the file with it. Removing the entry and leaving the bytes behind
+    # is how a bucket fills with objects nothing refers to any more.
+    if doc is not None:
+        ext = getattr(doc, "file_ext", "") or ""
+        try:
+            if cloud_store.is_configured():
+                cloud_store.delete_document(_active_id[0], doc_id, ext)
+            path = _local_doc_path(_active_id[0], doc_id, ext)
+            if path.exists():
+                path.unlink()
+        except Exception:
+            pass
     _mark_dirty(_active_id[0])
     return jsonify({"success": True})
 

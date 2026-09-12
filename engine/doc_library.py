@@ -65,6 +65,13 @@ class Document:
     summary: str = ""
     facts: List[str] = field(default_factory=list)
     truncated: bool = False
+    # Whether the file it was read from was kept, and under what name. The
+    # extraction is a lossy reading — layout, tables and figures are gone — so
+    # keeping the original is the difference between "here is what it said"
+    # and "here is the drawing".
+    has_file: bool = False
+    file_ext: str = ""
+    file_bytes: int = 0
 
     def to_json(self) -> Dict[str, Any]:
         return asdict(self)
@@ -246,6 +253,13 @@ class Library:
     # -- persistence -------------------------------------------------------
     def to_json(self) -> Dict[str, Any]:
         return {"docs": [d.to_json() for d in self.docs]}
+
+    def mark_file(self, doc_id: str, ext: str, size: int) -> None:
+        """Record that this document's original was kept."""
+        for d in self.docs:
+            if d.id == doc_id:
+                d.has_file, d.file_ext, d.file_bytes = True, ext, size
+                return
 
     @classmethod
     def from_json(cls, data: Any) -> Optional["Library"]:
