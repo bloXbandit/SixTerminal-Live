@@ -244,6 +244,25 @@ def field_equals(action: str, field: str, value: Any) -> Callable:
     return check
 
 
+def field_is_not(action: str, field: str, value: Any) -> Callable:
+    """
+    No command of this action carries that value — an absent field passes.
+
+    The mirror of field_equals, and what "it previewed instead of writing"
+    needs: the pattern actions report unless "apply": true is sent, so the
+    right first answer is one that OMITS the field entirely. field_equals
+    cannot express that, because it fails on a missing key.
+    """
+    def check(project, commands, chat) -> Result:
+        got = [c.get(field) for c in _edits(commands) if c.get("action") == action]
+        if not got:
+            return False, f"no {action} commands"
+        wrong = [g for g in got if g == value]
+        return not wrong, f"{field}={got}"
+    check.__name__ = f"field_is_not({action}.{field}={value})"
+    return check
+
+
 # ── what it said ─────────────────────────────────────────────────────────────
 # Weaker than the structural checks and treated as such: a regex on prose is a
 # proxy, not a proof. Used only where the CLAIM is about what gets said.

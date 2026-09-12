@@ -191,6 +191,77 @@ def linked() -> Project:
     return p
 
 
+def gens() -> Project:
+    """
+    Numbered rooms under phases, with each phase's commissioning milestone in
+    a SEPARATE branch — the shape the subject job is actually in.
+
+    Poses two things at once.
+
+    Reaching: the rooms sit under "Phase N (Build-Out)" and the milestones
+    under "Milestones / Phase N", so the folder tree cannot pair them; only
+    the phase number can. Gen 315 is already tied and must be left alone, Gen
+    316 needs Phase 1's milestone and Gen 317 needs Phase 2's — so wiring them
+    all to whichever milestone came first is a visible failure, and so is
+    answering "make sure they all connect" with a handful of guessed
+    add_relations.
+
+    Closure: Erect Precast feeds every room and nobody ever mentions it. A
+    room said to be complete on top of precast that never started is the
+    contradiction that separates statusing a front from statusing a list.
+    """
+    p = Project(uid="1", name="Data Centre", id="EVAL-GENS",
+                data_date="2026-01-05", planned_start="2026-01-05")
+    p.calendars = [Calendar(uid="1", name="Std")]
+    p.wbs_nodes = [
+        WBSNode(uid="root", name="Data Centre", code="DC"),
+        WBSNode(uid="pre", name="Precast", code="PC", parent_uid="root",
+                sequence_num=0),
+        WBSNode(uid="ph1", name="Phase 1 (Build-Out)", code="P1",
+                parent_uid="root", sequence_num=1),
+        WBSNode(uid="ph2", name="Phase 2 (Build-Out)", code="P2",
+                parent_uid="root", sequence_num=2),
+        WBSNode(uid="mil", name="Milestones", code="MIL", parent_uid="root",
+                sequence_num=3),
+        WBSNode(uid="m1", name="Phase 1", code="MP1", parent_uid="mil",
+                sequence_num=0),
+        WBSNode(uid="m2", name="Phase 2", code="MP2", parent_uid="mil",
+                sequence_num=1),
+    ]
+    p.activities = [
+        _act("pc", "PC1000", "Erect Precast", "pre", "2025-11-03", "2025-11-14"),
+        _act("x1", "MIL.PH1.9000", "Level 3 Commissioning Start (PH1)", "m1",
+             "2026-05-04", "2026-05-04", dur=0, activity_type="Start Milestone"),
+        _act("x2", "MIL.PH2.9000", "Level 3 Commissioning Start (PH2)", "m2",
+             "2026-06-01", "2026-06-01", dur=0, activity_type="Start Milestone"),
+    ]
+    p.relations = []
+    n = 0
+    for room, phase, base in (("Gen 315", "ph1", 2), ("Gen 316", "ph1", 9),
+                              ("Gen 317", "ph2", 16)):
+        uid = "f" + room.replace(" ", "")
+        p.wbs_nodes.append(WBSNode(uid=uid, name=room, code=room.replace(" ", ""),
+                                   parent_uid=phase, sequence_num=0))
+        made = []
+        for nm in ("Install Conduit", "Pull Wire", "Terminate Generator"):
+            n += 1
+            a = _act(f"u{n}", f"A{1000 + n * 10}", f"{nm} ({room})", uid,
+                     f"2026-03-{base:02d}", f"2026-03-{base + 4:02d}")
+            p.activities.append(a)
+            made.append(a)
+            base += 6
+        p.relations.append(Relation(uid=f"rp{n}", predecessor_uid="pc",
+                                    successor_uid=made[0].uid))
+        for a, b in zip(made, made[1:]):
+            p.relations.append(Relation(uid=f"r{a.uid}", predecessor_uid=a.uid,
+                                        successor_uid=b.uid))
+    # One room is already tied in. The right answer leaves it exactly as it is.
+    p.relations.append(Relation(uid="tied", predecessor_uid="u3",
+                                successor_uid="x1"))
+    p.build_lookups()
+    return p
+
+
 ALL = {
     "twinned": twinned,
     "rooms": rooms,
@@ -198,4 +269,5 @@ ALL = {
     "mixed_ids": mixed_ids,
     "crews": crews,
     "linked": linked,
+    "gens": gens,
 }

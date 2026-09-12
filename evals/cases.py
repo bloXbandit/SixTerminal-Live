@@ -16,8 +16,8 @@ from typing import Any, Callable, Dict, List, Optional
 from evals import fixtures
 from evals.checks import (answers_at_all, asks_a_question, command_count_at_most,
                           direction_sane, edits_nothing, emits, field_equals,
-                          ids_exist, mentions_an_id, no_action, no_relation,
-                          not_says, only_actions, relation,
+                          field_is_not, ids_exist, mentions_an_id, no_action,
+                          no_relation, not_says, only_actions, relation,
                           relations_within_same_folder, says, touches_all,
                           touches_only, wbs_names_exist)
 
@@ -267,6 +267,93 @@ CASES: List[Case] = [
         instruction="Megger Test has no predecessor. Fix that.",
         checks=[emits("add_relation"), command_count_at_most(2),
                 direction_sane()],
+    ),
+
+    # ── Reaching for the audit instead of guessing the particulars ───────────
+    # The failure these defend is specific and it is the likely one: the model
+    # enumerates the rooms it can see and emits an add_relation for each,
+    # having guessed which activity in each room is its termination and which
+    # milestone belongs to its phase. That looks like an answer and is wrong
+    # room by room, which is exactly what connect_folders exists to remove.
+    _case(
+        id="connect-reaches-for-the-audit-not-a-pile-of-relations",
+        category="bulk-reach",
+        claim="connect_folders — do NOT enumerate rooms and emit one "
+              "add_relation each; you would be guessing every particular",
+        fixture="gens",
+        instruction="Make sure all my generator rooms connect to commissioning.",
+        checks=[emits("connect_folders"), no_action("add_relation"),
+                command_count_at_most(2)],
+    ),
+    _case(
+        id="connect-previews-before-it-writes",
+        category="bulk-reach",
+        claim="The pattern actions report by default; apply only once the "
+              "user has seen the plan",
+        fixture="gens",
+        instruction="Are all my generator rooms tied into commissioning?",
+        checks=[only_actions("connect_folders"),
+                field_is_not("connect_folders", "apply", True)],
+    ),
+    _case(
+        id="connect-applies-once-the-user-has-agreed",
+        category="bulk-reach",
+        claim="A preview the user says yes to is executed, not re-previewed",
+        fixture="gens",
+        instruction="Yes, go ahead and tie them in.",
+        chat=[{"role": "user",
+               "content": "Are all my generator rooms tied into commissioning?"},
+              {"role": "assistant",
+               "content": "Checked 3 folders against 2 matching activities, "
+                          "paired by scope.\n  1 already reaches its target — "
+                          "left exactly as it is.\n  2 do not (2 ties would be "
+                          "added).\n\nNot reaching:\n  Gen 316  (scope 1)\n  "
+                          "    A1060  ->  MIL.PH1.9000\n  Gen 317  (scope 2)\n  "
+                          "    A1090  ->  MIL.PH2.9000\n\nNothing has been "
+                          "changed. Say go ahead to add these ties."}],
+        checks=[emits("connect_folders"),
+                field_equals("connect_folders", "apply", True)],
+    ),
+
+    # ── Statusing a front, not a list of rows ────────────────────────────────
+    _case(
+        id="actualize-from-a-front-not-row-by-row",
+        category="evidence",
+        claim="actualize — a statement of progress implies the work it depends "
+              "on; set_progress would status only what was literally said",
+        fixture="gens",
+        instruction="Gen 315 and Gen 316 are complete.",
+        checks=[emits("actualize"), no_action("set_progress"),
+                command_count_at_most(2)],
+    ),
+    _case(
+        id="actualize-carries-the-front-when-work-is-part-way",
+        category="evidence",
+        claim="`through` — the activity the work has REACHED goes In Progress "
+              "and what feeds it goes Complete",
+        fixture="gens",
+        instruction="We're out to Pull Wire in Gen 317.",
+        checks=[emits("actualize"), no_action("set_progress")],
+    ),
+    _case(
+        id="actualize-previews-before-it-writes",
+        category="evidence",
+        claim="The closure is reported before it is written — 300 rows of "
+              "actual dates is not something to discover afterwards",
+        fixture="gens",
+        instruction="Gen 315 is complete.",
+        checks=[field_is_not("actualize", "apply", True)],
+    ),
+
+    # ── and does NOT reach for the big hammer on one row ─────────────────────
+    _case(
+        id="one-row-status-stays-with-set-progress",
+        category="evidence",
+        claim="Use set_progress for one or two rows the user pointed at with "
+              "no wider claim behind it",
+        fixture="gens",
+        instruction="Mark A1030 complete.",
+        checks=[emits("set_progress"), no_action("actualize")],
     ),
 ]
 
