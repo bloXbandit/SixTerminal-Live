@@ -732,11 +732,21 @@ def build_workbook(project, out_path: str, project_code: Optional[str] = None,
            'One line per work area, in the order the WBS unfolds — the same '
            'order the app and P6 show it. Sub Area is everything below the '
            'area, so CUP breaks out into its line-ups instead of reading as '
-           'one block of 280.', 13)
-    _head(ar, 4, ['Phase', 'Area', 'Sub Area', 'Activities', 'Complete', 'Running',
-                  'Not Started', 'By others', '% Complete', 'Overdue', 'Starts',
-                  'Ends', 'Flag'],
-          [18, 24, 30, 10, 10, 9, 11, 10, 12, 9, 11, 11, 14])
+           'one block of 280. NOTE: the filter dropdowns list values '
+           'alphabetically — that is Excel and cannot be changed — so a name '
+           'sitting oddly in a dropdown says nothing about the sheet. Sort by '
+           '# to put the rows back in WBS order after any other sort.', 14)
+    # Named, not hardcoded. Every letter below is looked up, so inserting a
+    # column cannot silently point a formula at its neighbour — which is
+    # exactly what went wrong the last time this sheet grew one.
+    AHDR = ['#', 'Phase', 'Area', 'Sub Area', 'Activities', 'Complete',
+            'Running', 'Not Started', 'By others', '% Complete', 'Overdue',
+            'Starts', 'Ends', 'Flag']
+    _head(ar, 4, AHDR, [5, 18, 24, 30, 10, 10, 9, 11, 10, 12, 9, 11, 11, 14])
+    AC = {h: CL(i) for i, h in enumerate(AHDR, start=1)}
+    AN = {h: i for i, h in enumerate(AHDR, start=1)}
+    LABELS = ('#', 'Phase', 'Area', 'Sub Area')
+
     areas, seen = [], set()
     for rec in ROWS:
         k = (rec['phase'], rec['area'], rec['sub_area'])
@@ -744,44 +754,57 @@ def build_workbook(project, out_path: str, project_code: Optional[str] = None,
             seen.add(k); areas.append(k)
     for i, (ph, a, sub) in enumerate(areas):
         r = 5 + i
-        q = (f'{R(COL_PHASE)},$A{r},{R(COL_AREA)},$B{r},'
-             f'{R(COL_SUBAREA)},$C{r}')
-        ar.cell(row=r, column=1, value=ph)
-        ar.cell(row=r, column=2, value=a)
-        ar.cell(row=r, column=3, value=sub)
+        q = (f'{R(COL_PHASE)},${AC["Phase"]}{r},'
+             f'{R(COL_AREA)},${AC["Area"]}{r},'
+             f'{R(COL_SUBAREA)},${AC["Sub Area"]}{r}')
+        # The WBS position, so the hierarchy is a value on the row and not
+        # just the order the rows happen to be in. Sorting by any other
+        # column is one click; getting back was impossible before this.
+        ar.cell(row=r, column=AN['#'], value=i + 1)
+        ar.cell(row=r, column=AN['Phase'], value=ph)
+        ar.cell(row=r, column=AN['Area'], value=a)
+        ar.cell(row=r, column=AN['Sub Area'], value=sub)
         # The same phase colour the Update sheet uses, so the two read as one
         # document and a phase is recognisable without reading its name.
         band = phase_bg.get(ph)
-        for j, fx in ((4, f'=COUNTIFS({q})'),
-                      (5, f'=COUNTIFS({q},{R(COL_STATUS)},"Complete")'),
-                      (6, f'=COUNTIFS({q},{R(COL_STATUS)},"In Progress")'),
-                      (7, f'=COUNTIFS({q},{R(COL_STATUS)},"Not Started")'),
-                      (8, f'=COUNTIFS({q},{R(COL_BY)},"{CREW_WBO}")'),
-                      (9, f'=IFERROR(AVERAGEIFS({R(COL_PCT)},{q}),0)'),
-                      (10, f'=COUNTIFS({q},{R(COL_WINDOW)},"OVERDUE")'),
-                      (11, f'=IFERROR(_xlfn.MINIFS({R(COL_BLSTART)},{q}),"")'),
-                      (12, f'=IFERROR(_xlfn.MAXIFS({R(COL_BLFINISH)},{q}),"")'),
-                      (13, f'=IF($D{r}=0,"",IF($E{r}=$D{r},"COMPLETE",'
-                           f'IF($J{r}>0,"BEHIND",IF($F{r}>0,"Running",'
-                           f'IF($E{r}>0,"Part done","Not started")))))')):
-            ar.cell(row=r, column=j, value=fx)
-        for j in range(1, 14):
-            c = ar.cell(row=r, column=j); c.border = BOX
-            if band and j <= 3:
+        for h, fx in (
+                ('Activities', f'=COUNTIFS({q})'),
+                ('Complete', f'=COUNTIFS({q},{R(COL_STATUS)},"Complete")'),
+                ('Running', f'=COUNTIFS({q},{R(COL_STATUS)},"In Progress")'),
+                ('Not Started', f'=COUNTIFS({q},{R(COL_STATUS)},"Not Started")'),
+                ('By others', f'=COUNTIFS({q},{R(COL_BY)},"{CREW_WBO}")'),
+                ('% Complete', f'=IFERROR(AVERAGEIFS({R(COL_PCT)},{q}),0)'),
+                ('Overdue', f'=COUNTIFS({q},{R(COL_WINDOW)},"OVERDUE")'),
+                ('Starts', f'=IFERROR(_xlfn.MINIFS({R(COL_BLSTART)},{q}),"")'),
+                ('Ends', f'=IFERROR(_xlfn.MAXIFS({R(COL_BLFINISH)},{q}),"")'),
+                ('Flag',
+                 f'=IF(${AC["Activities"]}{r}=0,"",'
+                 f'IF(${AC["Complete"]}{r}=${AC["Activities"]}{r},"COMPLETE",'
+                 f'IF(${AC["Overdue"]}{r}>0,"BEHIND",'
+                 f'IF(${AC["Running"]}{r}>0,"Running",'
+                 f'IF(${AC["Complete"]}{r}>0,"Part done","Not started")))))')):
+            ar.cell(row=r, column=AN[h], value=fx)
+        for h in AHDR:
+            c = ar.cell(row=r, column=AN[h]); c.border = BOX
+            if band and h in LABELS:
                 c.fill = _fill(band)
-            c.font = _f(9, j == 2); c.alignment = LEFT if j <= 3 else CTR
-            if j == 9:
+            c.font = _f(9, h == 'Area')
+            c.alignment = LEFT if h in ('Phase', 'Area', 'Sub Area') else CTR
+            if h == '% Complete':
                 c.number_format = '0%'
-            if j in (11, 12):
+            if h in ('Starts', 'Ends'):
                 c.number_format = 'mm/dd/yy'
     ALAST = 4 + len(areas)
-    ar.freeze_panes = 'D5'
-    ar.auto_filter.ref = f'A4:M{ALAST}'
+    ar.freeze_panes = f'{AC["Activities"]}5'
+    ALASTCOL = CL(len(AHDR))
+    ar.auto_filter.ref = f'A4:{ALASTCOL}{ALAST}'
     for flag, bg, tx, bold in (('COMPLETE', OK_BG, OK_TX, False), ('BEHIND', BAD_BG, BAD_TX, True),
                                ('Running', WIP_BG, WIP_TX, False), ('Part done', 'DEEBF7', WIP_TX, False)):
-        _cf(ar, f'D5:M{ALAST}', f'$M5="{flag}"', bg, tx, bold=bold)
-    ar.conditional_formatting.add(f'I5:I{ALAST}', DataBarRule(
-        start_type='num', start_value=0, end_type='num', end_value=1, color=ACCENT))
+        _cf(ar, f'{AC["Activities"]}5:{ALASTCOL}{ALAST}',
+            f'${AC["Flag"]}5="{flag}"', bg, tx, bold=bold)
+    ar.conditional_formatting.add(
+        f'{AC["% Complete"]}5:{AC["% Complete"]}{ALAST}', DataBarRule(
+            start_type='num', start_value=0, end_type='num', end_value=1, color=ACCENT))
     ar.protection.sheet = True
     ar.protection.autoFilter = False
     ar.protection.password = project_code.lower()
