@@ -565,3 +565,39 @@ def test_the_colour_survives_a_filter_because_it_is_on_the_row(book):
     blanks = [r for r in range(5, ws.max_row + 1)
               if not ws[f"{ids}{r}"].value]
     assert not blanks, f"rows with no activity at {blanks[:3]}"
+
+
+def test_a_folder_with_a_slash_in_its_name_is_one_level_not_two(tmp_path):
+    """
+    The separator is " / " and a folder is entitled to that in its own name.
+    Splitting the joined path back apart therefore invents levels: the subject
+    job has three folders called "Commissioning / Closeout", and the tracker
+    was reading each as a "Commissioning" area holding a "Closeout" sub-area —
+    two levels absent from the WBS, on a sheet whose whole job is the WBS.
+    """
+    from openpyxl import load_workbook
+
+    from engine.excel_export import build_workbook
+    from engine.schedule_model import Activity, Calendar, Project, WBSNode
+
+    p = Project(uid="p", name="Job", id="J1", data_date="2026-01-05")
+    p.calendars = [Calendar(uid="1", name="Std")]
+    p.wbs_nodes = [
+        WBSNode(uid="root", name="Job", code="J"),
+        WBSNode(uid="ph", name="Phase 1", code="P1", parent_uid="root"),
+        WBSNode(uid="cx", name="Commissioning / Closeout", code="CX",
+                parent_uid="ph"),
+    ]
+    p.activities = [Activity(uid="u1", activity_id="A10", name="Punchlist",
+                             wbs_uid="cx", calendar_uid="1",
+                             planned_duration=8, planned_start="2026-02-02",
+                             planned_finish="2026-02-03")]
+    p.relations = []
+    p.build_lookups()
+
+    out = str(tmp_path / "t.xlsx")
+    build_workbook(p, out)
+    ws = load_workbook(out)["Update"]
+    col = {c.value: c.column_letter for c in ws[4] if c.value}
+    assert ws[f"{col['Area']}5"].value == "Commissioning / Closeout"
+    assert not ws[f"{col['Sub Area']}5"].value, "it invented a sub-area"

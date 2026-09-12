@@ -211,7 +211,8 @@ def _wbs_order(project) -> Dict[str, int]:
 
 def _collect(project, project_code: str) -> Dict[str, Any]:
     """Flatten the schedule into the rows the workbook is built from."""
-    from engine.logic_advisor import location_tag, strip_location, wbs_path
+    from engine.logic_advisor import (location_tag, strip_location,
+                                      wbs_path, wbs_segments)
     from engine.schedule_model import compute_dates
 
     # Float is what seeds the critical tab. apply_dates=False so Start/Finish
@@ -246,8 +247,11 @@ def _collect(project, project_code: str) -> Dict[str, Any]:
 
     rows = []
     for a in project.activities:
-        path = wbs_path(project, a) or ''
-        seg = path.split(' / ')
+        # Ask the WBS for its levels rather than splitting the joined path
+        # back apart — a folder may have " / " in its own name, and three
+        # in this job do.
+        seg = wbs_segments(project, a)
+        path = ' / '.join(seg)
         phase = seg[1] if len(seg) > 1 else '(unfiled)'
         area = seg[2] if len(seg) > 2 else phase
         # Everything below the work area, kept rather than thrown away. "CUP"
