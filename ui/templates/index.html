@@ -3167,6 +3167,11 @@ async function refreshResourcePlan() {
       + line('none',  'have neither; left alone for you to decide', 'var(--text3)')
       + (c.none ? `<div style="font-size:10.5px;color:var(--text3);margin-top:6px;">
            e.g. ${escHtml((d.plan.uncovered || []).slice(0, 6).join(', '))}</div>` : '')
+      // A donor matched mostly on name is a donor whose activity ids no longer
+      // line up. That is a fact about the two files worth judging, not burying.
+      + (d.plan.matched_by_name ? `<div style="font-size:10.5px;color:var(--orange);margin-top:6px;">
+           ${d.plan.matched_by_name.toLocaleString()} matched on activity name + folder
+           rather than ID — the donor's IDs no longer line up with this schedule.</div>` : '')
       + (!(c.donor || c.crew) ? `<div style="color:var(--text3);">Nothing to put back —
            either it is all here already, or there is no donor and no crew count to work from.</div>` : '');
     btn.disabled = !(c.donor || c.crew);

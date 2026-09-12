@@ -363,3 +363,100 @@ def test_an_unknown_donor_is_refused():
     r = server.app.test_client().post("/api/resources/restore",
                                       json={"donor_project_id": "nope"})
     assert r.status_code == 404
+
+
+# ── a donor whose activity ids no longer line up ─────────────────────────────
+#
+# Ids are not sacred. Renaming them is a thing people do — this app has a tool
+# for exactly that — so a donor exported before a renumbering would match
+# nothing at all and read as an empty file. Name plus folder is the fallback,
+# the same one compare_projects uses, and how each row matched is reported so
+# a donor that matched mostly on name can be judged rather than trusted.
+
+def _renamed(donor_units):
+    """A donor with the right work under different ids."""
+    d = _donor(donor_units)
+    for i, a in enumerate(d.activities):
+        a.activity_id = f"OLD{i}"
+    d.build_lookups()
+    return d
+
+
+def test_a_donor_whose_ids_were_renumbered_still_matches_on_name():
+    p = _job(crews=(None, None, None))
+    restore(p, donor=_renamed({"A10": (320, 80, 240)}))
+    assert _units(p, "A10") == (320, 80, 240)
+
+
+def test_the_plan_says_how_many_matched_on_name_rather_than_id():
+    """A donor matched mostly on name is a fact about the two files that the
+    user should get to see, not one to bury."""
+    p = _job(crews=(None, None, None))
+    got = plan(p, donor=_renamed({"A10": (320, 80, 240)}))
+    assert got["matched_by_name"] == 1
+    assert got["counts"]["donor"] == 1
+
+
+def test_a_clean_id_match_is_not_reported_as_a_name_match():
+    p = _job(crews=(None, None, None))
+    assert plan(p, donor=_donor({"A10": (320, 80, 240)}))["matched_by_name"] == 0
+
+
+def test_the_id_is_preferred_when_both_could_match():
+    """Otherwise a renamed activity could steal another one's hours."""
+    p = _job(crews=(None, None, None))
+    d = _donor({"A10": (320, 80, 240), "A20": (100, 0, 100)})
+    d.get_activity(activity_id="A20").name = "Step 1"   # same name as A10
+    d.build_lookups()
+    restore(p, donor=d)
+    assert _units(p, "A10")[0] == 320
+    assert _units(p, "A20")[0] == 100
+
+
+def test_a_name_match_in_a_different_folder_is_not_accepted():
+    """Two folders often carry the same activity name — "Conduit Rough In" is
+    in every room. Matching on the name alone would scatter hours at random."""
+    p = _job(crews=(None, None, None))
+    d = _renamed({"A10": (320, 80, 240)})
+    d.wbs_nodes = [WBSNode(uid="w", name="Somewhere Else", code="B")]
+    d.build_lookups()
+    restore(p, donor=d)
+    assert _units(p, "A10") == (0, 0, 0)
+
+
+# ── loading a donor adds what it has and leaves the rest alone ───────────────
+#
+# The question this was built for: upload the older file, take the assignments
+# it carries, skip anything already covered here.
+
+def test_a_donor_fills_only_what_is_missing():
+    p = _job(crews=(None, None, None))
+    restore(p, donor=_donor({"A10": (320, 80, 240)}))       # first pass
+    assert len(p.resource_assignments) == 1
+
+    bigger = _donor({"A10": (999, 0, 999), "A20": (100, 0, 100)})
+    _, _, det = restore(p, donor=bigger)                     # second pass
+    assert det["counts"]["keep"] == 1, "the covered activity was not skipped"
+    assert _units(p, "A10")[0] == 320, "an existing assignment was overwritten"
+    assert _units(p, "A20")[0] == 100, "the new one was not picked up"
+
+
+def test_a_donor_that_covers_nothing_new_changes_nothing():
+    p = _job(crews=(None, None, None))
+    d = _donor({"A10": (320, 80, 240)})
+    restore(p, donor=d)
+    before = [(a.planned_labor_units, a.actual_labor_units) for a in p.activities]
+    _, msg, det = restore(p, donor=d)
+    assert det["made"] == {"donor": 0, "crew": 0}
+    assert [(a.planned_labor_units, a.actual_labor_units) for a in p.activities] == before
+
+
+def test_two_donors_can_be_layered():
+    """One older file covers the history, another the rest — neither has to
+    cover everything, and the second does not disturb the first."""
+    p = _job(crews=(None, None, None))
+    restore(p, donor=_donor({"A10": (320, 80, 240)}))
+    restore(p, donor=_donor({"A20": (100, 0, 100)}))
+    assert _units(p, "A10") == (320, 80, 240)
+    assert _units(p, "A20") == (100, 0, 100)
+    assert len(p.resource_assignments) == 2

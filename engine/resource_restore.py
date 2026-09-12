@@ -122,6 +122,70 @@ def _split(units: float, act: Activity) -> Tuple[float, float]:
     return 0.0, units
 
 
+def _wbs_name(project: Project, act: Activity) -> str:
+    node = None
+    for w in project.wbs_nodes:
+        if w.uid == act.wbs_uid:
+            node = w
+            break
+    return (node.name if node else "").strip().lower()
+
+
+def _donor_index(target: Project,
+                 donor: Optional[Project]) -> Dict[str, Dict[str, Any]]:
+    """
+    What the donor has for each activity in the target, keyed by the TARGET's
+    own activity uid so both the plan and the restore read the same matching
+    and cannot disagree about it.
+
+    Activity id first, because P6 keeps ids stable across revisions and this
+    app's own edits keep them too. But ids are not sacred: renaming them is a
+    thing people do — this app has a tool for exactly that — and a donor from
+    before a renumbering would otherwise match nothing at all and look empty.
+    So an unmatched activity gets a second pass on name plus folder name, the
+    same fallback compare_projects already uses, and how each one matched is
+    reported rather than hidden.
+
+    Returns {target uid: {"assignments": [...], "units": float, "how": str}}
+    """
+    out: Dict[str, Dict[str, Any]] = {}
+    if donor is None:
+        return out
+
+    d_by_uid = {a.uid: a for a in donor.activities}
+    ra_by_act: Dict[str, List[ResourceAssignment]] = {}
+    for ra in (donor.resource_assignments or []):
+        if ra.activity_uid in d_by_uid:
+            ra_by_act.setdefault(ra.activity_uid, []).append(ra)
+
+    def _payload(d_act: Activity, how: str) -> Optional[Dict[str, Any]]:
+        rows = ra_by_act.get(d_act.uid, [])
+        units = sum(r.planned_units or 0 for r in rows)
+        if not units:
+            # A donor that went through the same stripping keeps its activity
+            # roll-ups when its assignment rows are gone. Still worth having.
+            units = float(d_act.planned_labor_units or 0)
+        if not units:
+            return None
+        return {"assignments": rows, "units": units, "how": how}
+
+    by_id = {a.activity_id: a for a in donor.activities}
+    by_name: Dict[Tuple[str, str], Activity] = {}
+    for a in donor.activities:
+        by_name.setdefault(
+            ((a.name or "").strip().lower(), _wbs_name(donor, a)), a)
+
+    for a in target.activities:
+        d = by_id.get(a.activity_id)
+        got = _payload(d, "id") if d else None
+        if got is None:
+            d = by_name.get(((a.name or "").strip().lower(), _wbs_name(target, a)))
+            got = _payload(d, "name") if d else None
+        if got is not None:
+            out[a.uid] = got
+    return out
+
+
 # ── what this schedule has and has not ───────────────────────────────────────
 
 def audit(project: Project, crew_field: Optional[str] = None) -> Dict[str, Any]:
@@ -190,25 +254,10 @@ def plan(target: Project,
     """
     field = crew_field or crew_field_of(target)
     assigned = {a.activity_uid for a in (target.resource_assignments or [])}
-
-    donor_by_aid: Dict[str, List[ResourceAssignment]] = {}
-    donor_res: Dict[str, Resource] = {}
-    if donor is not None:
-        by_uid = {a.uid: a for a in donor.activities}
-        donor_res = {r.uid: r for r in (donor.resources or [])}
-        for ra in (donor.resource_assignments or []):
-            act = by_uid.get(ra.activity_uid)
-            if act:
-                donor_by_aid.setdefault(act.activity_id, []).append(ra)
-        # A donor that carries roll-ups but lost its own assignments is still
-        # worth something: the activity totals survived the same trip.
-        for act in donor.activities:
-            if act.activity_id in donor_by_aid:
-                continue
-            if (act.planned_labor_units or 0) > 0:
-                donor_by_aid.setdefault(act.activity_id, [])
+    from_donor_by_uid = _donor_index(target, donor)
 
     rows = []
+    matched_by_name = 0
     for a in target.activities:
         if "Milestone" in (a.activity_type or ""):
             continue
@@ -217,17 +266,15 @@ def plan(target: Project,
             rows.append({"activity_id": a.activity_id, "source": "keep",
                          "units": None})
             continue
-        from_donor = donor_by_aid.get(a.activity_id)
-        if from_donor is not None:
-            units = sum(r.planned_units or 0 for r in from_donor)
-            if not units and donor is not None:
-                d = donor.get_activity(activity_id=a.activity_id)
-                units = float(getattr(d, "planned_labor_units", 0) or 0) if d else 0
-            if units:
-                rows.append({"activity_id": a.activity_id, "source": "donor",
-                             "units": round(units, 2),
-                             "assignments": len(from_donor)})
-                continue
+        got = from_donor_by_uid.get(a.uid)
+        if got:
+            if got["how"] == "name":
+                matched_by_name += 1
+            rows.append({"activity_id": a.activity_id, "source": "donor",
+                         "units": round(got["units"], 2),
+                         "assignments": len(got["assignments"]),
+                         "matched_by": got["how"]})
+            continue
         crew = _crew_of(a, field)
         if crew:
             units = crew * float(a.planned_duration or 0)
@@ -248,7 +295,11 @@ def plan(target: Project,
         "hours": {k: round(v, 1) for k, v in hours.items()},
         "rows": rows,
         "uncovered": [r["activity_id"] for r in rows if r["source"] == "none"][:200],
-        "donor_resources": len(donor_res),
+        "donor_resources": len(donor.resources or []) if donor else 0,
+        # Worth surfacing rather than burying: a donor matched mostly on name
+        # is a donor whose activity ids no longer line up, which is a fact
+        # about the two files the user should get to judge.
+        "matched_by_name": matched_by_name,
     }
 
 
@@ -305,13 +356,10 @@ def restore(target: Project,
                 target.resources.append(derived_res)
         return derived_res
 
-    donor_ra: Dict[str, List[ResourceAssignment]] = {}
-    if donor is not None:
-        d_by_uid = {a.uid: a for a in donor.activities}
-        for ra in (donor.resource_assignments or []):
-            act = d_by_uid.get(ra.activity_uid)
-            if act:
-                donor_ra.setdefault(act.activity_id, []).append(ra)
+    # The same index the plan was built from, so what is written is exactly
+    # what was reported — including anything matched on name after its id
+    # stopped lining up.
+    from_donor = _donor_index(target, donor)
 
     if overwrite:
         touched = {aid for aid, r in by_source.items() if r["source"] != "none"}
@@ -328,8 +376,9 @@ def restore(target: Project,
         if not row or row["source"] in ("keep", "none"):
             continue
 
-        if row["source"] == "donor" and donor_ra.get(act.activity_id):
-            for ra in donor_ra[act.activity_id]:
+        got = from_donor.get(act.uid)
+        if row["source"] == "donor" and got and got["assignments"]:
+            for ra in got["assignments"]:
                 res = res_by_uid.get(ra.resource_uid) or _derived()
                 target.resource_assignments.append(ResourceAssignment(
                     uid=f"RA-{seq}", activity_uid=act.uid, resource_uid=res.uid,
