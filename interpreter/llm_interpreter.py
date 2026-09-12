@@ -18,6 +18,7 @@ Supported actions (must match edit_engine.py):
   recommend_logic, update_udf, bulk_rules, normalize_activity_ids,
   read_document,
   update_labor_units, bulk_clear_constraints, bulk_append_name
+  tag_by_folder, group_into_subfolder  (per-folder pattern edits)
 
 Supported models: claude, gpt-4.1-mini, gpt-4.1-nano, gpt-5.4-mini
 """
@@ -1292,6 +1293,43 @@ bulk_append_name:
   {"action": "bulk_append_name", "wbs_name": "ER 209", "text": "(ER 209)"}
   {"action": "bulk_append_name", "wbs_name": "Sitework", "text": "SW -", "position": "prefix"}
   {"action": "bulk_append_name", "activity_ids": ["A1000", "A1010"], "text": "(pending review)"}
+
+tag_by_folder:
+  Name every activity after the FOLDER it sits in, across every folder that
+  matches — one command, each folder supplying its own token. Use this the
+  moment a request is "per folder" rather than about one folder: "every
+  activity in a Gen room should carry that room's number", "tag each ER
+  folder's work with the room". bulk_append_name takes a literal and is for
+  ONE folder; spelling out thirty literals is how the wrong ones get invented.
+  PREVIEWS BY DEFAULT — it returns what it would rename, folder by folder.
+  Show that to the user and re-send with "apply": true once they agree.
+  {"action": "tag_by_folder", "folder_pattern": "Gen\\s*\\d+", "token_pattern": "Gen\\s*\\d+", "recursive": true}
+  {"action": "tag_by_folder", "folder_pattern": "Gen\\s*\\d+", "token_pattern": "Gen\\s*\\d+", "recursive": true, "apply": true}
+  - folder_pattern: regex picking the folders to work on
+  - token_pattern:  regex lifting the token OUT of the folder's name, so
+                    "Gen 315 - JER" tags "(Gen 315)". Omit to use the whole name.
+  - template:       default "{name} ({token})"
+  - under_wbs:      hold it to one branch, e.g. "Phase 1 (Build-Out)"
+  - recursive:      include each folder's sub-folders
+  - replace_existing (default true): an activity already ending in "(...)" has
+    that CORRECTED, not a second tag appended — this is how a wrong room tag
+    gets fixed. A folder whose token cannot be read is reported, never guessed.
+
+group_into_subfolder:
+  For every folder holding work that matches, make ONE sub-folder and move that
+  work into it — "add a WBO sub-folder to each folder that has WBO activities
+  and move them in". A sub-folder is created only where there is something to
+  put in it. PREVIEWS BY DEFAULT; re-send with "apply": true.
+  {"action": "group_into_subfolder", "match": "\\*+\\s*WBO", "subfolder_template": "WBO - {parent}"}
+  {"action": "group_into_subfolder", "match": "\\*+\\s*WBO", "subfolder_template": "WBO - {parent}", "apply": true}
+  - match: regex against the ACTIVITY name (required)
+  - subfolder_template: {parent} is the folder's name. Default "WBO - {parent}"
+  - under_wbs / folder_pattern: limit the scope
+  - direct_only (default true): only work sitting directly in the folder
+  Safe to re-run: it will not nest a second sub-folder. A folder that ALREADY
+  groups this work under its own naming is reported and left alone rather than
+  wrapped again — read that list back to the user, because it is the naming
+  convention they already set.
 
 bulk_add_activity:
   Add the same activity into multiple WBS nodes in one call. Auto-assigns sequential IDs.

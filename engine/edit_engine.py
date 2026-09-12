@@ -518,6 +518,10 @@ def apply_command(project: Project, command: Dict[str, Any]) -> Tuple[bool, str]
             return _bulk_update_activity_id(project, command)
         elif action == "normalize_activity_ids":
             return _normalize_activity_ids(project, command)
+        elif action in ("tag_by_folder", "tag_activities_by_folder"):
+            return _tag_by_folder(project, command)
+        elif action in ("group_into_subfolder", "group_activities_into_subfolder"):
+            return _group_into_subfolder(project, command)
         elif action == "set_wbs_color":
             return _set_wbs_color(project, command)
         elif action in ("set_wbs_id_prefix", "set_folder_prefix"):
@@ -4114,3 +4118,117 @@ def _normalize_activity_ids(project: Project, cmd: Dict) -> Tuple[bool, str]:
     n = id_normalizer.apply_changes(project, changes)
     return True, "\n".join([f"Renamed {n} activity id(s) onto the project pattern."]
                            + _listing(lambda f, t, nm: f"    {f} → {t}"))
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Pattern edits — the value comes from the folder, not from the command
+# ──────────────────────────────────────────────────────────────────────────────
+
+def _pattern_scope(project: Project, cmd: Dict) -> Optional[WBSNode]:
+    """The branch to work inside, if one was named. Ambiguity still refuses."""
+    if any(cmd.get(k) for k in ("under_wbs", "scope_wbs", "wbs_name",
+                                "wbs_code", "wbs_uid")):
+        node = _find_wbs(project,
+                         cmd.get("wbs_code"),
+                         cmd.get("under_wbs") or cmd.get("scope_wbs") or cmd.get("wbs_name"),
+                         cmd.get("wbs_uid"))
+        if node is None:
+            raise EditError(_no_wbs(project, cmd.get("under_wbs")
+                                    or cmd.get("scope_wbs") or cmd.get("wbs_name")
+                                    or cmd.get("wbs_code")))
+        return node
+    return None
+
+
+def _pattern_preview(cmd: Dict) -> bool:
+    """
+    These report unless told to apply.
+
+    A pattern edit reaches every folder that matches, which on a real job is
+    hundreds of rows from a one-line request — 768 activities across 55
+    folders for the Gen rooms in the subject schedule. Defaulting to write
+    means a misread pattern is discovered afterwards. Defaulting to report
+    costs one extra call and makes the plan the thing the user says yes to,
+    which is also the honest way to ask "did you mean these?".
+    """
+    if cmd.get("apply") is True or cmd.get("preview") is False:
+        return False
+    return True
+
+
+def _tag_by_folder(project: Project, cmd: Dict) -> Tuple[bool, str]:
+    """
+    Name every activity after the folder it sits in.
+
+    "In the Gen 316 folder, Install High Steel should read Install High Steel
+     (Gen 316)" — said once, applied to every Gen folder, each taking its own
+    number off its own name rather than out of a list the agent had to type.
+
+      folder_pattern    regex selecting the folders      (e.g. "Gen\\s*\\d+")
+      token_pattern     regex lifting the token from the FOLDER name; a
+                        capture group wins. Default: the whole folder name.
+      template          default "{name} ({token})"
+      under_wbs         limit to one branch, e.g. "Phase 1 (Build-Out)"
+      recursive         include the folder's sub-folders (default false)
+      replace_existing  correct a wrong trailing "(...)" instead of stacking
+                        a second one on (default true)
+      preview           true to report without changing anything
+
+    Run it with preview first on a wide scope. The report names every folder
+    whose token could not be read, because a folder called "Gen Yard" is not
+    "Gen 0" and a guessed number is worse than a gap.
+    """
+    from .bulk_patterns import describe, tag_by_folder
+    preview = _pattern_preview(cmd)
+    res = tag_by_folder(
+        project,
+        folder_pattern=cmd.get("folder_pattern") or cmd.get("folders"),
+        token_pattern=cmd.get("token_pattern"),
+        template=cmd.get("template") or "{name} ({token})",
+        under=_pattern_scope(project, cmd),
+        recursive=bool(cmd.get("recursive")),
+        replace_existing=cmd.get("replace_existing", True),
+        apply=not preview,
+    )
+    return True, describe(res)
+
+
+def _group_into_subfolder(project: Project, cmd: Dict) -> Tuple[bool, str]:
+    """
+    Gather matching work into a sub-folder, one per folder that has any.
+
+    "Add a WBO sub-folder to each folder that has WBO activities, move them
+     in, prefix the sub-folder name with WBO" — one command, and a sub-folder
+    created only where there is something to put in it.
+
+      match               regex against the ACTIVITY name (e.g. "\\*+\\s*WBO")
+      subfolder_template  default "WBO - {parent}"; {parent} is the folder name
+      under_wbs           limit to one branch
+      direct_only         only work sitting directly in the folder (default
+                          true) — otherwise a parent hoovers up rows that
+                          already live somewhere sensible
+      preview             true to report without changing anything
+
+    A folder already holding a sub-folder of that name reuses it, so running
+    this again after new work arrives tidies the new rows and leaves the rest.
+    """
+    from .bulk_patterns import describe, group_into_subfolder
+    match = cmd.get("match") or cmd.get("name_contains") or cmd.get("pattern")
+    if not match:
+        raise EditError(
+            "match is required for group_into_subfolder — the pattern that "
+            "picks the activities to gather, e.g. \"WBO\" or \"\\\\*+\\\\s*WBO\".")
+    preview = _pattern_preview(cmd)
+    res = group_into_subfolder(
+        project,
+        match=match,
+        subfolder_template=(cmd.get("subfolder_template")
+                            or cmd.get("subfolder_name") or "WBO - {parent}"),
+        code_template=cmd.get("code_template") or "WBO-{code}",
+        under=_pattern_scope(project, cmd),
+        folder_pattern=cmd.get("folder_pattern"),
+        direct_only=cmd.get("direct_only", True),
+        marker=cmd.get("marker"),
+        apply=not preview,
+    )
+    return True, describe(res)
