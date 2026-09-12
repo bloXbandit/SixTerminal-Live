@@ -836,7 +836,13 @@ def _build_calendar_oid_map(project: Project) -> Dict[str, str]:
         # back on P6 5-day and had to be set by hand.
         mapping = {_key(cal.uid): str(_PCAL_OID_START + i)
                    for i, cal in enumerate(own)}
-        mapping.setdefault("", mapping[_key(own[0].uid)])
+        # An activity naming a calendar this project does not have must land on
+        # one that WAS written. Falling through to the fixed P5-DAY id when the
+        # fixed calendars are no longer emitted gives P6 "Referenced business
+        # object Calendar ... cannot be found, ignoring field
+        # CalendarObjectId" — and an activity with no calendar at all.
+        mapping[_DEFAULT_KEY] = mapping[_key(own[0].uid)]
+        mapping.setdefault("", mapping[_DEFAULT_KEY])
         return mapping
 
     six = _project_uses_6day(project)
@@ -853,8 +859,15 @@ def _build_calendar_oid_map(project: Project) -> Dict[str, str]:
     return mapping
 
 
+# Where an unknown calendar id lands. Held in the map itself so it is always a
+# calendar THIS export wrote, whichever set of calendars that turned out to be.
+_DEFAULT_KEY = "__default__"
+
+
 def _map_calendar_oid(calendar_uid: Any, calendar_oid_map: Dict[str, str]) -> str:
-    return calendar_oid_map.get(_key(calendar_uid), _DEFAULT_PROJECT_CALENDAR_OID)
+    return (calendar_oid_map.get(_key(calendar_uid))
+            or calendar_oid_map.get(_DEFAULT_KEY)
+            or _DEFAULT_PROJECT_CALENDAR_OID)
 
 
 def _get_any(obj: Any, *names: str, default: Any = None) -> Any:
@@ -2018,7 +2031,11 @@ def _write_p6_xml_impl(project: Project, output_path: str,
     proj_el = _sub(root, "Project")
 
     _sub(proj_el, "ActivityDefaultActivityType",           "Task Dependent")
-    _sub(proj_el, "ActivityDefaultCalendarObjectId",       _GCAL_OID)
+    # The calendar P6 gives a NEW activity typed into this project. It pointed
+    # at the global five-day one, so even with the project's own calendar
+    # imported correctly, anything added afterwards came in on five days.
+    _sub(proj_el, "ActivityDefaultCalendarObjectId",
+         calendar_oid_map.get(_DEFAULT_KEY) or _GCAL_OID)
     _nil(proj_el, "ActivityDefaultCostAccountObjectId")
     _sub(proj_el, "ActivityDefaultDurationType",           "Fixed Duration and Units")
     _sub(proj_el, "ActivityDefaultPercentCompleteType",    "Physical")

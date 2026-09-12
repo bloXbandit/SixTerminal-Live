@@ -336,3 +336,77 @@ def test_wbs_hierarchy_survives_export_reimport(tmp_path):
     p = _parents(again)
     assert p["Sub A"] == "Phase 1"
     assert p["Phase 1"] == "Nested"
+
+
+# ── every calendar reference must point at a calendar that was written ───────
+#
+# P6 does not fail an import over a missing calendar. It logs "Referenced
+# business object Calendar ... cannot be found, ignoring field
+# CalendarObjectId" and leaves the activity with NO calendar — which is worse
+# than a refusal, because the file imports and the problem is silent.
+
+def _cal_refs(xml):
+    import re
+    written = set()
+    for m in re.finditer(r"<Calendar>(.*?)</Calendar>", xml, re.S):
+        o = re.search(r"<ObjectId>(\d+)<", m.group(1))
+        if o:
+            written.add(o.group(1))
+    refs = set(re.findall(r"<CalendarObjectId>(\d+)<", xml))
+    refs |= set(re.findall(r"<BaseCalendarObjectId>(\d+)<", xml))
+    default = re.search(r"<ActivityDefaultCalendarObjectId>(\d+)<", xml)
+    return written, refs, (default.group(1) if default else None)
+
+
+def _two_cal_project(orphan=False):
+    p = Project(uid="1", name="J", id="J", planned_start="2026-06-29")
+    p.calendars = [Calendar(uid="c6", name="6-Day 10hr",
+                            work_days=WORKWEEK_6_DAY, hours_per_day=10.0)]
+    p.wbs_nodes = [WBSNode(uid="10", name="W", code="W")]
+    p.activities = [Activity(uid="a1", activity_id="A1000", name="Good",
+                             wbs_uid="10", calendar_uid="c6",
+                             planned_duration=80.0, remaining_duration=80.0)]
+    if orphan:
+        p.activities.append(Activity(
+            uid="a2", activity_id="A1010", name="Orphan", wbs_uid="10",
+            calendar_uid="ghost", planned_duration=80.0, remaining_duration=80.0))
+    p.build_lookups()
+    return p
+
+
+def test_no_calendar_reference_dangles(tmp_path):
+    written, refs, _ = _cal_refs(_export(_two_cal_project(), tmp_path, "refs.xml"))
+    assert not (refs - written), f"dangling calendar refs: {sorted(refs - written)}"
+
+
+def test_an_activity_on_a_calendar_the_project_lacks_lands_on_one_that_exists(tmp_path):
+    """It used to fall through to the fixed P5-DAY id, which is no longer
+    written once the project has calendars of its own."""
+    written, refs, _ = _cal_refs(_export(_two_cal_project(orphan=True),
+                                         tmp_path, "orphan.xml"))
+    assert not (refs - written), f"dangling calendar refs: {sorted(refs - written)}"
+
+
+def test_a_new_activity_typed_into_p6_gets_the_projects_own_calendar(tmp_path):
+    """ActivityDefaultCalendarObjectId pointed at the GLOBAL five-day one, so
+    even with the project's calendar imported correctly, anything added
+    afterwards came in on five days."""
+    written, _, default = _cal_refs(_export(_two_cal_project(), tmp_path, "def.xml"))
+    assert default in written
+    assert default == "6700", "the default is not the project's own calendar"
+
+
+def test_a_project_with_no_calendars_still_gets_the_fixed_set(tmp_path):
+    """An app-built schedule has always relied on these; removing them would
+    leave it with no calendar at all."""
+    p = Project(uid="1", name="J", id="J", planned_start="2026-06-29")
+    p.calendars = []
+    p.wbs_nodes = [WBSNode(uid="10", name="W", code="W")]
+    p.activities = [Activity(uid="a1", activity_id="A1000", name="T", wbs_uid="10",
+                             calendar_uid="1", planned_duration=80.0,
+                             remaining_duration=80.0)]
+    p.build_lookups()
+    xml = _export(p, tmp_path, "none.xml")
+    written, refs, default = _cal_refs(xml)
+    assert "P5-DAY NO HOL" in xml
+    assert not (refs - written) and default in written
