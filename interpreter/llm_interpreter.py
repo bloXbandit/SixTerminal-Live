@@ -19,6 +19,7 @@ Supported actions (must match edit_engine.py):
   read_document,
   update_labor_units, bulk_clear_constraints, bulk_append_name
   tag_by_folder, group_into_subfolder, align_child_tokens  (per-folder pattern edits)
+  connect_folders  (does every folder reach its own governing activity?)
   excel_customise  (changes to the Excel tracker that survive the next export)
 
 Supported models: claude, gpt-4.1-mini, gpt-4.1-nano, gpt-5.4-mini
@@ -498,7 +499,7 @@ into P6.
 
 BUT: on targeting, the answer is almost never a question. It is a PREVIEW.
   - The pattern actions (tag_by_folder, group_into_subfolder,
-    align_child_tokens) report by default. RUN ONE. The plan comes back folder
+    align_child_tokens, connect_folders) report by default. RUN ONE. The plan comes back folder
     by folder with counts and examples, and showing it is a better question
     than asking one — it is specific, grounded, and answerable at a glance.
   - Naming a folder that matches several REFUSES and hands back every
@@ -704,6 +705,11 @@ EXAMPLES:
   User: "tag the Gen rooms with their numbers" (user defers nothing, but the
    scope is plain and the action previews — so RUN IT, do not ask)
   -> [{"action": "tag_by_folder", "folder_pattern": "Gen\\\\s*\\\\d+", "token_pattern": "Gen\\\\s*\\\\d+", "recursive": true}]
+
+  User: "make sure all my generator rooms connect to commissioning"
+   (one question per room, each needing ITS phase's milestone — one action,
+   not twenty-eight add_relations you would have to guess the particulars of)
+  -> [{"action": "connect_folders", "folder_pattern": "^Gen\\\\s*\\\\d+", "target_pattern": "commission"}]
 
   User: "you choose the durations" (user defers — NEVER clarify)
   -> Execute with industry-standard durations, mention choices in chat. Do NOT ask for confirmation.
@@ -1361,6 +1367,41 @@ tag_by_folder:
   - replace_existing (default true): an activity already ending in "(...)" has
     that CORRECTED, not a second tag appended — this is how a wrong room tag
     gets fixed. A folder whose token cannot be read is reported, never guessed.
+
+connect_folders  (aliases: ensure_connected, check_connected):
+  "Do all my X actually tie into their Y?" — asked of the LOGIC, once per
+  folder, and repaired where the answer is no. Use it for "make sure every
+  generator room connects to commissioning", "are all the lineups tied to
+  energisation", "confirm each room reaches its turnover milestone".
+  {"action": "connect_folders", "folder_pattern": "^Gen\\s*\\d+", "target_pattern": "commission"}
+  {"action": "connect_folders", "folder_pattern": "^Gen\\s*\\d+", "target_pattern": "commission", "apply": true}
+  - folder_pattern:  regex over FOLDER names — the things being checked
+  - target_pattern:  regex over ACTIVITY names — what they should reach
+  - scope_pattern:   the key pairing a folder with ITS OWN target. The default
+                     reads a phase number, so a phase 3 room is checked against
+                     phase 3's commissioning and never phase 1's. Override it
+                     only when the job groups work by something else — give a
+                     regex whose capture group is the key.
+  - tail:            "last" (default) ties the room's termination — the latest
+                     activity nothing inside the folder waits on. "open" ties
+                     every activity with no successor at all; "all" every
+                     logical end. Offer "open"/"all" when the user cares about
+                     loose ends generally rather than one tie per folder.
+  - target_pick:     "earliest" (default) | "latest", when a scope has several
+  - type / lag_days: the relation to add. Default Finish to Start, no lag.
+  - under_wbs:       hold it to one branch
+  PREVIEWS BY DEFAULT. The report is itself the answer to "are they all
+  connected?" — it names which folders already reach their target and by which
+  activity, which do not, and which could not be paired at all. Relay it, then
+  re-send with "apply": true if the user wants the missing ties made.
+  It only ADDS. A folder that already reaches its target is left completely
+  alone, even by a roundabout route, and a folder whose scope key or target
+  cannot be read is named and skipped rather than wired to the wrong phase.
+  This is NOT a series of add_relation calls. Do not enumerate rooms and emit
+  one add_relation each: you would be guessing which activity in each room is
+  its termination and which milestone belongs to its phase, over folders you
+  have only seen samples of. That is exactly the mistake this action exists to
+  remove.
 
 excel_customise  (aliases: excel_customize, tweak_tracker):
   Change the Excel tracker in a way that SURVIVES the next export. Use it for

@@ -526,6 +526,8 @@ def apply_command(project: Project, command: Dict[str, Any]) -> Tuple[bool, str]
             return _align_child_tokens(project, command)
         elif action in ("excel_customise", "excel_customize", "tweak_tracker"):
             return _excel_customise(project, command)
+        elif action in ("connect_folders", "ensure_connected", "check_connected"):
+            return _connect_folders(project, command)
         elif action == "set_wbs_color":
             return _set_wbs_color(project, command)
         elif action in ("set_wbs_id_prefix", "set_folder_prefix"):
@@ -4270,6 +4272,78 @@ def _align_child_tokens(project: Project, cmd: Dict) -> Tuple[bool, str]:
         activity_template=cmd.get("activity_template") or "{name} ({token})",
         apply=not _pattern_preview(cmd),
     )
+    return True, describe(res)
+
+
+def _connect_folders(project: Project, cmd: Dict) -> Tuple[bool, str]:
+    """
+    Confirm every folder matching a pattern reaches its own governing activity
+    — and tie in the ones that do not.
+
+    "Make sure all my generator rooms connect to commissioning" is not one
+    edit, it is twenty-eight questions about the network, each of which has to
+    find the RIGHT commissioning activity: a phase 3 room must reach phase 3's
+    milestone, not phase 1's, and the two sides sit in different branches so
+    the folder tree cannot pair them. They are paired instead on a key both
+    carry — by default the phase number, read out of the path or the name.
+
+      folder_pattern   regex over folder names, e.g. "^Gen\\s*\\d+".
+                       A match nested inside another match (a room's "- WBO"
+                       sub-folder) is folded into it, so a room is one source.
+      target_pattern   regex over ACTIVITY names, e.g. "commission"
+      scope_pattern    the key that pairs a folder with its own target.
+                       Default reads a phase number — "(PH3)", "Phase 3".
+                       Anything else the job numbers work by works too: give a
+                       regex whose capture group is the key.
+      target_pick      "earliest" (default) or "latest" when a scope holds
+                       several matching activities
+      tail             which activity carries the tie out of the folder:
+                       "last" (default) the latest-finishing activity nothing
+                       inside the folder waits on — the room's termination;
+                       "open" every activity with no successor at all;
+                       "all"  every logical end
+      type / lag_days  the relation to add, default Finish to Start, 0 lag
+      under_wbs        hold the whole thing to one branch
+      preview          reports by default; send apply:true to write
+
+    It only ever ADDS. A folder already reaching its target is reported and
+    left completely alone, whatever route it takes to get there. A folder
+    whose scope key cannot be read, or whose key has no target, is named and
+    skipped — wiring it to some other phase's milestone would be far worse
+    than leaving the gap where it can be seen.
+
+    Run it with no apply first. The report is also the answer to "are they all
+    connected?", which is usually the real question.
+    """
+    from .connect import DEFAULT_SCOPE, connect, describe
+    folders = cmd.get("folder_pattern") or cmd.get("folders")
+    target = cmd.get("target_pattern") or cmd.get("target")
+    if not folders:
+        raise EditError(
+            "folder_pattern is required for connect_folders — the pattern that "
+            "picks the folders to check, e.g. '^Gen\\\\s*\\\\d+'")
+    if not target:
+        raise EditError(
+            "target_pattern is required for connect_folders — the pattern that "
+            "picks the activity they should reach, e.g. 'commission'")
+    try:
+        res = connect(
+            project,
+            folder_pattern=folders,
+            target_pattern=target,
+            scope_pattern=cmd.get("scope_pattern") or DEFAULT_SCOPE,
+            under=_pattern_scope(project, cmd),
+            target_pick=(cmd.get("target_pick") or "earliest").lower(),
+            tail=(cmd.get("tail") or "last").lower(),
+            relation_type={"fs": "Finish to Start", "ss": "Start to Start",
+                           "ff": "Finish to Finish", "sf": "Start to Finish",
+                           }.get((cmd.get("type") or "fs").lower(),
+                                 "Finish to Start"),
+            lag_days=float(cmd.get("lag_days") or 0),
+            apply=not _pattern_preview(cmd),
+        )
+    except ValueError as e:
+        raise EditError(str(e))
     return True, describe(res)
 
 
