@@ -80,28 +80,111 @@ def _find_activity(project: Project, activity_id: Optional[str] = None,
     return results
 
 
+def _wbs_full_path(project: Project, node: WBSNode) -> str:
+    """The folder's whole path, used to tell same-named folders apart."""
+    by_uid = {w.uid: w for w in project.wbs_nodes}
+    parts, cur, guard = [], node, 0
+    while cur and guard < 200:
+        parts.insert(0, cur.name)
+        cur = by_uid.get(cur.parent_uid)
+        guard += 1
+    return " / ".join(parts)
+
+
+def _ambiguous(project: Project, needle: str, hits: List[WBSNode]) -> str:
+    shown = "; ".join(f"{w.code or w.uid} — {_wbs_full_path(project, w)}"
+                      for w in hits[:8])
+    more = f" …and {len(hits) - 8} more" if len(hits) > 8 else ""
+    return (f"'{needle}' matches {len(hits)} folders in this schedule, so it is "
+            f"not clear which one you mean: {shown}{more}. "
+            f"Name the folder by its code, or give enough of its path to be "
+            f"unique (for example \"Phase 1 / Generator Rooms / Gen 315\").")
+
+
 def _find_wbs(project: Project, wbs_code: Optional[str] = None,
               wbs_name: Optional[str] = None,
               wbs_uid: Optional[str] = None) -> Optional[WBSNode]:
     """
     Find a WBS node by uid, code, or name — in that order of precision.
-    Name matching is a substring match, so it can hit the wrong folder when
-    one name contains another ('Site' inside 'Sitework'); the grid passes
-    wbs_uid so a click always targets exactly the folder that was clicked.
+
+    Name matching used to be a bare substring scan that returned the FIRST hit
+    and said nothing about the rest. On a real job that is not a near miss, it
+    is routinely the wrong folder: of 203 distinct folder names in the subject
+    schedule, 70 match more than one folder, and asking for "Area 1" returned
+    "Precast Area 1" — silently, and the edit then reported success against
+    work nobody meant to touch.
+
+    So the order is now strictest first:
+
+      uid            — exact, what the grid passes on a click
+      code           — exact
+      name, exact    — "Area 1" is now "Area 1", not "Precast Area 1"
+      path           — "Phase 1 / Generator Rooms / Gen 315", or just enough
+                       segments of it to be unique, which is how same-named
+                       folders are told apart
+      name, substring — only when it lands on exactly one folder
+
+    And when a query still matches several, it RAISES with all of them rather
+    than picking. A refusal that lists the candidates costs one more turn; a
+    silent wrong folder costs an edit nobody asked for, in a file that gets
+    imported into P6.
     """
     if wbs_uid:
         for w in project.wbs_nodes:
             if w.uid == wbs_uid:
                 return w
     if wbs_code:
-        for w in project.wbs_nodes:
-            if w.code.lower() == wbs_code.lower():
-                return w
+        hits = [w for w in project.wbs_nodes
+                if (w.code or "").lower() == wbs_code.lower()]
+        if len(hits) == 1:
+            return hits[0]
+        if len(hits) > 1:
+            raise EditError(_ambiguous(project, wbs_code, hits))
     if wbs_name:
-        name_low = wbs_name.lower()
-        for w in project.wbs_nodes:
-            if name_low in w.name.lower():
-                return w
+        needle = wbs_name.strip()
+        low = needle.lower()
+
+        exact = [w for w in project.wbs_nodes if w.name.strip().lower() == low]
+        if len(exact) == 1:
+            return exact[0]
+
+        # A path, whole or partial. Segments must appear in order but need not
+        # be adjacent, so "Phase 1 / Gen 315" reaches a folder nested three
+        # deep without naming every level in between.
+        segs = [s.strip().lower() for s in re.split(r"\s*/\s*", needle) if s.strip()]
+        if len(segs) > 1:
+            byp = []
+            for w in project.wbs_nodes:
+                parts = [p.strip().lower()
+                         for p in _wbs_full_path(project, w).split(" / ")]
+                i = 0
+                for p in parts:
+                    if i < len(segs) and segs[i] in p:
+                        i += 1
+                if i == len(segs):
+                    byp.append(w)
+            if len(byp) == 1:
+                return byp[0]
+            if len(byp) > 1:
+                # Asking for ".../ Gen 315" means that folder, not "Gen 315 -
+                # JER" beside it, so an exact last segment wins over a partial
+                # one before anything is called ambiguous.
+                tail = [w for w in byp if w.name.strip().lower() == segs[-1]]
+                if len(tail) == 1:
+                    return tail[0]
+                loose = [w for w in byp if segs[-1] in w.name.strip().lower()]
+                if len(loose) == 1:
+                    return loose[0]
+                raise EditError(_ambiguous(project, needle, tail or loose or byp))
+
+        if len(exact) > 1:
+            raise EditError(_ambiguous(project, needle, exact))
+
+        sub = [w for w in project.wbs_nodes if low in w.name.lower()]
+        if len(sub) == 1:
+            return sub[0]
+        if len(sub) > 1:
+            raise EditError(_ambiguous(project, needle, sub))
     return None
 
 

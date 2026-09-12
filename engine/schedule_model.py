@@ -582,9 +582,24 @@ class Project:
                 if len(acts) > SAMPLE:
                     lines.append(f"    …and {len(acts) - SAMPLE} more in this folder")
             lines.append("")
+            # Folder names repeat constantly in a real WBS — every phase has an
+            # "MV Rooms", every level an "Area 1" — so naming one on its own is
+            # often ambiguous, and an ambiguous name is now REFUSED rather than
+            # resolved to whichever came first. Saying so here, with the way
+            # out, turns that refusal into one corrected call instead of a
+            # guess-and-retry loop.
+            lines.append("NAMING A FOLDER: names repeat in this WBS, so give a "
+                         "path when one might be ambiguous — \"Phase 2 / MV Rooms\", "
+                         "or its code. Segments need not be adjacent, so "
+                         "\"Phase 1 / Gen 315\" reaches a folder nested deeper. A "
+                         "name matching several folders is refused and the answer "
+                         "lists them with their full paths: pick from that list "
+                         "rather than guessing again.")
+            lines.append("")
             lines.append("TO SEE A FOLDER IN FULL: run recommend_logic with "
                          "scope=\"wbs\" and wbs_name set to the folder you need "
-                         "(a phase qualifier is honoured, e.g. \"Phase 1 MV Rooms\"). "
+                         "(a path or phase qualifier is honoured, e.g. "
+                         "\"Phase 1 / MV Rooms\"). "
                          "That returns every activity in that branch with dates, "
                          "logic gaps and the long-lead items feeding it. Do that "
                          "before answering a question about a specific area — do "
