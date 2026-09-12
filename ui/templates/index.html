@@ -3126,6 +3126,17 @@ async function openDocuments() {
         <b>Download</b> hands back the original file. Documents added before the
         file was kept have their text but nothing to download.
       </div>
+      <div class="res-sub" style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
+        <input type="file" id="doc-upload" accept=".pdf,.xlsx,.xlsm,.xltx,.csv,.tsv"
+               style="display:none" onchange="uploadDocument(this.files[0])" />
+        <button class="btn" onclick="document.getElementById('doc-upload').click()">
+          + Add document
+        </button>
+        <span style="color:var(--text3);font-size:11px;">
+          PDF, .xlsx or .csv. A drawing to be READ goes through the chat
+          paperclip instead — that files what a model saw, not the file.
+        </span>
+      </div>
       <div id="docs-list">${docs.length ? docs.map(d => `
         <div class="doc-row">
           <div class="doc-main">
@@ -3146,7 +3157,7 @@ async function openDocuments() {
             <button onclick="deleteDocument('${escAttr(d.id)}','${escAttr(d.name)}')">Remove</button>
           </div>
         </div>`).join('')
-        : '<div style="color:var(--text3);font-size:12px;padding:10px 0;">Nothing has been given to this job yet. Drop a PDF or spreadsheet into the chat to file one.</div>'}
+        : '<div style="color:var(--text3);font-size:12px;padding:10px 0;">Nothing has been filed for this job yet. Use <b>Add document</b> above — dropping a PDF on the main upload area imports it as a SCHEDULE, which is a different thing and files nothing here.</div>'}
       </div>
       <div class="res-actions">
         <button class="btn btn-ghost" onclick="closeDocuments()">Close</button>
@@ -3160,6 +3171,33 @@ async function openDocuments() {
 function closeDocuments() {
   if (_docsModalEl) _docsModalEl.remove();
   _docsModalEl = null;
+}
+
+/**
+ * File a document — the ONLY path that keeps the original file.
+ *
+ * The main upload area sends a PDF to the schedule importer and the paperclip
+ * sends it to the drawing reader; neither files a document, which is why a PDF
+ * could be read and still leave this list empty.
+ */
+async function uploadDocument(file) {
+  if (!file) return;
+  const list = document.getElementById('docs-list');
+  if (list) list.innerHTML =
+    `<div style="color:var(--text3);font-size:12px;padding:10px 0;">
+       <span class="spinner"></span> Reading ${escHtml(file.name)}…</div>`;
+  const fd = new FormData();
+  fd.append('file', file);
+  try {
+    const d = await fetch('/api/documents', {method: 'POST', body: fd})
+                      .then(_readJson);
+    if (d.error) { flashSched(d.error, true); await openDocuments(); return; }
+    if (d.chat) renderServerChat(d.chat);
+    flashSched(`Filed ${file.name}`);
+  } catch (e) {
+    flashSched(e.message, true);
+  }
+  await openDocuments();      // rebuild so the new row and its size show
 }
 
 async function searchDocument(id, name) {
