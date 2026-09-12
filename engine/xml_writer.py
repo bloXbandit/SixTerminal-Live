@@ -802,7 +802,7 @@ def _calendar_target_from_name(name: str) -> str:
 
 
 
-def _keep_or_mint(uids, start: int) -> Dict[str, str]:
+def _keep_or_mint(uids, start: int, reserved=()) -> Dict[str, str]:
     """
     Map each source uid to the ObjectId it should be written with.
 
@@ -814,10 +814,14 @@ def _keep_or_mint(uids, start: int) -> Dict[str, str]:
     already claimed above so the two schemes cannot collide.
     """
     out: Dict[str, str] = {}
-    taken = set()
+    # Numbers this file already spends elsewhere. The global calendar block is
+    # written from fixed ids, and a project calendar that arrived carrying one
+    # of those would otherwise be declared a second time under the same
+    # ObjectId — P6 then resolves every reference to whichever it loaded last.
+    taken = {str(r) for r in reserved}
     for u in uids:
         key = _key(u)
-        if key.isdigit() and 0 < int(key) <= _INT32_MAX:
+        if key.isdigit() and 0 < int(key) <= _INT32_MAX and key not in taken:
             out[key] = key
             taken.add(key)
     nxt = start
@@ -833,19 +837,33 @@ def _keep_or_mint(uids, start: int) -> Dict[str, str]:
     return out
 
 
+_RESERVED_CAL_OIDS = ("_GCAL_5_NOHOL", "_GCAL_7_NOHOL", "_GCAL_5_HOL", "_GCAL_6_HOL")
+
+
+def _reserved_cal_oids() -> tuple:
+    return tuple(globals()[n] for n in _RESERVED_CAL_OIDS)
+
+
 def _own_calendars(project) -> list:
     """
-    The calendars this project actually carries, if any are usable.
+    The PROJECT calendars this schedule carries, if any are usable.
 
     A calendar needs a uid to be pointed at and a name to be recognised in P6.
     With none that qualify the export falls back to the fixed set below, which
     is what an app-built schedule with no calendar data has always had.
+
+    Global calendars are deliberately excluded. They belong to the database,
+    not the project, and are written in the global section from fixed ids —
+    emitting one here as well declares the same ObjectId twice, which P6
+    resolves to whichever it happened to load last. A schedule whose calendars
+    are all marked Global still gets them, since an app-built one often marks
+    nothing and would otherwise lose its calendars entirely.
     """
-    out = []
-    for c in (getattr(project, "calendars", None) or []):
-        if getattr(c, "uid", None) and (getattr(c, "name", "") or "").strip():
-            out.append(c)
-    return out
+    usable = [c for c in (getattr(project, "calendars", None) or [])
+              if getattr(c, "uid", None) and (getattr(c, "name", "") or "").strip()]
+    scoped = [c for c in usable
+              if str(getattr(c, "type", "") or "").lower() != "global"]
+    return scoped or usable
 
 
 def _build_calendar_oid_map(project: Project) -> Dict[str, str]:
@@ -866,7 +884,8 @@ def _build_calendar_oid_map(project: Project) -> Dict[str, str]:
         # was matched to one of three canned ones BY NAME and a six-day
         # ten-hour week had nowhere to land — which is why every import came
         # back on P6 5-day and had to be set by hand.
-        mapping = _keep_or_mint([c.uid for c in own], _PCAL_OID_START)
+        mapping = _keep_or_mint([c.uid for c in own], _PCAL_OID_START,
+                                reserved=_reserved_cal_oids())
         # An activity naming a calendar this project does not have must land on
         # one that WAS written. Falling through to the fixed P5-DAY id when the
         # fixed calendars are no longer emitted gives P6 "Referenced business
@@ -1468,7 +1487,8 @@ def _section_project_calendars(proj_el: ET.Element, proj_uid: str, project=None)
     """
     own = _own_calendars(project)
     if own:
-        oids = _keep_or_mint([c.uid for c in own], _PCAL_OID_START)
+        oids = _keep_or_mint([c.uid for c in own], _PCAL_OID_START,
+                             reserved=_reserved_cal_oids())
         for cal in own:
             _project_calendar(proj_el, cal, proj_uid, oids[_key(cal.uid)])
         return

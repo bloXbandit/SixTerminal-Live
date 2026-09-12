@@ -3494,6 +3494,28 @@ def export_check():
         return jsonify({"error": "No schedule loaded"}), 400
     from engine.xml_writer import date_problems
     problems = date_problems(sess["project"])
+
+    # The other half of "will this import": a reference that is well formed,
+    # correctly typed, and points at nothing. P6 does not fail on one — it logs
+    # it and leaves the field empty, so the import reports success and an
+    # activity quietly has no calendar.
+    refs = []
+    try:
+        from engine.xml_audit import audit_project
+        a = audit_project(sess["project"])
+        refs = a["dangling_references"] + a["duplicate_object_ids"]
+        if refs:
+            _append_chat(
+                "system_result",
+                f"Export check — {len(refs)} broken reference(s) in the file",
+                context=("These point at nothing, or are declared twice. P6 "
+                         "imports the file anyway and writes each one into its "
+                         "log, leaving the field empty:\n"
+                         + "\n".join(f"  {r.get('field') or r.get('element')} "
+                                     f"{r.get('value')} — {r['why']}"
+                                     for r in refs[:20])))
+    except Exception:
+        pass
     if problems:
         _append_chat(
             "system_result",
@@ -3508,7 +3530,9 @@ def export_check():
                        "file P6 will reject. Fixing the dates is the real "
                        "answer; offer to do it."))
     return jsonify({"success": True, "problems": problems,
-                    "count": len(problems)})
+                    "count": len(problems),
+                    "reference_problems": refs,
+                    "reference_count": len(refs)})
 
 
 @app.route("/api/schedule/preview", methods=["GET"])
