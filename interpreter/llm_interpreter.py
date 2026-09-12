@@ -19,6 +19,7 @@ Supported actions (must match edit_engine.py):
   read_document,
   update_labor_units, bulk_clear_constraints, bulk_append_name
   tag_by_folder, group_into_subfolder, align_child_tokens  (per-folder pattern edits)
+  excel_customise  (changes to the Excel tracker that survive the next export)
 
 Supported models: claude, gpt-4.1-mini, gpt-4.1-nano, gpt-5.4-mini
 """
@@ -1360,6 +1361,31 @@ tag_by_folder:
   - replace_existing (default true): an activity already ending in "(...)" has
     that CORRECTED, not a second tag appended — this is how a wrong room tag
     gets fixed. A folder whose token cannot be read is reported, never guessed.
+
+excel_customise  (aliases: excel_customize, tweak_tracker):
+  Change the Excel tracker in a way that SURVIVES the next export. Use it for
+  "hide the crew column", "call Sub Area Line-up", "make Phase 2 orange", "add
+  a sheet of tie-in dates". Say what changed; nothing else is needed.
+  {"action": "excel_customise", "op": "hide", "column": "Crew"}
+  {"action": "excel_customise", "op": "rename", "column": "Sub Area", "to": "Line-up"}
+  {"action": "excel_customise", "op": "colour", "phase": "Phase 2", "colour": "orange"}
+  {"action": "excel_customise", "op": "add_sheet", "sheet": "Tie-In Dates",
+   "headers": ["Room", "Utility", "Date"], "rows": [["MV 108", "Chilled water", "2026-04-12"]]}
+  {"action": "excel_customise", "op": "show_spec"}
+  - op: hide | show | rename | colour | add_sheet | drop_sheet | clear | show_spec
+  - column names are the Update headings exactly: Project, Lead, Phase, Area,
+    Sub Area, Room, Task, Activity ID, Activity Name, By, BL Start, BL Finish,
+    Days, Crew, Status, % Comp, Act Start, Act Finish, Notes, Updated By,
+    Var (d), Window, Next Step, Flag
+  - colour: blue, green, yellow, amber, orange, purple, teal, red, grey, pink,
+    or a hex code. "none" clears it.
+  DO NOT offer to edit the .xlsx itself. The workbook is GENERATED from the
+  schedule on every export, so a hand edit to the file is gone at the next one
+  — silently, because the file still looks right. This records the change
+  instead, and it is re-applied on every build, including to rows that did not
+  exist when it was asked for.
+  It cannot touch a formula or move a column: a moved column shifts every
+  reference behind it. Hiding leaves the column calculating and out of the way.
 
 align_child_tokens  (aliases: match_subfolders_to_parent):
   Make every sub-folder carry its PARENT's number, and bring the activity names

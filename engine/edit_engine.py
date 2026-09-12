@@ -524,6 +524,8 @@ def apply_command(project: Project, command: Dict[str, Any]) -> Tuple[bool, str]
             return _group_into_subfolder(project, command)
         elif action in ("align_child_tokens", "match_subfolders_to_parent"):
             return _align_child_tokens(project, command)
+        elif action in ("excel_customise", "excel_customize", "tweak_tracker"):
+            return _excel_customise(project, command)
         elif action == "set_wbs_color":
             return _set_wbs_color(project, command)
         elif action in ("set_wbs_id_prefix", "set_folder_prefix"):
@@ -4269,3 +4271,61 @@ def _align_child_tokens(project: Project, cmd: Dict) -> Tuple[bool, str]:
         apply=not _pattern_preview(cmd),
     )
     return True, describe(res)
+
+
+def _excel_customise(project: Project, cmd: Dict) -> Tuple[bool, str]:
+    """
+    Change the Excel tracker, in a way that survives the next export.
+
+    The obvious reading of "tweak the workbook" is to edit the .xlsx. That
+    works exactly once: the next export is built from the schedule again —
+    which is the point of a generated tracker — and the hand change is gone,
+    silently, because the file still looks right. So what is recorded is the
+    CHANGE, and the generator re-applies it on every build. A tweak then
+    survives a schedule revision, a re-export and a restart, and goes on
+    applying to rows that did not exist when it was asked for.
+
+      op    hide | show | rename | colour | add_sheet | drop_sheet | clear | show_spec
+      column    the Update heading to hide, show or rename
+      to        what it should read instead (rename)
+      phase     which phase to colour, and colour: a name or a hex code
+      sheet     the name of a sheet to add or drop
+      headers   its column headings
+      rows      its rows, each a list
+
+    It cannot touch a formula or move a column. A moved column shifts every
+    reference behind it and a hand-edited formula is one nobody regenerates
+    correctly — hiding leaves the column computing and out of the way, which
+    is what "I do not need to see that" actually means.
+    """
+    from .sheet_spec import SheetSpec
+    spec = getattr(project, "_sheet_spec", None)
+    if not isinstance(spec, SheetSpec):
+        spec = SheetSpec()
+        setattr(project, "_sheet_spec", spec)
+
+    op = str(cmd.get("op") or cmd.get("operation") or "").strip().lower()
+    col = cmd.get("column") or cmd.get("header") or ""
+    if op in ("hide", "hide_column"):
+        return True, spec.hide(str(col))
+    if op in ("show", "show_column", "unhide"):
+        return True, spec.show(str(col))
+    if op in ("rename", "rename_column"):
+        return True, spec.rename(str(col), str(cmd.get("to") or cmd.get("name") or ""))
+    if op in ("colour", "color", "colour_phase", "color_phase"):
+        return True, spec.colour_phase(str(cmd.get("phase") or ""),
+                                       str(cmd.get("colour") or cmd.get("color") or ""))
+    if op in ("add_sheet", "sheet", "new_sheet"):
+        return True, spec.add_sheet(str(cmd.get("sheet") or cmd.get("name") or ""),
+                                    cmd.get("headers"), cmd.get("rows"),
+                                    str(cmd.get("note") or ""))
+    if op in ("drop_sheet", "remove_sheet", "delete_sheet"):
+        return True, spec.drop_sheet(str(cmd.get("sheet") or cmd.get("name") or ""))
+    if op in ("clear", "reset"):
+        return True, spec.clear()
+    if op in ("show_spec", "describe", "list", ""):
+        return True, spec.describe()
+    raise EditError(
+        f"'{op}' is not something I can change about the tracker. The options "
+        f"are hide, show, rename, colour, add_sheet, drop_sheet, clear and "
+        f"show_spec.")

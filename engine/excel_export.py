@@ -321,7 +321,8 @@ def _collect(project, project_code: str) -> Dict[str, Any]:
 def build_workbook(project, out_path: str, project_code: Optional[str] = None,
                    title: Optional[str] = None,
                    leads: Optional[Dict[str, str]] = None,
-                   own_crew: str = CREW_OWN) -> str:
+                   own_crew: str = CREW_OWN,
+                   spec=None) -> str:
     """
     Write the tracker for this project. Returns the path written.
 
@@ -330,6 +331,12 @@ def build_workbook(project, out_path: str, project_code: Optional[str] = None,
     was handed in. `leads` and `own_crew` are the only preferences, and both
     have defaults rather than requirements.
     """
+    # Whatever was asked for about the tracker that the schedule cannot say —
+    # a hidden column, a renamed heading, a phase colour, an extra sheet. Held
+    # apart from the generator so it survives every rebuild rather than being
+    # a hand edit that the next export silently throws away.
+    from .sheet_spec import SheetSpec
+    spec = spec if isinstance(spec, SheetSpec) else SheetSpec()
     project_code = project_code or _code_for(project)
     # The roster is for a job that HAS siblings. MDC1/2/3 share a workbook, so
     # listing all three there is the point — but carrying those three names
@@ -438,8 +445,11 @@ def build_workbook(project, out_path: str, project_code: Optional[str] = None,
            COL_TASK, COL_ID, COL_NAME, COL_BY, COL_BLSTART, COL_BLFINISH,
            COL_DAYS, COL_CREW, COL_STATUS, COL_PCT, COL_ASTART, COL_AFINISH,
            COL_NOTES, COL_UPDBY, COL_VAR, COL_WINDOW, COL_NEXT, COL_FLAG]
-    _head(up, 4, HDR, [9, 9, 15, 20, 26, 11, 26, 22, 46, 15, 11, 11, 7, 7,
-                       14, 8, 11, 11, 34, 12, 9, 13, 14, 15])
+    # The heading is what the user reads; the MAP below still keys on the
+    # canonical name, so renaming a column cannot detach a formula from it.
+    _head(up, 4, [spec.shown(h) for h in HDR],
+          [9, 9, 15, 20, 26, 11, 26, 22, 46, 15, 11, 11, 7, 7,
+           14, 8, 11, 11, 34, 12, 9, 13, 14, 15])
     # Column letters by NAME. Every formula below reads through this, so a
     # column can be added or moved without hunting $N and $U through a hundred
     # lines and getting one of them wrong — which is exactly what adding
@@ -462,6 +472,9 @@ def build_workbook(project, out_path: str, project_code: Optional[str] = None,
             phase_order.append(rec['phase'])
     phase_bg = {ph: PHASE_BANDS[i % len(PHASE_BANDS)]
                 for i, ph in enumerate(phase_order)}
+    for ph, hexv in spec.phase_colours.items():
+        if ph in phase_bg and hexv:
+            phase_bg[ph] = hexv
 
     for i, rec in enumerate(ROWS):
         r = HR + 1 + i
@@ -594,6 +607,12 @@ def build_workbook(project, out_path: str, project_code: Optional[str] = None,
     _cf(up, f'{FL}{R1}:{FL}{LAST}', f'${FL}{R1}<>""', FLAG_BG, FLAG_TX, bold=True)
     up.conditional_formatting.add(f'{PC}{R1}:{PC}{LAST}', DataBarRule(
         start_type='num', start_value=0, end_type='num', end_value=1, color=ACCENT))
+    # Hidden, not removed. A removed column shifts every reference behind it;
+    # a hidden one goes on calculating and is simply out of the way, which is
+    # what "I do not need to see that" actually means.
+    for h in spec.hidden:
+        if h in C:
+            up.column_dimensions[C[h]].hidden = True
     up.protection.sheet = True
     up.protection.autoFilter = False
     up.protection.sort = False
@@ -942,6 +961,31 @@ def build_workbook(project, out_path: str, project_code: Optional[str] = None,
                 dvid.add(f'B{r+1}:B{r+BLOCK}')
                 r += BLOCK
             r += 1
+
+    # ═════════════════════════════════════════════════ SHEETS THAT WERE ASKED FOR ══
+    # Anything the generator knows nothing about, carried whole and rebuilt on
+    # every export. Written last so it can never sit between the generated tabs
+    # or take a name one of them needs.
+    for extra in spec.sheets:
+        if extra.name in wb.sheetnames:
+            continue                          # a generated tab wins its name
+        xs = wb.create_sheet(extra.name)
+        _title(xs, extra.name, extra.note or 'Added to this tracker. Rebuilt on '
+                               'every export, so it survives a schedule revision.',
+               max(len(extra.headers), 1))
+        if extra.headers:
+            _head(xs, 4, [str(h) for h in extra.headers],
+                  [max(12, min(48, len(str(h)) + 8)) for h in extra.headers])
+        for i, row in enumerate(extra.rows):
+            r = 5 + i
+            for j, v in enumerate(row[:len(extra.headers) or len(row)], start=1):
+                c = xs.cell(row=r, column=j, value=v)
+                c.font = _f(9); c.border = BOX
+                c.alignment = LEFT if j == 1 else CTR
+        if extra.headers and extra.rows:
+            xs.freeze_panes = 'A5'
+            xs.auto_filter.ref = (f'A4:{CL(len(extra.headers))}'
+                                  f'{4 + len(extra.rows)}')
 
     wb.active = 0
     wb.save(out_path)

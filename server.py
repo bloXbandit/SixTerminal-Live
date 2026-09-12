@@ -720,6 +720,26 @@ def _restore_from_cloud():
             _active_id[0] = pid
 
 
+
+def _attach_sheet_spec(project):
+    """
+    Hang the brain's tracker spec on the project, as the SAME object.
+
+    The edit engine has no brain — it takes a project and returns a result —
+    so an excel_customise command writes to project._sheet_spec. Attaching the
+    brain's own object here means those writes land on the brain, and so reach
+    R2 in the manifest and come back with the job. Two objects would mean the
+    agent changing one and the export reading the other, which looks exactly
+    like the change being ignored.
+    """
+    from engine.sheet_spec import SheetSpec
+    brain = _brain_for(project)
+    if not isinstance(getattr(brain, "sheet_spec", None), SheetSpec):
+        brain.sheet_spec = SheetSpec()
+    setattr(project, "_sheet_spec", brain.sheet_spec)
+    return brain.sheet_spec
+
+
 def _project_list_item(pid: str) -> dict:
     sess = _projects[pid]
     proj = sess["project"]
@@ -1848,6 +1868,7 @@ def edit():
                                 "raw_llm": raw_llm})
 
         _push_undo(instruction)
+        _attach_sheet_spec(project)
         results = apply_commands(project, edit_commands)
 
         applied       = [(cmd, ok, msg) for (cmd, (ok, msg)) in zip(edit_commands, results)]
@@ -2050,6 +2071,7 @@ def _apply_direct(commands, label):
         before_flow = _flow_signature(project)
 
         _push_undo(label)
+        _attach_sheet_spec(project)
         results = apply_commands(project, commands)
         applied       = list(zip(commands, results))
         success_count = sum(1 for _, (ok, _) in applied if ok)
@@ -3555,6 +3577,10 @@ def download_excel():
         return jsonify({"error": "No schedule loaded"}), 400
     from engine.excel_export import build_workbook
     project = sess["project"]
+    # Whatever was asked for about this tracker, re-applied on every build.
+    # That is the whole difference between a tweak and a hand edit: the file is
+    # regenerated from the schedule each time, so only a stored change survives.
+    spec = _attach_sheet_spec(project)
     stem = Path(sess.get("source_name", "schedule")).stem
     tmp = tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False)
     tmp.close()
@@ -3564,6 +3590,7 @@ def download_excel():
             project_code=(request.args.get("code") or None),
             title=(request.args.get("title") or None),
             own_crew=(request.args.get("crew") or None) or "Richards",
+            spec=spec,
         )
         return send_file(
             tmp.name, as_attachment=True,
