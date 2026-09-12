@@ -156,6 +156,36 @@ CASES: List[Case] = [
         instruction="Wire MV 106 however you think best — your call, just do it.",
         checks=[asks_a_question(False), emits("add_relation")],
     ),
+    # ── Deferral settles HOW, never WHICH ────────────────────────────────────
+    _case(
+        id="defers-but-the-target-is-ambiguous",
+        category="act-first",
+        claim=("RULE 1 — deferral locks out clarify on JUDGEMENT, not on "
+               "targeting: two folders answer to \"Area 1\""),
+        fixture="twinned",
+        instruction=("Go ahead and add a punch walk to Area 1 — your call on "
+                     "the duration and where it ties."),
+        checks=[says(r"Level 2"), says(r"Level 3")],
+    ),
+    _case(
+        id="an-ambiguous-folder-is-not-quietly-picked",
+        category="act-first",
+        claim=("RULE 1 — an edit aimed at the wrong folder is work nobody "
+               "asked for; name the candidates instead"),
+        fixture="twinned",
+        instruction="Rename everything in Area 1 to carry the level.",
+        checks=[says(r"Level 2"), says(r"Level 3")],
+    ),
+    _case(
+        id="a-clear-target-is-not-questioned",
+        category="act-first",
+        claim=("RULE 1 — only WHICH is askable; a named, unique folder is not "
+               "ambiguous and must simply be done"),
+        fixture="twinned",
+        instruction="Add a punch walk to Level 3 / Area 1, 2 days.",
+        checks=[asks_a_question(False), emits("add_activity")],
+    ),
+
     _case(
         id="infers-a-duration-unit",
         category="act-first",

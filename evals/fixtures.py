@@ -54,6 +54,39 @@ def rooms() -> Project:
     return p
 
 
+def twinned() -> Project:
+    """
+    The same folder name under two different parents, which is what a real WBS
+    looks like: every level has an "Area 1", every phase an "MV Rooms".
+
+    Poses: told to edit "Area 1", does it pick one and say nothing? Naming a
+    folder is the one thing a user's "go ahead" cannot have settled, because
+    they never expressed which — so the right answer surfaces both.
+    """
+    p = Project(uid="1", name="Slabs", id="EVAL-TWIN",
+                data_date="2026-01-05", planned_start="2026-01-05")
+    p.calendars = [Calendar(uid="1", name="Std")]
+    p.wbs_nodes = [WBSNode(uid="s", name="Slabs", code="S")]
+    p.activities = []
+    n = 0
+    for i, level in enumerate(("Level 2", "Level 3")):
+        lu = f"l{i}"
+        p.wbs_nodes.append(WBSNode(uid=lu, name=level, code=f"L{i}",
+                                   parent_uid="s", sequence_num=i))
+        au = f"a{i}"
+        p.wbs_nodes.append(WBSNode(uid=au, name="Area 1", code=f"AREA1{i}",
+                                   parent_uid=lu, sequence_num=0))
+        base = 2 + i * 6
+        for nm in ("Form & Tie Rebar", "Pour Slab"):
+            n += 1
+            p.activities.append(_act(f"x{n}", f"A{1000 + n * 10}", nm, au,
+                                     f"2026-02-{base:02d}", f"2026-02-{base+3:02d}"))
+            base += 4
+    p.relations = []
+    p.build_lookups()
+    return p
+
+
 def phased() -> Project:
     """
     Four phases in order, each with a finish milestone, nothing driving them.
@@ -159,6 +192,7 @@ def linked() -> Project:
 
 
 ALL = {
+    "twinned": twinned,
     "rooms": rooms,
     "phased": phased,
     "mixed_ids": mixed_ids,
