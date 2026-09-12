@@ -227,3 +227,17 @@ def test_the_empty_state_does_not_recommend_the_path_that_does_not_work():
     i = HTML.find("Nothing has been filed for this job yet")
     assert i > 0, "the empty state was reworded without updating this"
     assert "Add document" in HTML[i:i + 400]
+
+
+def test_the_export_button_shows_it_is_working():
+    """
+    It holds for two server round trips. Unlabelled, that reads as a dead
+    button — which is how it was reported — and a second press starts a second
+    export on top of the first.
+    """
+    fn = HTML[HTML.index("async function startDownload()"):]
+    fn = fn[:fn.index("\n}")]
+    assert "⏳" in fn, "nothing tells the user it is working"
+    assert "dataset.busy" in fn, "a second press is not guarded"
+    # every exit restores it, or the button stays stuck after one export
+    assert fn.count("done()") >= 5

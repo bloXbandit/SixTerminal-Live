@@ -5014,18 +5014,33 @@ async function startExcelDownload(){
 })();
 
 async function startDownload() {
-  if(!(await checkExportDates())) return;
+  // Held and labelled for the whole run. The pre-check is a round trip to the
+  // server and the report is another; on a 2,400-activity job that is long
+  // enough for a bare button to read as broken, and pressing it again while
+  // the first is in flight starts a second one.
+  const btn = document.getElementById('download-btn');
+  const label = btn ? btn.textContent : '';
+  if (btn) { if (btn.dataset.busy) return; btn.dataset.busy = '1';
+             btn.disabled = true; btn.textContent = '⏳ Checking…'; }
+  const done = () => { if (btn) { delete btn.dataset.busy;
+                                  btn.disabled = false; btn.textContent = label; } };
   try {
+    if(!(await checkExportDates())) { done(); return; }
+  } catch(e) { done(); }
+  try {
+    if (btn) btn.textContent = '⏳ Checking logic…';
     const report = await fetch('/api/report').then(_readJson);
-    if (report.error) { window.location.href = downloadUrl(); return; }
+    if (report.error) { window.location.href = downloadUrl(); done(); return; }
     const issues = report.hard_constraints.length + report.open_start.length + report.open_finish.length;
     if (issues === 0 && report.soft_constraints.length === 0) {
       window.location.href = downloadUrl();
+      done();
       return;
     }
     populateReport(report);
     openModal('report-modal');
-  } catch(e) { window.location.href = downloadUrl(); }
+    done();
+  } catch(e) { window.location.href = downloadUrl(); done(); }
 }
 
 function populateReport(r) {
