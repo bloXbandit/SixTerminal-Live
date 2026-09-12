@@ -460,3 +460,42 @@ def test_two_donors_can_be_layered():
     assert _units(p, "A10") == (320, 80, 240)
     assert _units(p, "A20") == (100, 0, 100)
     assert len(p.resource_assignments) == 2
+
+
+# ── will this donor actually fill the history? ───────────────────────────────
+#
+# The question a donor is chosen to answer. Work already under way is the half
+# a crew count cannot reach — a headcount typed for planning is rarely on
+# activities that are already finished — and it is invisible in a total
+# dominated by future work.
+
+def _with_history(crews=(None, None, None)):
+    p = _job(crews=crews, statuses=["Completed", "In Progress", "Not Started"])
+    p.activities[0].actual_start = "2026-01-06"
+    p.activities[1].actual_start = "2026-01-08"
+    return p
+
+
+def test_the_plan_counts_how_much_of_the_history_is_covered():
+    p = _with_history()
+    got = plan(p, donor=_donor({"A10": (320, 320, 0)}))
+    assert (got["started_covered"], got["started_total"]) == (1, 2)
+
+
+def test_a_donor_that_reaches_no_started_work_says_so():
+    """The honest answer to "will this fill my profile" is sometimes no, and
+    it should be readable before anything is written."""
+    p = _with_history()
+    got = plan(p, donor=_donor({"A30": (100, 0, 100)}))
+    assert got["counts"]["donor"] == 1
+    assert got["started_covered"] == 0, "future-only cover looked like history"
+
+
+def test_crew_counts_alone_can_cover_history_when_they_are_there():
+    p = _with_history(crews=(3, 4, None))
+    got = plan(p)
+    assert got["started_covered"] == 2
+
+
+def test_a_schedule_that_has_not_started_reports_no_history_to_fill():
+    assert plan(_job())["started_total"] == 0

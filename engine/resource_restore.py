@@ -258,6 +258,12 @@ def plan(target: Project,
 
     rows = []
     matched_by_name = 0
+    # Work already under way is the half a crew count cannot reach: a headcount
+    # typed for planning is rarely on the activities that are already finished.
+    # So "how much of the history does this donor actually cover" is the number
+    # that decides whether a donor is worth using, and it is not visible in a
+    # total that is dominated by future work.
+    started_total = started_covered = 0
     for a in target.activities:
         if "Milestone" in (a.activity_type or ""):
             continue
@@ -266,8 +272,13 @@ def plan(target: Project,
             rows.append({"activity_id": a.activity_id, "source": "keep",
                          "units": None})
             continue
+        is_history = bool(a.actual_start)
+        if is_history:
+            started_total += 1
         got = from_donor_by_uid.get(a.uid)
         if got:
+            if is_history:
+                started_covered += 1
             if got["how"] == "name":
                 matched_by_name += 1
             rows.append({"activity_id": a.activity_id, "source": "donor",
@@ -278,6 +289,11 @@ def plan(target: Project,
         crew = _crew_of(a, field)
         if crew:
             units = crew * float(a.planned_duration or 0)
+            # A crew count on work that has already started fills the history
+            # too — the split puts it behind the data date. Counting only the
+            # donor here understated what the plan would actually do.
+            if is_history:
+                started_covered += 1
             rows.append({"activity_id": a.activity_id, "source": "crew",
                          "units": round(units, 2), "crew": crew})
             continue
@@ -300,6 +316,9 @@ def plan(target: Project,
         # is a donor whose activity ids no longer line up, which is a fact
         # about the two files the user should get to judge.
         "matched_by_name": matched_by_name,
+        # The two that say whether the profile will have a left-hand side.
+        "started_total": started_total,
+        "started_covered": started_covered,
     }
 
 

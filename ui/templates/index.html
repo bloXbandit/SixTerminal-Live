@@ -3173,7 +3173,16 @@ async function refreshResourcePlan() {
            ${d.plan.matched_by_name.toLocaleString()} matched on activity name + folder
            rather than ID — the donor's IDs no longer line up with this schedule.</div>` : '')
       + (!(c.donor || c.crew) ? `<div style="color:var(--text3);">Nothing to put back —
-           either it is all here already, or there is no donor and no crew count to work from.</div>` : '');
+           either it is all here already, or there is no donor and no crew count to work from.</div>` : '')
+      // The number that decides whether a donor is worth using. Work already
+      // under way is the half a crew count cannot reach — a headcount typed
+      // for planning is rarely on activities that are already finished — and
+      // it is invisible in a total dominated by future work.
+      + (d.plan.started_total ? `<div style="margin-top:8px;padding-top:8px;
+             border-top:1px solid var(--border);color:${d.plan.started_covered ? 'var(--green)' : 'var(--orange)'};">
+           <b>${d.plan.started_covered}</b> of <b>${d.plan.started_total}</b> already-started
+           activities covered — this is the half of the profile behind the data date.
+           ${d.plan.started_covered ? '' : ' Nothing here reaches them, so the profile stays empty before the data date.'}</div>` : '');
     btn.disabled = !(c.donor || c.crew);
   } catch(e) {
     box.innerHTML = `<span style="color:var(--red);">${escHtml(e.message)}</span>`;
