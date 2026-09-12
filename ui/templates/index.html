@@ -3146,6 +3146,7 @@ async function openDocuments() {
               ${d.line_count ? ` · ${d.line_count.toLocaleString()} lines` : ''}
               ${d.truncated ? ' (text capped)' : ''}
               ${d.has_file ? ` · ${kb(d.file_bytes)} kept` : ' · file not kept'}
+              ${d.file_name && d.file_name !== d.name ? ` · sent as ${escHtml(d.file_name)}` : ''}
               ${d.added_at ? ` · ${escHtml(String(d.added_at).replace('T', ' ').slice(0, 16))}` : ''}
             </div>
             <div id="hits-${escAttr(d.id)}"></div>

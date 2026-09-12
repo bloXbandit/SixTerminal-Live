@@ -72,6 +72,11 @@ class Document:
     has_file: bool = False
     file_ext: str = ""
     file_bytes: int = 0
+    # What it was CALLED when it arrived. A drawing is filed under its sheet
+    # number ("E-101") because that is what anyone looking for it will say —
+    # but the download has to come back as the file the user sent, extension
+    # and all, or their machine cannot open what it just saved.
+    file_name: str = ""
 
     def to_json(self) -> Dict[str, Any]:
         return asdict(self)
@@ -254,11 +259,13 @@ class Library:
     def to_json(self) -> Dict[str, Any]:
         return {"docs": [d.to_json() for d in self.docs]}
 
-    def mark_file(self, doc_id: str, ext: str, size: int) -> None:
+    def mark_file(self, doc_id: str, ext: str, size: int,
+                  filename: str = "") -> None:
         """Record that this document's original was kept."""
         for d in self.docs:
             if d.id == doc_id:
                 d.has_file, d.file_ext, d.file_bytes = True, ext, size
+                d.file_name = filename or d.file_name or (d.name + ext)
                 return
 
     @classmethod
