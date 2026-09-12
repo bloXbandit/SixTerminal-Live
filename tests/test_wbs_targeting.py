@@ -62,12 +62,41 @@ def test_paste_lands_in_the_folder_chosen_by_uid_not_the_first_of_that_name():
             assert _count_in(p, other) == 0, f"rows leaked into {other}"
 
 
-def test_paste_by_name_alone_is_still_accepted_for_older_callers():
+def test_paste_by_an_ambiguous_name_is_refused_rather_than_landing_somewhere():
+    """
+    This used to assert the opposite — that a name alone was "still accepted"
+    and quietly landed in whichever "MV Rooms" came first. That tolerance was
+    the bug this file was written about: the caller named a folder, three
+    folders answered to it, and the rows went into one of them with nothing
+    said. Accepting it cost an edit in the wrong phase; refusing costs a turn.
+    """
+    p = _repeated_names()
+    ok, msg = apply_command(p, {"action": "copy_activities",
+                                "activity_ids": ["A1000"], "wbs_name": "MV Rooms"})
+    assert not ok
+    assert "matches 3 folders" in msg
+    assert "Phase 1 / MV Rooms" in msg, "the candidates should be listed"
+    assert sum(_count_in(p, u) for u in ("r1", "r2", "r3")) == 0, "rows still moved"
+
+
+def test_paste_by_name_alone_still_works_when_the_name_is_unique():
+    """The lenient path is kept where it is safe — refusing a name that lands
+    on exactly one folder would break the ordinary case for no gain."""
     p = _repeated_names()
     ok, _ = apply_command(p, {"action": "copy_activities",
-                              "activity_ids": ["A1000"], "wbs_name": "MV Rooms"})
+                              "activity_ids": ["A1000"], "wbs_name": "Source"})
     assert ok
-    assert sum(_count_in(p, u) for u in ("r1", "r2", "r3")) == 1
+
+
+def test_paste_by_a_path_picks_the_phase_the_caller_meant():
+    """The way out of the refusal above, without needing a uid."""
+    p = _repeated_names()
+    ok, msg = apply_command(p, {"action": "copy_activities",
+                                "activity_ids": ["A1000"],
+                                "wbs_name": "Phase 2 / MV Rooms"})
+    assert ok, msg
+    assert _count_in(p, "r2") == 1
+    assert _count_in(p, "r1") == 0 and _count_in(p, "r3") == 0
 
 
 def test_pasted_rows_keep_the_logic_between_them():

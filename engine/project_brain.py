@@ -1078,6 +1078,11 @@ class Brain:
         # Every document given for this job, kept so the agent can go back to
         # one. Only a CATALOGUE rides in the prompt — see engine/doc_library.py.
         self.library: Optional[Any] = None
+        # What was asked for about the Excel tracker — a hidden column, a
+        # renamed heading, a phase colour, an extra sheet. Kept here rather
+        # than in the file so it survives every rebuild: the workbook is
+        # generated, so a hand edit to it is gone at the next export.
+        self.sheet_spec: Optional[Any] = None
         # Testable statements about the job: contract dates, what must lead to
         # what, what must follow what. Unlike a directive these are CHECKED
         # against the network rather than read as prose, so they can be
@@ -1090,7 +1095,8 @@ class Brain:
         return (not self.directives and self.objective is None
                 and not self.requirements
                 and not self.feedback and self.scope is None
-                and (self.library is None or not self.library.docs))
+                and (self.library is None or not self.library.docs)
+                and (self.sheet_spec is None or self.sheet_spec.is_empty()))
 
     def record(self, pred_name: str, succ_name: str, accepted: bool) -> str:
         """Remember how a proposed tie of this shape was received."""
@@ -1196,6 +1202,9 @@ class Brain:
                 "feedback": self.feedback,
                 "scope": self.scope.to_json() if self.scope else None,
                 "library": self.library.to_json() if self.library else None,
+                "sheet_spec": (self.sheet_spec.to_json()
+                               if self.sheet_spec and not self.sheet_spec.is_empty()
+                               else None),
                 "requirements": list(self.requirements)}
 
     @classmethod
@@ -1213,6 +1222,10 @@ class Brain:
         b.scope = _sg.ScopeGraph.from_json((data or {}).get("scope"))
         from . import doc_library as _dl
         b.library = _dl.Library.from_json((data or {}).get("library"))
+        raw_spec = (data or {}).get("sheet_spec")
+        if raw_spec:
+            from . import sheet_spec as _ss
+            b.sheet_spec = _ss.SheetSpec.from_json(raw_spec)
         reqs = (data or {}).get("requirements")
         if isinstance(reqs, list):
             b.requirements = [r for r in reqs if isinstance(r, dict)]

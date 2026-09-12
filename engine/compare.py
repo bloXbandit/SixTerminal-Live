@@ -55,6 +55,47 @@ def _fmt_val(field: str, act: Activity) -> str:
     return str(v)
 
 
+def _fmt_lag(h: Optional[float]) -> str:
+    if not h:
+        return ""
+    d = h / 8.0
+    return f"{d:+.0f}d" if abs(d - round(d)) < 0.05 else f"{d:+.1f}d"
+
+
+def _rel_index(project: Project) -> Dict[Tuple[str, str], Relation]:
+    """
+    Every tie in the schedule, keyed by the activity IDs at each end.
+
+    Uids are minted per file — the same tie in two exports of one job has two
+    different uids — so uids cannot say whether a tie survived a revision.
+    Activity IDs can: P6 keeps them stable across updates, which is the same
+    reason the activity match above leads with them.
+
+    A duplicate pair (P6 allows only one tie per pair per direction, but a
+    hand-edited file can carry two) keeps the first and ignores the rest
+    rather than reporting a change that is really a duplicate.
+    """
+    aid = {a.uid: a.activity_id for a in project.activities}
+    out: Dict[Tuple[str, str], Relation] = {}
+    for r in project.relations:
+        p, s = aid.get(r.predecessor_uid), aid.get(r.successor_uid)
+        if p and s:
+            out.setdefault((p, s), r)
+    return out
+
+
+def _rel_row(pred: str, succ: str, rel: Optional[Relation],
+             names: Dict[str, str]) -> Dict[str, Any]:
+    return {
+        "pred": pred,
+        "succ": succ,
+        "pred_name": names.get(pred, ""),
+        "succ_name": names.get(succ, ""),
+        "type": (rel.type if rel else ""),
+        "lag": _fmt_lag(rel.lag if rel else None),
+    }
+
+
 def _wbs_path(project: Project, wbs_uid: str) -> str:
     wbs_map = {w.uid: w for w in project.wbs_nodes}
     parts = []
@@ -165,6 +206,30 @@ def compare_projects(proj_a: Project, proj_b: Project) -> Dict[str, Any]:
         else:
             unchanged_count += 1
 
+    # ── Logic diff ──────────────────────────────────────────────────────────
+    # The field diff above covers dates and progress. It says nothing about
+    # the ties, and a revision that moves a date because the contractor added
+    # a predecessor looks identical to one that moved it by hand. So the ties
+    # are diffed on their own terms: a tie is the same tie if the activity IDs
+    # at both ends are the same, and it CHANGED if the type or the lag moved.
+    rel_a, rel_b = _rel_index(proj_a), _rel_index(proj_b)
+    names = {a.activity_id: a.name for a in proj_b.activities}
+    for a in proj_a.activities:
+        names.setdefault(a.activity_id, a.name)
+
+    logic_added, logic_removed, logic_changed = [], [], []
+    for key, rb in rel_b.items():
+        ra = rel_a.get(key)
+        if ra is None:
+            logic_added.append(_rel_row(key[0], key[1], rb, names))
+        elif ra.type != rb.type or (ra.lag or 0) != (rb.lag or 0):
+            row = _rel_row(key[0], key[1], rb, names)
+            row["from_type"], row["from_lag"] = ra.type, _fmt_lag(ra.lag)
+            logic_changed.append(row)
+    for key, ra in rel_a.items():
+        if key not in rel_b:
+            logic_removed.append(_rel_row(key[0], key[1], ra, names))
+
     # ── WBS diff ────────────────────────────────────────────────────────────
     wbs_a_codes = {w.code for w in proj_a.wbs_nodes}
     wbs_b_codes = {w.code for w in proj_b.wbs_nodes}
@@ -185,6 +250,9 @@ def compare_projects(proj_a: Project, proj_b: Project) -> Dict[str, Any]:
             "added": [],
             "removed": [],
             "changed": [],
+            "logic_added": [],
+            "logic_removed": [],
+            "logic_changed": [],
             "unchanged_count": 0,
         }
 
@@ -259,9 +327,41 @@ def compare_projects(proj_a: Project, proj_b: Project) -> Dict[str, Any]:
                 "status": a.status,
             })
 
+    # Logic changes → the successor's folder. A tie belongs to the activity it
+    # constrains, which is how P6's own Predecessors tab reads it: you open
+    # the work that is waiting, not the work it is waiting on. Where the
+    # successor is gone from proj_b the predecessor's folder takes it, and a
+    # tie whose ends are both gone lands in a catch-all rather than vanishing.
+    wbs_of = {}
+    for a in proj_b.activities:
+        wbs_of[a.activity_id] = a.wbs_uid
+    ORPHAN = "_logic_orphan"
+
+    def _place(row, bucket):
+        uid = wbs_of.get(row["succ"]) or wbs_of.get(row["pred"])
+        sec = sections.get(uid) if uid else None
+        if sec is None:
+            sec = sections.setdefault(ORPHAN, {
+                "wbs_uid": ORPHAN, "wbs_code": "(logic)",
+                "wbs_name": "Logic on activities not in this schedule",
+                "wbs_path": "~", "added": [], "removed": [], "changed": [],
+                "logic_added": [], "logic_removed": [], "logic_changed": [],
+                "unchanged_count": 0,
+            })
+        sec[bucket].append(row)
+
+    for row in logic_added:
+        _place(row, "logic_added")
+    for row in logic_removed:
+        _place(row, "logic_removed")
+    for row in logic_changed:
+        _place(row, "logic_changed")
+
     # Only include sections that have content
     section_list = [s for s in sections.values()
-                    if s["added"] or s["removed"] or s["changed"] or s["unchanged_count"] > 0]
+                    if s["added"] or s["removed"] or s["changed"]
+                    or s["logic_added"] or s["logic_removed"] or s["logic_changed"]
+                    or s["unchanged_count"] > 0]
     # Sort: WBS path order
     section_list.sort(key=lambda s: s["wbs_path"])
 
@@ -275,6 +375,11 @@ def compare_projects(proj_a: Project, proj_b: Project) -> Dict[str, Any]:
             "total_b": len(proj_b.activities),
             "wbs_added": len(wbs_added),
             "wbs_removed": len(wbs_removed),
+            "logic_added": len(logic_added),
+            "logic_removed": len(logic_removed),
+            "logic_changed": len(logic_changed),
+            "total_rels_a": len(proj_a.relations),
+            "total_rels_b": len(proj_b.relations),
         },
         "wbs_diff": {"added": wbs_added, "removed": wbs_removed},
         "sections": section_list,
@@ -736,10 +841,137 @@ def apply_activity_changes(
     tgt_project.build_lookups()
     from .schedule_model import compute_dates
     try:
-        compute_dates(tgt_project)
+        # apply_dates=False, or this throws away the dates it was just asked to
+        # pull in. The recompute used to run with P6's default of ON, which
+        # overwrites planned_start / planned_finish with the early dates of the
+        # TARGET's own logic — so pulling a revised date onto any activity with
+        # a predecessor put the old date straight back, reported "Applied 2
+        # fields", and left the row still showing as different. Only Schedule
+        # (F9) moves dates in this app; everything else recomputes float and
+        # the critical path and leaves the dates alone.
+        compute_dates(tgt_project, apply_dates=False)
     except Exception:
         pass
     msg = f"Applied {fields_set} field(s) across {applied} activit(y/ies)"
     if skipped:
         msg += f"; {len(skipped)} not found in both schedules"
     return True, msg, {"applied": applied, "fields_set": fields_set, "skipped": skipped}
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Logic-level replace / merge
+# ──────────────────────────────────────────────────────────────────────────────
+
+_REL_OPS = ("add", "remove", "update")
+
+
+def apply_relation_changes(
+    src_project: Project,
+    tgt_project: Project,
+    changes: List[Dict[str, Any]],
+) -> Tuple[bool, str, Dict[str, Any]]:
+    """
+    Pull individual logic ties from src into tgt — the same "combine the
+    differences" idea as apply_activity_changes, for the half of a revision
+    that the field diff cannot see.
+
+    changes: [{"pred": "A1000", "succ": "A1010", "op": "add"|"remove"|"update"}]
+             op defaults to "add". "update" retypes/relags an existing tie and
+             falls back to adding it if it is not there.
+
+    Ties are addressed by the activity IDs at each end, never by uid: uids are
+    minted per file, so the same tie in two exports of one job has two of them.
+
+    Nothing is invented. An "add" or "update" takes its type and lag from the
+    source tie, and a pair the source does not have is skipped rather than
+    guessed at. Ties naming an activity that is not in the target are skipped
+    too — the alternative is a relation pointing at nothing, which loads and
+    then fails to schedule.
+
+    Returns (success, message, {added, removed, updated, skipped:[...]}).
+    """
+    src_rel = _rel_index(src_project)
+    by_aid = {a.activity_id: a for a in tgt_project.activities}
+    added = removed = updated = 0
+    skipped: List[Dict[str, str]] = []
+
+    def _skip(p, s, why):
+        skipped.append({"pred": p, "succ": s, "why": why})
+
+    for ch in changes:
+        pred = str(ch.get("pred") or "").strip()
+        succ = str(ch.get("succ") or "").strip()
+        op = str(ch.get("op") or "add").strip().lower()
+        if not pred or not succ or op not in _REL_OPS:
+            _skip(pred, succ, "not a usable change")
+            continue
+        if pred == succ:
+            # P6 will not store it and the CPM pass would treat it as a
+            # one-activity cycle. Refusing here names it instead.
+            _skip(pred, succ, "an activity cannot precede itself")
+            continue
+
+        # Whatever tie is currently in the target for this pair, in both
+        # directions of the lookup we need: the object, to edit or drop it.
+        cur = None
+        for r in tgt_project.relations:
+            p = by_aid.get(pred)
+            s = by_aid.get(succ)
+            if p and s and r.predecessor_uid == p.uid and r.successor_uid == s.uid:
+                cur = r
+                break
+
+        if op == "remove":
+            if cur is None:
+                _skip(pred, succ, "no such tie in this schedule")
+                continue
+            tgt_project.relations.remove(cur)
+            removed += 1
+            continue
+
+        want = src_rel.get((pred, succ))
+        if want is None:
+            _skip(pred, succ, "the other schedule has no such tie to copy")
+            continue
+        if pred not in by_aid or succ not in by_aid:
+            missing = pred if pred not in by_aid else succ
+            _skip(pred, succ, f"{missing} is not in this schedule")
+            continue
+        if cur is not None:
+            if cur.type == want.type and (cur.lag or 0) == (want.lag or 0):
+                _skip(pred, succ, "already the same")
+                continue
+            cur.type, cur.lag = want.type, want.lag
+            updated += 1
+        else:
+            tgt_project.relations.append(Relation(
+                uid=_new_uid(),
+                predecessor_uid=by_aid[pred].uid,
+                successor_uid=by_aid[succ].uid,
+                type=want.type, lag=want.lag))
+            added += 1
+
+    tgt_project.build_lookups()
+    # Changing the logic changes the float and the critical path, so those are
+    # recomputed — but NOT the dates. Pulling a tie across is an edit, and in
+    # this app an edit never reschedules; Schedule (F9) is the one thing that
+    # moves Start and Finish, so what you see after this is your dates against
+    # the new logic, which is exactly the drift the badge is for.
+    from .schedule_model import compute_dates
+    try:
+        compute_dates(tgt_project, apply_dates=False)
+    except Exception:
+        pass
+
+    bits = []
+    if added:
+        bits.append(f"{added} tie(s) added")
+    if updated:
+        bits.append(f"{updated} retyped or relagged")
+    if removed:
+        bits.append(f"{removed} removed")
+    msg = ", ".join(bits) if bits else "No logic changed"
+    if skipped:
+        msg += f"; {len(skipped)} skipped"
+    return True, msg, {"added": added, "removed": removed,
+                       "updated": updated, "skipped": skipped}

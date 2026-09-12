@@ -10,7 +10,8 @@ root-level enterprise objects plus WBS/Activity/Relationship blocks inside Proje
 
 import xml.etree.ElementTree as ET
 from typing import Optional, Dict, Iterable, List
-from .schedule_model import Project, WBSNode, Activity, Relation, Calendar, UDFType
+from .schedule_model import (Project, WBSNode, Activity, Relation, Calendar,
+                             UDFType, Resource, ResourceAssignment)
 from .xml_writer import normalize_udf_type
 
 _XSI_NS = "http://www.w3.org/2001/XMLSchema-instance"
@@ -456,6 +457,8 @@ def load_xml(path: str) -> Project:
             constraint_date=_iso_date(_text(act_el, "PrimaryConstraintDate")) or None,
             notes=_text(act_el, "NotebookTopic") or _text(act_el, "NotesToResources") or None,
             planned_labor_units=_float(act_el, "PlannedLaborUnits"),
+            actual_labor_units=_float(act_el, "ActualLaborUnits"),
+            remaining_labor_units=_float(act_el, "RemainingLaborUnits"),
             udfs=_read_udfs(act_el, udf_titles),
         ))
 
@@ -487,6 +490,65 @@ def load_xml(path: str) -> Project:
             successor_uid=succ_uid,
             type=_map_relation_type(_text(rel_el, "Type", "Finish to Start")),
             lag=_float(rel_el, "Lag"),
+        ))
+
+    # --- Resources and their assignments ---
+    #
+    # Both used to be dropped on the floor: a P6 file carrying crews, plant or
+    # cost accounts came through here and went back out with none of it, which
+    # is silent loss on a round trip nobody would think to check. The library
+    # lives at the document root; the assignments hang off <Project>.
+    #
+    # Rates sit in a separate <ResourceRate> block keyed by resource, and a
+    # resource can have several over time. The first is taken — enough for P6
+    # to accept the file, and honest about being less than P6 stores.
+    rate_by_res: Dict[str, ET.Element] = {}
+    for rr in _descendants(root, "ResourceRate"):
+        rid = _text(rr, "ResourceObjectId")
+        if rid:
+            rate_by_res.setdefault(rid, rr)
+
+    for r_el in _unique_by_uid(_descendants(root, "Resource")):
+        ruid = _text(r_el, "ObjectId")
+        if not ruid:
+            continue
+        rr = rate_by_res.get(ruid)
+        project.resources.append(Resource(
+            uid=ruid,
+            id=_text(r_el, "Id") or ruid,
+            name=_text(r_el, "Name") or _text(r_el, "Id") or ruid,
+            type=_text(r_el, "ResourceType", "Labor") or "Labor",
+            calendar_uid=_text(r_el, "CalendarObjectId") or None,
+            unit_of_measure=_text(r_el, "UnitOfMeasureObjectId") or None,
+            max_units=(_float(rr, "MaxUnitsPerTime", 1.0) if rr is not None
+                       else _float(r_el, "DefaultUnitsPerTime", 1.0)),
+            rate=(_float(rr, "PricePerUnit") if rr is not None else 0.0),
+            parent_uid=_text(r_el, "ParentObjectId") or None,
+            is_active=_text(r_el, "IsActive", "1") not in ("0", "false", "False"),
+        ))
+
+    known_res = {r.uid for r in project.resources}
+    for ra in _descendants(proj_el, "ResourceAssignment"):
+        act_uid = _text(ra, "ActivityObjectId")
+        res_uid = _text(ra, "ResourceObjectId")
+        # An assignment naming an activity or resource this file does not have
+        # is skipped for the same reason a relation is: it loads and then fails
+        # to schedule. Role-only assignments (no resource) are skipped too —
+        # this app does not model roles, and inventing a resource for one would
+        # put something in P6 that was never there.
+        if act_uid not in activity_ids or res_uid not in known_res:
+            continue
+        project.resource_assignments.append(ResourceAssignment(
+            uid=_text(ra, "ObjectId") or f"RA-{len(project.resource_assignments) + 1}",
+            activity_uid=act_uid,
+            resource_uid=res_uid,
+            planned_units=_float(ra, "PlannedUnits"),
+            actual_units=_float(ra, "ActualUnits"),
+            remaining_units=_float(ra, "RemainingUnits"),
+            planned_cost=_float(ra, "PlannedCost"),
+            actual_cost=_float(ra, "ActualCost"),
+            rate=_float(ra, "PricePerUnit"),
+            role_uid=_text(ra, "RoleObjectId") or None,
         ))
 
     project.build_lookups()

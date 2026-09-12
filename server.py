@@ -50,7 +50,8 @@ from engine.importer import extract as import_extract, build_project_from_contra
     _pdf_page_count, _read_pdf_pages, _rows_to_contract, _text_layer_present, \
     open_pdf_handle, _read_pdf_pages_from_handle, _text_layer_from_handle
 from engine.compare import (compare_projects, copy_wbs_branch,
-                            replace_wbs_branch, apply_activity_changes)
+                            replace_wbs_branch, apply_activity_changes,
+                            apply_relation_changes)
 from engine import cloud_store
 from engine import objectives
 from engine import edit_engine as edit_engine_module
@@ -717,6 +718,26 @@ def _restore_from_cloud():
                 _brains[key] = brain
         if _active_id[0] is None:
             _active_id[0] = pid
+
+
+
+def _attach_sheet_spec(project):
+    """
+    Hang the brain's tracker spec on the project, as the SAME object.
+
+    The edit engine has no brain — it takes a project and returns a result —
+    so an excel_customise command writes to project._sheet_spec. Attaching the
+    brain's own object here means those writes land on the brain, and so reach
+    R2 in the manifest and come back with the job. Two objects would mean the
+    agent changing one and the export reading the other, which looks exactly
+    like the change being ignored.
+    """
+    from engine.sheet_spec import SheetSpec
+    brain = _brain_for(project)
+    if not isinstance(getattr(brain, "sheet_spec", None), SheetSpec):
+        brain.sheet_spec = SheetSpec()
+    setattr(project, "_sheet_spec", brain.sheet_spec)
+    return brain.sheet_spec
 
 
 def _project_list_item(pid: str) -> dict:
@@ -1847,6 +1868,7 @@ def edit():
                                 "raw_llm": raw_llm})
 
         _push_undo(instruction)
+        _attach_sheet_spec(project)
         results = apply_commands(project, edit_commands)
 
         applied       = [(cmd, ok, msg) for (cmd, (ok, msg)) in zip(edit_commands, results)]
@@ -2049,6 +2071,7 @@ def _apply_direct(commands, label):
         before_flow = _flow_signature(project)
 
         _push_undo(label)
+        _attach_sheet_spec(project)
         results = apply_commands(project, commands)
         applied       = list(zip(commands, results))
         success_count = sum(1 for _, (ok, _) in applied if ok)
@@ -2487,6 +2510,10 @@ def document_upload():
 
     brain = _brain_for(sess["project"])
     doc = brain.docs().add_text(name, kind, read)
+    # Keep the file itself, not only what was read out of it. The extraction
+    # is lossy — layout, tables and figures do not survive it — so without the
+    # original "can I see that drawing again" has no answer.
+    _keep_document_file(_active_id[0], doc, blob, name, f.mimetype or "")
     _mark_dirty(_active_id[0])
 
     where = (f"{len(doc.sheets)} sheets: {', '.join(doc.sheets[:8])}"
@@ -2506,6 +2533,84 @@ def document_upload():
         "chat": sess["chat_history"][-2:]})
 
 
+
+# ── the file a document was read from ────────────────────────────────────────
+#
+# R2 when it is configured, a local directory when it is not. The local copy is
+# not a substitute — this container is reclaimed when the session ends — but it
+# is what makes the feature work at all on a laptop with no bucket, and it is
+# better than the previous behaviour of keeping nothing anywhere.
+
+_DOC_DIR = Path(os.environ.get("DOC_DIR") or (Path(tempfile.gettempdir()) / "sixterm_docs"))
+
+
+def _local_doc_path(pid: str, doc_id: str, ext: str = "") -> Path:
+    d = _DOC_DIR / (pid or "_")
+    d.mkdir(parents=True, exist_ok=True)
+    return d / f"{doc_id}{ext}"
+
+
+def _keep_document_file(pid, doc, blob, filename, content_type=""):
+    """Store the original. Never raises — a failed keep must not lose the read."""
+    ext = Path(filename or "").suffix[:10]
+    try:
+        ok = False
+        if cloud_store.is_configured():
+            ok, _ = cloud_store.save_document(pid, doc.id, blob, filename, content_type)
+        if not ok:
+            _local_doc_path(pid, doc.id, ext).write_bytes(blob)
+        lib = getattr(_brain_for(_projects[pid]["project"]), "library", None)
+        if lib is not None:
+            lib.mark_file(doc.id, ext, len(blob))
+    except Exception:
+        pass
+
+
+def _fetch_document_file(pid, doc):
+    """(bytes, filename) or None."""
+    ext = getattr(doc, "file_ext", "") or ""
+    try:
+        if cloud_store.is_configured():
+            got = cloud_store.load_document(pid, doc.id, ext)
+            if got:
+                return got
+        path = _local_doc_path(pid, doc.id, ext)
+        if path.exists():
+            return path.read_bytes(), doc.name
+    except Exception:
+        pass
+    return None
+
+
+@app.route("/api/documents/<doc_id>/file", methods=["GET"])
+def document_file(doc_id):
+    """
+    The document back as it arrived.
+
+    The whole point of keeping it: a PDF read for its text has lost its
+    drawings, and the answer to "let me look at that again" should not be
+    "it is gone".
+    """
+    sess = _get_session()
+    if sess is None or sess["project"] is None:
+        return jsonify({"error": "No schedule loaded"}), 400
+    lib = getattr(_brain_for(sess["project"]), "library", None)
+    doc = next((d for d in (lib.docs if lib else []) if d.id == doc_id), None)
+    if doc is None:
+        return jsonify({"error": "No such document"}), 404
+    got = _fetch_document_file(_active_id[0], doc)
+    if got is None:
+        return jsonify({"error": "The file for this document was not kept. "
+                                 "Documents added before file storage existed "
+                                 "have their text but not the original — "
+                                 "re-upload it to keep the file too."}), 404
+    blob, name = got
+    import io
+    return send_file(io.BytesIO(blob), as_attachment=True,
+                     download_name=name or f"{doc_id}{doc.file_ext}",
+                     mimetype="application/octet-stream")
+
+
 @app.route("/api/documents", methods=["GET"])
 def documents_list():
     sess = _get_session()
@@ -2516,7 +2621,9 @@ def documents_list():
     return jsonify({"success": True, "documents": [
         {"id": d.id, "name": d.name, "kind": d.kind, "label": d.label(),
          "line_count": d.line_count, "pages": d.pages, "sheets": d.sheets,
-         "added_at": d.added_at} for d in reversed(docs)]})
+         "added_at": d.added_at, "truncated": d.truncated,
+         "has_file": getattr(d, "has_file", False),
+         "file_bytes": getattr(d, "file_bytes", 0)} for d in reversed(docs)]})
 
 
 @app.route("/api/documents/search", methods=["GET"])
@@ -2546,8 +2653,21 @@ def document_delete(doc_id):
     if sess is None or sess["project"] is None:
         return jsonify({"error": "No schedule loaded"}), 400
     lib = getattr(_brain_for(sess["project"]), "library", None)
+    doc = next((d for d in (lib.docs if lib else []) if d.id == doc_id), None)
     if lib is None or not lib.remove(doc_id):
         return jsonify({"error": "No such document"}), 404
+    # Take the file with it. Removing the entry and leaving the bytes behind
+    # is how a bucket fills with objects nothing refers to any more.
+    if doc is not None:
+        ext = getattr(doc, "file_ext", "") or ""
+        try:
+            if cloud_store.is_configured():
+                cloud_store.delete_document(_active_id[0], doc_id, ext)
+            path = _local_doc_path(_active_id[0], doc_id, ext)
+            if path.exists():
+                path.unlink()
+        except Exception:
+            pass
     _mark_dirty(_active_id[0])
     return jsonify({"success": True})
 
@@ -3437,6 +3557,51 @@ def download():
         return jsonify({"error": f"Export failed: {str(e)}"}), 500
 
 
+@app.route("/api/download/excel", methods=["GET"])
+def download_excel():
+    """
+    The field progress tracker, built from the schedule loaded right now.
+
+    P6 is not where a foreman reports progress, and a tracker cut by hand is
+    stale the moment the schedule moves. This is the same button as the XML
+    export pointed the other way: the workbook goes out to the field, the
+    Update tab comes back, and the XML export closes the loop.
+
+    Nothing about any one job is baked in — the code, phases, areas, contract
+    dates and driving chains all come out of the project handed in — so this
+    works on the next job without a code change. `code`, `title` and `crew`
+    are the only preferences, and all three have defaults.
+    """
+    sess = _get_session()
+    if sess is None or sess["project"] is None:
+        return jsonify({"error": "No schedule loaded"}), 400
+    from engine.excel_export import build_workbook
+    project = sess["project"]
+    # Whatever was asked for about this tracker, re-applied on every build.
+    # That is the whole difference between a tweak and a hand edit: the file is
+    # regenerated from the schedule each time, so only a stored change survives.
+    spec = _attach_sheet_spec(project)
+    stem = Path(sess.get("source_name", "schedule")).stem
+    tmp = tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False)
+    tmp.close()
+    try:
+        build_workbook(
+            project, tmp.name,
+            project_code=(request.args.get("code") or None),
+            title=(request.args.get("title") or None),
+            own_crew=(request.args.get("crew") or None) or "Richards",
+            spec=spec,
+        )
+        return send_file(
+            tmp.name, as_attachment=True,
+            download_name=f"{stem}_Progress_Tracker.xlsx",
+            mimetype=("application/vnd.openxmlformats-officedocument."
+                      "spreadsheetml.sheet"))
+    except Exception as e:
+        return jsonify({"error": f"Excel export failed: {str(e)}",
+                        "trace": traceback.format_exc()}), 500
+
+
 @app.route("/api/export/check", methods=["GET"])
 def export_check():
     """
@@ -3453,6 +3618,28 @@ def export_check():
         return jsonify({"error": "No schedule loaded"}), 400
     from engine.xml_writer import date_problems
     problems = date_problems(sess["project"])
+
+    # The other half of "will this import": a reference that is well formed,
+    # correctly typed, and points at nothing. P6 does not fail on one — it logs
+    # it and leaves the field empty, so the import reports success and an
+    # activity quietly has no calendar.
+    refs = []
+    try:
+        from engine.xml_audit import audit_project
+        a = audit_project(sess["project"])
+        refs = a["dangling_references"] + a["duplicate_object_ids"]
+        if refs:
+            _append_chat(
+                "system_result",
+                f"Export check — {len(refs)} broken reference(s) in the file",
+                context=("These point at nothing, or are declared twice. P6 "
+                         "imports the file anyway and writes each one into its "
+                         "log, leaving the field empty:\n"
+                         + "\n".join(f"  {r.get('field') or r.get('element')} "
+                                     f"{r.get('value')} — {r['why']}"
+                                     for r in refs[:20])))
+    except Exception:
+        pass
     if problems:
         _append_chat(
             "system_result",
@@ -3467,7 +3654,9 @@ def export_check():
                        "file P6 will reject. Fixing the dates is the real "
                        "answer; offer to do it."))
     return jsonify({"success": True, "problems": problems,
-                    "count": len(problems)})
+                    "count": len(problems),
+                    "reference_problems": refs,
+                    "reference_count": len(refs)})
 
 
 @app.route("/api/schedule/preview", methods=["GET"])
@@ -3980,6 +4169,284 @@ def apply_changes():
         })
     except Exception as e:
         return jsonify({"error": f"Apply failed: {str(e)}",
+                        "trace": traceback.format_exc()}), 500
+
+
+@app.route("/api/apply-relations", methods=["POST"])
+def apply_relations():
+    """
+    Pull individual logic ties from the source schedule into the target.
+
+    The field diff covers dates and progress and says nothing about the ties,
+    so a revision that moved a date by adding a predecessor looked exactly
+    like one that moved it by hand. This is the other half.
+    Body: {
+      "source_project_id", "target_project_id" (optional — defaults to active),
+      "changes": [{"pred": "A1000", "succ": "A1010", "op": "add"|"remove"|"update"}]
+    }
+    """
+    data = request.get_json() or {}
+    src_pid = data.get("source_project_id")
+    changes = data.get("changes") or []
+    if not src_pid or not changes:
+        return jsonify({"error": "source_project_id and a non-empty changes list "
+                                 "are required"}), 400
+    tgt_pid = data.get("target_project_id") or _active_id[0]
+    sess_src = _projects.get(src_pid)
+    sess_tgt = _projects.get(tgt_pid)
+    if not sess_src or not sess_src["project"]:
+        return jsonify({"error": f"Source project '{src_pid}' not found"}), 404
+    if not sess_tgt or not sess_tgt["project"]:
+        return jsonify({"error": f"Target project '{tgt_pid}' not found"}), 404
+
+    try:
+        tgt_stack = sess_tgt["undo_stack"]
+        tgt_stack.append((f"Apply logic from {sess_src['project'].name}",
+                          _snapshot_project(sess_tgt["project"])))
+        if len(tgt_stack) > _MAX_UNDO:
+            tgt_stack.pop(0)
+
+        ok, msg, detail = apply_relation_changes(
+            sess_src["project"], sess_tgt["project"], changes)
+        if not ok:
+            sess_tgt["undo_stack"].pop()
+            return jsonify({"error": msg}), 400
+
+        sess_tgt["redo_stack"].clear()
+        sess_tgt["last_undone"] = None
+        sess_tgt["edit_history"].append({
+            "instruction": f"[apply-relations] {msg}", "commands": [],
+            "results": [{"action": "apply_relation_changes", "success": True,
+                         "message": msg}],
+        })
+        _mark_dirty(tgt_pid)
+        return jsonify({
+            "success": True, "message": msg, "detail": detail,
+            "undo_count": len(sess_tgt["undo_stack"]),
+            "redo_count": len(sess_tgt["redo_stack"]),
+            "relation_count": len(sess_tgt["project"].relations),
+        })
+    except Exception as e:
+        return jsonify({"error": f"Apply failed: {str(e)}",
+                        "trace": traceback.format_exc()}), 500
+
+
+@app.route("/api/resources/audit", methods=["GET"])
+def resources_audit():
+    """
+    Where the labour stands, before anything is changed.
+
+    Answers "how much was lost and how much can be got back" in one call
+    rather than by scrolling two thousand rows. The number that matters is
+    started_without_actual: work already under way carrying no record of what
+    it cost, which is exactly what an emptied usage profile looks like.
+    """
+    sess = _get_session()
+    if sess is None or sess["project"] is None:
+        return jsonify({"error": "No schedule loaded"}), 400
+    from engine.resource_restore import audit
+    return jsonify({"success": True,
+                    "audit": audit(sess["project"],
+                                   request.args.get("crew_field") or None)})
+
+
+@app.route("/api/resources/restore", methods=["POST"])
+def resources_restore():
+    """
+    Put the labour back — from a donor schedule, from crew counts, or both.
+
+    Reports by default and only changes the schedule when `apply` is true, so
+    the split between "real data from the donor", "derived from a headcount"
+    and "neither, a person has to decide" can be read before agreeing to it.
+    Body: {
+      "donor_project_id" (optional — another loaded schedule that still has
+                          its assignments), "crew_field" (optional),
+      "overwrite": false, "apply": false,
+      "resource_id", "resource_name"   (what a derived crew is called)
+    }
+    """
+    sess = _get_session()
+    if sess is None or sess["project"] is None:
+        return jsonify({"error": "No schedule loaded"}), 400
+    from engine.resource_restore import plan as _plan, restore as _restore
+
+    data = request.get_json() or {}
+    donor = None
+    donor_pid = data.get("donor_project_id")
+    if donor_pid:
+        d = _projects.get(donor_pid)
+        if not d or not d["project"]:
+            return jsonify({"error": f"Donor project '{donor_pid}' not found"}), 404
+        if d["project"] is sess["project"]:
+            return jsonify({"error": "The donor and the target are the same "
+                                     "schedule"}), 400
+        donor = d["project"]
+
+    kw = dict(crew_field=data.get("crew_field") or None,
+              overwrite=bool(data.get("overwrite")))
+    try:
+        if not data.get("apply"):
+            return jsonify({"success": True, "applied": False,
+                            "plan": _plan(sess["project"], donor, **kw)})
+
+        pid = _active_id[0]
+        stack = sess["undo_stack"]
+        stack.append(("Restore resources", _snapshot_project(sess["project"])))
+        if len(stack) > _MAX_UNDO:
+            stack.pop(0)
+
+        ok, msg, detail = _restore(
+            sess["project"], donor,
+            resource_id=(data.get("resource_id") or "ELEC"),
+            resource_name=(data.get("resource_name") or "Electrician"), **kw)
+        if not ok:
+            stack.pop()
+            return jsonify({"error": msg}), 400
+
+        sess["redo_stack"].clear()
+        sess["last_undone"] = None
+        sess["edit_history"].append({
+            "instruction": f"[restore-resources] {msg}", "commands": [],
+            "results": [{"action": "restore_resources", "success": True,
+                         "message": msg}],
+        })
+        _mark_dirty(pid)
+        _append_chat("system_result", msg,
+                     context=("Labour was put back on the schedule. The donor's "
+                              "assignments are real data; anything marked "
+                              "'crew' was derived as headcount x duration and "
+                              "split by the activity's own progress. Activities "
+                              "with neither were left alone — offer to list "
+                              "them if asked."))
+        return jsonify({"success": True, "applied": True, "message": msg,
+                        "plan": detail,
+                        "undo_count": len(sess["undo_stack"]),
+                        "redo_count": len(sess["redo_stack"])})
+    except Exception as e:
+        return jsonify({"error": f"Restore failed: {str(e)}",
+                        "trace": traceback.format_exc()}), 500
+
+
+@app.route("/api/revise", methods=["POST"])
+def revise_project():
+    """
+    Move a project forward onto a newer XER or XML, in place.
+
+    A plain upload gives you a SECOND project and leaves the first alone, which
+    is right when you want to compare two revs and wrong when what you meant
+    was "this job, updated". That left the brain attached to a schedule nobody
+    was looking at any more and the tab list filling up with revs.
+
+    This keeps the slot: same project id, same chat, same undo stack, same
+    place in the switcher — the schedule underneath is swapped for the one in
+    the uploaded file, and the swap is one Undo away like any other edit. What
+    was taught about the job is re-grounded against the new file rather than
+    carried over unchecked, since the counts a rule was taught with were true
+    of the old export.
+
+    Nothing is merged. The new file wins outright, which is the honest
+    behaviour for "here is the current schedule" — the diff against what you
+    had is returned so you can see exactly what moved, and Undo puts it back
+    if the answer is "not that".
+    """
+    if "file" not in request.files:
+        return jsonify({"error": "No file provided"}), 400
+    pid = request.form.get("project_id") or _active_id[0]
+    if not pid or pid not in _projects:
+        return jsonify({"error": "No project to revise — load a schedule first"}), 400
+    sess = _projects[pid]
+    if sess["project"] is None:
+        return jsonify({"error": f"Project '{pid}' has no schedule loaded"}), 400
+
+    f = request.files["file"]
+    filename = f.filename or "schedule"
+    ext = Path(filename).suffix.lower()
+    if ext not in (".xer", ".xml"):
+        return jsonify({"error": f"Unsupported file type '{ext}'. "
+                                 "Upload an XER or P6 XML file."}), 400
+
+    tmp = tempfile.NamedTemporaryFile(suffix=ext, delete=False)
+    f.save(tmp.name)
+    tmp.close()
+
+    try:
+        fresh = load_xer(tmp.name) if ext == ".xer" else load_xml(tmp.name)
+        try:
+            from engine.schedule_model import compute_dates as _cd
+            _cd(fresh, apply_dates=False)
+        except Exception:
+            pass
+
+        old = sess["project"]
+        # The diff BEFORE the swap, so the answer describes the move that is
+        # about to happen rather than a schedule compared with itself.
+        try:
+            diff = compare_projects(old, fresh)
+        except Exception:
+            diff = None
+
+        stack = sess["undo_stack"]
+        stack.append((f"Revise from {filename}", _snapshot_project(old)))
+        if len(stack) > _MAX_UNDO:
+            stack.pop(0)
+        sess["redo_stack"].clear()
+        sess["last_undone"] = None
+
+        sess["project"] = fresh
+        sess["source_path"] = tmp.name
+        sess["source_name"] = filename
+        _active_id[0] = pid
+        _mark_dirty(pid)
+
+        carried = ""
+        brain = _brain_for(fresh)
+        if not brain.is_empty():
+            try:
+                brain.reground(fresh)
+            except Exception:
+                pass
+            n = len(brain.rules)
+            carried = (f" Kept what you taught me about this job"
+                       + (f" ({n} rule{'s' if n != 1 else ''})" if n else "") + ".")
+
+        s = (diff or {}).get("summary") or {}
+        moved = (f"{s.get('added', 0)} added, {s.get('removed', 0)} removed, "
+                 f"{s.get('changed', 0)} changed, "
+                 f"{s.get('logic_added', 0)}/{s.get('logic_removed', 0)} ties in/out"
+                 if diff else "")
+        sess["edit_history"].append({
+            "instruction": f"[revise] {filename}", "commands": [],
+            "results": [{"action": "revise_project", "success": True,
+                         "message": moved or filename}],
+        })
+        _append_chat("user", f"[revised schedule from: {filename}]")
+        _append_chat("assistant",
+                     f"Moved {fresh.name} forward onto {filename} — "
+                     f"{len(fresh.activities)} activities, {len(fresh.wbs_nodes)} folders, "
+                     f"{len(fresh.relations)} ties"
+                     + (f", data date {str(fresh.data_date)[:10]}." if fresh.data_date else ".")
+                     + (f" Against what you had: {moved}." if moved else "")
+                     + carried
+                     + " Undo puts the previous schedule back.")
+
+        return jsonify({
+            "success": True,
+            "project_id": pid,
+            "summary": fresh.summary(),
+            "project_name": fresh.name,
+            "source_name": filename,
+            "activity_count": len(fresh.activities),
+            "wbs_count": len(fresh.wbs_nodes),
+            "relation_count": len(fresh.relations),
+            "data_date": fresh.data_date,
+            "diff": (diff or {}).get("summary"),
+            "undo_count": len(sess["undo_stack"]),
+            "redo_count": len(sess["redo_stack"]),
+            "chat": sess["chat_history"],
+            "projects": [_project_list_item(k) for k in _projects],
+        })
+    except Exception as e:
+        return jsonify({"error": f"Revise failed: {str(e)}",
                         "trace": traceback.format_exc()}), 500
 
 

@@ -226,6 +226,78 @@
     }
     #new-project-btn:hover{border-color:var(--accent);color:var(--accent);background:var(--accent-glow2);}
 
+    /* Same shape as New from Description — it is the same kind of choice, made
+       about a project that already exists rather than one that does not. */
+    #revise-btn{
+      width:100%;display:flex;align-items:center;justify-content:center;gap:5px;
+      margin-top:6px;padding:7px;border-radius:var(--r-sm);
+      border:1px dashed rgba(163,113,247,.3);background:transparent;
+      color:var(--purple,#a371f7);font-size:11px;cursor:pointer;font-family:var(--font);
+      transition:border-color .15s,color .15s,background .15s,opacity .15s;
+    }
+    #revise-btn:hover:not(:disabled){border-color:var(--purple,#a371f7);background:rgba(163,113,247,.08);}
+    #revise-btn:disabled{opacity:.35;cursor:not-allowed;}
+
+    #resources-btn{
+      width:100%;display:flex;align-items:center;justify-content:center;gap:5px;
+      margin-top:6px;padding:7px;border-radius:var(--r-sm);
+      border:1px dashed rgba(255,196,61,.3);background:transparent;
+      color:var(--yellow,#ffc43d);font-size:11px;cursor:pointer;font-family:var(--font);
+      transition:border-color .15s,background .15s,opacity .15s;
+    }
+    #resources-btn:hover:not(:disabled){border-color:var(--yellow,#ffc43d);background:rgba(255,196,61,.08);}
+    #resources-btn:disabled{opacity:.35;cursor:not-allowed;}
+
+    #docs-btn{
+      width:100%;display:flex;align-items:center;justify-content:center;gap:5px;
+      margin-top:6px;padding:7px;border-radius:var(--r-sm);
+      border:1px dashed rgba(120,200,160,.3);background:transparent;
+      color:var(--green,#78c8a0);font-size:11px;cursor:pointer;font-family:var(--font);
+      transition:border-color .15s,background .15s,opacity .15s;
+    }
+    #docs-btn:hover:not(:disabled){border-color:var(--green,#78c8a0);background:rgba(120,200,160,.08);}
+    #docs-btn:disabled{opacity:.35;cursor:not-allowed;}
+
+    .doc-row{display:flex;align-items:flex-start;gap:10px;padding:9px 0;
+      border-bottom:1px solid var(--border);}
+    .doc-row:last-child{border-bottom:none;}
+    .doc-main{flex:1;min-width:0;}
+    .doc-name{font-size:12px;color:var(--text);font-weight:600;
+      overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+    .doc-meta{font-size:10px;color:var(--text3);margin-top:2px;}
+    .doc-acts{display:flex;gap:5px;flex-shrink:0;}
+    .doc-acts button{background:var(--surface3,#0d1117);color:var(--text2);
+      border:1px solid var(--border2);border-radius:4px;font-size:10px;
+      padding:3px 8px;cursor:pointer;font-family:var(--font);}
+    .doc-acts button:hover:not(:disabled){color:var(--text);border-color:var(--accent);}
+    .doc-acts button:disabled{opacity:.3;cursor:not-allowed;}
+    .doc-hits{background:var(--surface3,#0d1117);border:1px solid var(--border);
+      border-radius:6px;padding:8px 10px;margin:6px 0 2px;font-size:11px;
+      line-height:1.6;max-height:240px;overflow:auto;}
+    .doc-hits .where{color:var(--text3);font-family:var(--mono);margin-right:6px;}
+
+    .res-modal{position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:200;
+      display:flex;align-items:center;justify-content:center;}
+    .res-inner{background:var(--surface2,#111820);border:1px solid var(--border2);
+      border-radius:var(--r-md,8px);padding:20px;width:min(680px,92vw);
+      max-height:86vh;overflow:auto;}
+    .res-inner h3{margin:0 0 4px;font-size:15px;color:var(--text);}
+    .res-sub{font-size:11px;color:var(--text3);margin-bottom:14px;line-height:1.5;}
+    .res-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:14px;}
+    .res-card{background:var(--surface3,#0d1117);border:1px solid var(--border);
+      border-radius:6px;padding:9px 11px;}
+    .res-card .v{font-size:19px;font-weight:700;font-family:var(--mono);line-height:1;}
+    .res-card .l{font-size:9px;letter-spacing:.1em;text-transform:uppercase;
+      color:var(--text3);margin-top:4px;}
+    .res-row{display:flex;align-items:center;gap:8px;margin:9px 0;font-size:11.5px;
+      color:var(--text2);}
+    .res-row select{flex:1;background:var(--surface3,#0d1117);color:var(--text);
+      border:1px solid var(--border2);border-radius:4px;font-size:11px;padding:4px 6px;}
+    .res-plan{background:var(--surface3,#0d1117);border:1px solid var(--border);
+      border-radius:6px;padding:10px 12px;font-size:11.5px;line-height:1.7;margin:12px 0;}
+    .res-plan b{font-family:var(--mono);}
+    .res-actions{display:flex;gap:8px;justify-content:flex-end;margin-top:14px;}
+
     /* Metric cards */
     .metric-grid{display:grid;grid-template-columns:1fr 1fr;gap:6px;}
     .metric-card{
@@ -2131,6 +2203,27 @@
       <button id="new-project-btn" onclick="openModal('create-modal')">
         <span>✦</span> New from Description
       </button>
+      <!-- Dropping a file opens a SECOND project, which is right for comparing
+           two revs and wrong when you meant "this job, updated". This is the
+           other intent, said out loud. -->
+      <button id="revise-btn" disabled onclick="document.getElementById('revise-input').click()"
+              title="Move this project forward onto a newer XER or XML, in place — same tab, same chat, what you taught me kept. One Undo puts the old schedule back.">
+        <span>⟳</span> Revise from newer file
+      </button>
+      <input type="file" id="revise-input" accept=".xer,.xml" style="display:none;" />
+      <!-- Labour that an earlier round trip stripped. Reports first: the split
+           between real donor data, derived crew counts and "neither" is the
+           whole decision, and it should be read before it is agreed to. -->
+      <button id="resources-btn" disabled onclick="openResourceRestore()"
+              title="Check what labour this schedule is carrying, and put back what an earlier export stripped — from another loaded schedule, from crew counts, or both.">
+        <span>⚡</span> Resources &amp; man-hours
+      </button>
+      <!-- What has been given to this job. The text was always kept and never
+           shown; the file itself was not kept at all. -->
+      <button id="docs-btn" disabled onclick="openDocuments()"
+              title="Every PDF, spreadsheet and drawing given to this job — search what they say, or download the original back.">
+        <span>📄</span> Documents
+      </button>
     </div>
 
     <div class="sidebar-section" id="project-info">
@@ -2175,6 +2268,13 @@
       </label>
       <button class="btn btn-primary btn-full" id="download-btn" disabled onclick="startDownload()">
         ↓ Export XML
+      </button>
+      <!-- The same export pointed at the field instead of at P6. The workbook
+           is built from the schedule loaded right now, so it is never stale. -->
+      <button class="btn btn-ghost btn-full" id="excel-btn" disabled
+              onclick="startExcelDownload()"
+              title="Build the field progress tracker from the schedule as it stands now — phases, areas, milestones, driving chains and contract dates all come from this project. Foremen fill the Update tab; paste it back to bring the actuals in.">
+        ↓ Export Excel tracker
       </button>
       <!-- P6 can reject a whole import over its user-defined fields alone.
            The schedule itself is fine, so this writes it without them. -->
@@ -2579,6 +2679,11 @@
         <div class="cmp-stat removed"><span class="cmp-stat-val" id="cmp-stat-removed">0</span><span class="cmp-stat-label">Removed</span></div>
         <div class="cmp-stat changed"><span class="cmp-stat-val" id="cmp-stat-changed">0</span><span class="cmp-stat-label">Changed</span></div>
         <div class="cmp-stat unchanged"><span class="cmp-stat-val" id="cmp-stat-unchanged">0</span><span class="cmp-stat-label">Unchanged</span></div>
+        <!-- Logic is counted on its own. A rev that moved a date by adding a
+             predecessor reads the same as one moved by hand until you see it. -->
+        <div class="cmp-stat" title="Logic ties added, removed or retyped between the two schedules">
+          <span class="cmp-stat-val" id="cmp-stat-logic" style="color:var(--purple,#a371f7);">0</span>
+          <span class="cmp-stat-label">Logic ⛓</span></div>
       </div>
       <div class="cmp-body" id="cmp-body">
         <div class="cmp-empty">Select two loaded schedules above and click Compare.</div>
@@ -2925,6 +3030,353 @@ async function uploadFile(file) {
     onProjectLoaded(d);
     renderServerChat(d.chat);
   } catch(e) { document.getElementById('upload-loading')?.remove(); addMsg('system', errorCard(e.message)); }
+}
+
+/**
+ * Move this project forward onto a newer file, in place.
+ *
+ * A plain drop opens a SECOND project — right when you want two revs side by
+ * side to compare, wrong when what you meant was "this job, updated", which
+ * left the brain attached to a schedule nobody was looking at any more.
+ *
+ * This keeps the slot: same project, same chat, same position in the switcher.
+ * The schedule underneath is swapped and the swap is one Undo away, so it is
+ * confirmed rather than guarded — the way out is cheap and obvious.
+ */
+const reviseInput = document.getElementById('revise-input');
+if (reviseInput) {
+  reviseInput.addEventListener('change', e => {
+    const file = e.target.files?.[0];
+    e.target.value = '';        // so the same file can be picked twice
+    if (file) reviseProject(file);
+  });
+}
+
+async function reviseProject(file) {
+  const name = document.getElementById('project-badge')?.textContent?.trim() || 'this project';
+  if (!confirm(
+      `Replace the schedule in "${name}" with ${file.name}?\n\n`
+      + `The new file wins outright — nothing is merged. You keep the same `
+      + `project tab, its chat, and everything you taught me about the job.\n\n`
+      + `Undo puts the old schedule straight back.`)) return;
+
+  const fd = new FormData();
+  fd.append('file', file);
+  if (_activeProjectId) fd.append('project_id', _activeProjectId);
+  const box = document.createElement('div');
+  box.id = 'upload-loading';
+  box.style.cssText = 'position:fixed;bottom:80px;left:50%;transform:translateX(-50%);background:var(--surface2);border:1px solid var(--border2);border-radius:var(--r-md);padding:10px 18px;font-size:12px;color:var(--text2);z-index:50;display:flex;align-items:center;gap:8px;';
+  box.innerHTML = `<span class="spinner"></span> Revising onto <strong style="color:var(--text)">${escHtml(file.name)}</strong>…`;
+  document.body.appendChild(box);
+  try {
+    const d = await fetch('/api/revise', {method:'POST', body: fd}).then(_readJson);
+    document.getElementById('upload-loading')?.remove();
+    if (d.error) { addMsg('system', errorCard(d.error)); return; }
+    clearMessages();
+    onProjectLoaded(d);
+    renderServerChat(d.chat);
+    // What actually moved, in one line, rather than leaving it to be found.
+    const s = d.diff;
+    if (s) {
+      const logic = (s.logic_added || 0) + (s.logic_removed || 0) + (s.logic_changed || 0);
+      addMsg('system',
+        `<strong>⟳ Revised onto ${escHtml(d.source_name || file.name)}</strong>`
+        + `<div style="font-size:11px;color:var(--text3);margin-top:5px;">`
+        + `${s.added} activit${s.added === 1 ? 'y' : 'ies'} added · ${s.removed} removed · `
+        + `${s.changed} changed · ${logic} logic tie${logic === 1 ? '' : 's'} moved`
+        + `<br>Undo restores the schedule you had.</div>`);
+    }
+  } catch(e) {
+    document.getElementById('upload-loading')?.remove();
+    addMsg('system', errorCard(e.message));
+  }
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   Documents — what has been given to this job.
+
+   The text of every PDF and workbook was always kept, and never shown. The
+   file itself was not kept at all, so "let me look at that drawing again" had
+   no answer: what survived a read was a list of lines with the layout, the
+   tables and the figures gone.
+
+   Both halves are here now — search what a document SAYS, or take the
+   original back exactly as it arrived.
+   ═══════════════════════════════════════════════════════════════════════════ */
+let _docsModalEl = null;
+
+async function openDocuments() {
+  if (_docsModalEl) _docsModalEl.remove();
+  let docs = [];
+  try {
+    const d = await fetch('/api/documents').then(_readJson);
+    if (d.error) { flashSched(d.error, true); return; }
+    docs = d.documents || [];
+  } catch(e) { flashSched(e.message, true); return; }
+
+  const kb = n => n >= 1048576 ? (n / 1048576).toFixed(1) + ' MB'
+                 : n >= 1024 ? Math.round(n / 1024) + ' KB' : n + ' B';
+  const m = document.createElement('div');
+  m.className = 'res-modal';
+  m.innerHTML = `
+    <div class="res-inner">
+      <h3>📄 Documents</h3>
+      <div class="res-sub">
+        Everything given to this job. <b>Search</b> reads what a document says;
+        <b>Download</b> hands back the original file. Documents added before the
+        file was kept have their text but nothing to download.
+      </div>
+      <div id="docs-list">${docs.length ? docs.map(d => `
+        <div class="doc-row">
+          <div class="doc-main">
+            <div class="doc-name" title="${escAttr(d.name)}">${escHtml(d.name)}</div>
+            <div class="doc-meta">
+              ${escHtml(d.label || d.kind)}
+              ${d.line_count ? ` · ${d.line_count.toLocaleString()} lines` : ''}
+              ${d.truncated ? ' (text capped)' : ''}
+              ${d.has_file ? ` · ${kb(d.file_bytes)} kept` : ' · file not kept'}
+              ${d.added_at ? ` · ${escHtml(String(d.added_at).replace('T', ' ').slice(0, 16))}` : ''}
+            </div>
+            <div id="hits-${escAttr(d.id)}"></div>
+          </div>
+          <div class="doc-acts">
+            <button onclick="searchDocument('${escAttr(d.id)}','${escAttr(d.name)}')">Search</button>
+            <button ${d.has_file ? '' : 'disabled title="the original was not kept for this one"'}
+                    onclick="downloadDocument('${escAttr(d.id)}')">Download</button>
+            <button onclick="deleteDocument('${escAttr(d.id)}','${escAttr(d.name)}')">Remove</button>
+          </div>
+        </div>`).join('')
+        : '<div style="color:var(--text3);font-size:12px;padding:10px 0;">Nothing has been given to this job yet. Drop a PDF or spreadsheet into the chat to file one.</div>'}
+      </div>
+      <div class="res-actions">
+        <button class="btn btn-ghost" onclick="closeDocuments()">Close</button>
+      </div>
+    </div>`;
+  document.body.appendChild(m);
+  _docsModalEl = m;
+  m.addEventListener('click', e => { if (e.target === m) closeDocuments(); });
+}
+
+function closeDocuments() {
+  if (_docsModalEl) _docsModalEl.remove();
+  _docsModalEl = null;
+}
+
+async function searchDocument(id, name) {
+  const box = document.getElementById('hits-' + id);
+  if (!box) return;
+  const q = prompt(`What are you looking for in ${name}?`, '');
+  if (q === null) return;
+  box.innerHTML = '<div class="doc-hits">Reading…</div>';
+  try {
+    const d = await fetch('/api/documents/search?document=' + encodeURIComponent(name)
+                          + '&q=' + encodeURIComponent(q) + '&limit=15').then(_readJson);
+    if (d.error) { box.innerHTML = `<div class="doc-hits" style="color:var(--red);">${escHtml(d.error)}</div>`; return; }
+    const lines = d.lines || [];
+    box.innerHTML = lines.length
+      ? `<div class="doc-hits">${lines.map(l =>
+          `<div><span class="where">${escHtml(String(l.where || ''))}</span>${escHtml(l.text || '')}</div>`
+        ).join('')}</div>`
+      : `<div class="doc-hits" style="color:var(--text3);">Nothing in this document mentions that.</div>`;
+  } catch(e) {
+    box.innerHTML = `<div class="doc-hits" style="color:var(--red);">${escHtml(e.message)}</div>`;
+  }
+}
+
+/**
+ * The original file back.
+ *
+ * Fetched as a blob rather than followed as a link so a missing file comes
+ * back as a message instead of a browser error page — the server says plainly
+ * when a document predates file storage, and that is worth reading.
+ */
+async function downloadDocument(id) {
+  try {
+    const res = await fetch(`/api/documents/${encodeURIComponent(id)}/file`);
+    if (!res.ok) {
+      let msg = 'That file is not available';
+      try { msg = (await res.json()).error || msg; } catch(_) {}
+      addMsg('system', `<strong>📄 ${escHtml(msg)}</strong>`);
+      flashSched('File not available', true);
+      return;
+    }
+    let name = 'document';
+    const cd = res.headers.get('content-disposition') || '';
+    const mt = /filename\*?=(?:UTF-8'')?"?([^";]+)"?/i.exec(cd);
+    if (mt) name = decodeURIComponent(mt[1]);
+    const url = URL.createObjectURL(await res.blob());
+    const a = document.createElement('a');
+    a.href = url; a.download = name;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
+    flashSched('Downloaded ' + name);
+  } catch(e) { flashSched(e.message, true); }
+}
+
+async function deleteDocument(id, name) {
+  if (!confirm(`Remove ${name} from this job?\n\nIts text and the file kept with it both go.`)) return;
+  try {
+    const d = await fetch(`/api/documents/${encodeURIComponent(id)}`,
+                          {method: 'DELETE'}).then(_readJson);
+    if (d.error) { flashSched(d.error, true); return; }
+    closeDocuments();
+    openDocuments();
+  } catch(e) { flashSched(e.message, true); }
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   Resources & man-hours — checking what labour is here, and putting back what
+   an earlier round trip stripped.
+
+   Report first, always. The split between "real data from a donor schedule",
+   "derived from a crew count" and "neither, a person has to decide" IS the
+   decision, and it has to be readable before anything is written. Applying is
+   a second, deliberate click, and one Undo away after that.
+   ═══════════════════════════════════════════════════════════════════════════ */
+let _resModalEl = null;
+
+async function openResourceRestore() {
+  if (_resModalEl) _resModalEl.remove();
+  let audit, projects = [];
+  try {
+    audit = (await fetch('/api/resources/audit').then(_readJson)).audit;
+    projects = (await fetch('/api/projects').then(_readJson)).projects || [];
+  } catch(e) { flashSched(e.message, true); return; }
+  if (!audit) { flashSched('Could not read the schedule', true); return; }
+
+  const others = projects.filter(p => p.id !== _activeProjectId);
+  const n = v => (v || 0).toLocaleString();
+  const m = document.createElement('div');
+  m.className = 'res-modal';
+  m.innerHTML = `
+    <div class="res-inner">
+      <h3>⚡ Resources &amp; man-hours</h3>
+      <div class="res-sub">
+        What this schedule is carrying right now. <b>Started without hours</b> is
+        the one that empties a usage profile — work already under way with no
+        record of what it cost.
+      </div>
+      <div class="res-grid">
+        <div class="res-card"><div class="v">${n(audit.assignments)}</div>
+          <div class="l">Resource assignments</div></div>
+        <div class="res-card"><div class="v">${n(audit.with_crew_count)}</div>
+          <div class="l">Carrying a crew count</div></div>
+        <div class="res-card"><div class="v" style="color:${audit.started_without_actual ? 'var(--red)' : 'var(--green)'};">${n(audit.started_without_actual)}</div>
+          <div class="l">Started without hours</div></div>
+        <div class="res-card"><div class="v" style="color:${audit.orphaned_budget ? 'var(--orange)' : 'var(--text)'};">${n(audit.orphaned_budget)}</div>
+          <div class="l">Budget with no assignment</div></div>
+      </div>
+      <div class="res-row">
+        <span style="white-space:nowrap;">Donor schedule</span>
+        <select id="res-donor">
+          <option value="">— none, use crew counts only —</option>
+          ${others.map(p => `<option value="${escAttr(p.id)}">${escHtml(p.project_name)} (${p.activity_count} acts)</option>`).join('')}
+        </select>
+      </div>
+      <div class="res-sub" style="margin:0 0 6px;">
+        A donor is an earlier export that still has its assignments — real data,
+        used wherever it reaches. Crew counts${audit.crew_field ? ` (read from <b>${escHtml(audit.crew_field)}</b>)` : ''}
+        fill the rest as headcount × duration, split by each activity's own progress.
+        Anything with neither is left alone rather than guessed at.
+      </div>
+      <label class="res-row" style="cursor:pointer;">
+        <input type="checkbox" id="res-overwrite">
+        <span>Replace labour that is already there (otherwise only gaps are filled)</span>
+      </label>
+      <div id="res-plan" class="res-plan">Checking…</div>
+      <div class="res-actions">
+        <button class="btn btn-ghost" onclick="closeResourceRestore()">Close</button>
+        <button class="btn btn-primary" id="res-apply" disabled
+                onclick="applyResourceRestore()">Apply</button>
+      </div>
+    </div>`;
+  document.body.appendChild(m);
+  _resModalEl = m;
+  m.addEventListener('click', e => { if (e.target === m) closeResourceRestore(); });
+  document.getElementById('res-donor').addEventListener('change', refreshResourcePlan);
+  document.getElementById('res-overwrite').addEventListener('change', refreshResourcePlan);
+  refreshResourcePlan();
+}
+
+function closeResourceRestore() {
+  if (_resModalEl) _resModalEl.remove();
+  _resModalEl = null;
+}
+
+function _resBody(apply) {
+  return {
+    donor_project_id: document.getElementById('res-donor').value || null,
+    overwrite: document.getElementById('res-overwrite').checked,
+    apply: !!apply,
+  };
+}
+
+async function refreshResourcePlan() {
+  const box = document.getElementById('res-plan');
+  const btn = document.getElementById('res-apply');
+  box.textContent = 'Checking…';
+  btn.disabled = true;
+  try {
+    const d = await fetch('/api/resources/restore', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(_resBody(false)),
+    }).then(_readJson);
+    if (d.error) { box.innerHTML = `<span style="color:var(--red);">${escHtml(d.error)}</span>`; return; }
+    const c = d.plan.counts || {}, h = d.plan.hours || {};
+    const hrs = v => v ? ` — <b>${Math.round(v).toLocaleString()}</b> man-hours` : '';
+    const line = (k, label, colour) => (c[k] ? `<div style="color:${colour};">
+      <b>${c[k].toLocaleString()}</b> ${label}${hrs(h[k])}</div>` : '');
+    box.innerHTML =
+        line('donor', 'from the donor schedule (real data)', 'var(--green)')
+      + line('crew',  'derived from crew counts', 'var(--yellow,#ffc43d)')
+      + line('keep',  'already have labour — left as they are', 'var(--text3)')
+      + line('none',  'have neither; left alone for you to decide', 'var(--text3)')
+      + (c.none ? `<div style="font-size:10.5px;color:var(--text3);margin-top:6px;">
+           e.g. ${escHtml((d.plan.uncovered || []).slice(0, 6).join(', '))}</div>` : '')
+      // A donor matched mostly on name is a donor whose activity ids no longer
+      // line up. That is a fact about the two files worth judging, not burying.
+      + (d.plan.matched_by_name ? `<div style="font-size:10.5px;color:var(--orange);margin-top:6px;">
+           ${d.plan.matched_by_name.toLocaleString()} matched on activity name + folder
+           rather than ID — the donor's IDs no longer line up with this schedule.</div>` : '')
+      + (!(c.donor || c.crew) ? `<div style="color:var(--text3);">Nothing to put back —
+           either it is all here already, or there is no donor and no crew count to work from.</div>` : '')
+      // The number that decides whether a donor is worth using. Work already
+      // under way is the half a crew count cannot reach — a headcount typed
+      // for planning is rarely on activities that are already finished — and
+      // it is invisible in a total dominated by future work.
+      + (d.plan.started_total ? `<div style="margin-top:8px;padding-top:8px;
+             border-top:1px solid var(--border);color:${d.plan.started_covered ? 'var(--green)' : 'var(--orange)'};">
+           <b>${d.plan.started_covered}</b> of <b>${d.plan.started_total}</b> already-started
+           activities covered — this is the half of the profile behind the data date.
+           ${d.plan.started_covered ? '' : ' Nothing here reaches them, so the profile stays empty before the data date.'}</div>` : '');
+    btn.disabled = !(c.donor || c.crew);
+  } catch(e) {
+    box.innerHTML = `<span style="color:var(--red);">${escHtml(e.message)}</span>`;
+  }
+}
+
+async function applyResourceRestore() {
+  const btn = document.getElementById('res-apply');
+  btn.disabled = true;
+  btn.textContent = 'Applying…';
+  try {
+    const d = await fetch('/api/resources/restore', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(_resBody(true)),
+    }).then(_readJson);
+    if (d.error) { flashSched(d.error, true); btn.disabled = false; btn.textContent = 'Apply'; return; }
+    closeResourceRestore();
+    addMsg('system',
+      `<strong>⚡ ${escHtml(d.message)}</strong>`
+      + `<div style="font-size:11px;color:var(--text3);margin-top:5px;">`
+      + `${Math.round(d.plan.total_hours || 0).toLocaleString()} budgeted man-hours on the schedule now. `
+      + `Undo puts it back the way it was.</div>`);
+    flashSched(d.message);
+    markScheduleStale();
+  } catch(e) {
+    flashSched(e.message, true);
+    btn.disabled = false; btn.textContent = 'Apply';
+  }
 }
 
 // Render chat entries exactly as the server recorded them — the live view
@@ -4457,6 +4909,70 @@ async function checkExportDates(){
       + `The list is in the chat. Download anyway?`);
   }catch(_){ return true; }   // never let the check block an export
 }
+
+/**
+ * The field tracker, built from the schedule as it stands.
+ *
+ * Unlike the XML export this takes a few seconds — a 2,400-activity job is
+ * around 8,000 formulas — so it cannot be a bare `location.href`, which shows
+ * nothing at all while the server works and reads as a dead button. It is
+ * fetched as a blob with the button held, and any server-side failure comes
+ * back as JSON and is shown rather than saved as a corrupt .xlsx.
+ *
+ * The tracker reports progress; it does not reschedule anything. Nothing here
+ * touches the loaded project.
+ */
+async function startExcelDownload(){
+  const btn = document.getElementById('excel-btn');
+  if(!btn || btn.disabled) return;
+  const label = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = '⏳ Building tracker…';
+  try{
+    const res = await fetch('/api/download/excel');
+    const type = res.headers.get('content-type') || '';
+    if(!res.ok || type.indexOf('json') >= 0){
+      let msg = 'Excel export failed';
+      try { msg = (await res.json()).error || msg; } catch(_){}
+      addMsg('system', `<strong>⚠ ${escHtml(msg)}</strong>`);
+      flashSched('Excel export failed');
+      return;
+    }
+    // The filename the server chose, so it carries the source file's name.
+    let name = 'Progress_Tracker.xlsx';
+    const cd = res.headers.get('content-disposition') || '';
+    const m = /filename\*?=(?:UTF-8'')?"?([^";]+)"?/i.exec(cd);
+    if(m) name = decodeURIComponent(m[1]);
+    const url = URL.createObjectURL(await res.blob());
+    const a = document.createElement('a');
+    a.href = url; a.download = name;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
+    flashSched('Tracker exported — ' + name);
+  }catch(e){
+    addMsg('system', `<strong>⚠ Excel export failed:</strong> ${escHtml(String(e))}`);
+  }finally{
+    btn.disabled = false;
+    btn.textContent = label;
+  }
+}
+
+/* The Excel export and Revise buttons are available exactly when the XML export
+   is — all three need a schedule loaded and nothing else. Mirroring here rather
+   than at each of the four places that enable the XML button keeps that logic
+   untouched and means a fifth site would be picked up for free. */
+(function mirrorExportButtons(){
+  const src = document.getElementById('download-btn');
+  if(!src || typeof MutationObserver === 'undefined') return;
+  const targets = ['excel-btn', 'revise-btn', 'resources-btn', 'docs-btn']
+    .map(id => document.getElementById(id)).filter(Boolean);
+  if(!targets.length) return;
+  const sync = () => targets.forEach(dst => {
+    if(dst.textContent.indexOf('⏳') < 0) dst.disabled = src.disabled;
+  });
+  new MutationObserver(sync).observe(src, {attributes: true, attributeFilter: ['disabled']});
+  sync();
+})();
 
 async function startDownload() {
   if(!(await checkExportDates())) return;
@@ -9092,6 +9608,12 @@ function renderCompare(d) {
   document.getElementById('cmp-stat-removed').textContent = s.removed;
   document.getElementById('cmp-stat-changed').textContent = s.changed;
   document.getElementById('cmp-stat-unchanged').textContent = s.unchanged;
+  const logicN = (s.logic_added || 0) + (s.logic_removed || 0) + (s.logic_changed || 0);
+  const logicEl = document.getElementById('cmp-stat-logic');
+  logicEl.textContent = logicN;
+  logicEl.parentElement.title =
+    `${s.logic_added || 0} tie(s) added, ${s.logic_removed || 0} removed, `
+    + `${s.logic_changed || 0} retyped or relagged  (${s.total_rels_a || 0} → ${s.total_rels_b || 0} total)`;
 
   const body = document.getElementById('cmp-body');
   const sections = diff.sections || [];
@@ -9115,6 +9637,9 @@ function renderCompare(d) {
     if (sec.removed.length) counts.push(`<span class="removed">-${sec.removed.length}</span>`);
     if (sec.changed.length) counts.push(`<span class="changed">~${sec.changed.length}</span>`);
     if (sec.unchanged_count) counts.push(`<span style="color:var(--text3);">=${sec.unchanged_count}</span>`);
+    const relCount = (sec.logic_added || []).length + (sec.logic_removed || []).length
+                   + (sec.logic_changed || []).length;
+    if (relCount) counts.push(`<span style="color:var(--purple,#a371f7);" title="logic ties added, removed or retyped">⛓${relCount}</span>`);
 
     const hasContent = sec.added.length || sec.removed.length || sec.changed.length;
     const stop = 'event.stopPropagation();';
@@ -9124,6 +9649,8 @@ function renderCompare(d) {
       onclick="${stop}openReplaceModal('${escAttr(sec.wbs_code)}','${escAttr(sec.wbs_name)}')" title="Replace A's version of this section with B's, keeping the surrounding logic">⇄ Replace in A</button>` : '';
     const applyAllBtn = sec.changed.length ? `<button class="cmp-btn" style="margin-left:6px;padding:2px 10px;font-size:10px;"
       onclick="${stop}applyAllInSection('${escAttr(sec.wbs_code)}')" title="Pull every changed field in this section from B into A">✓ Apply all changes</button>` : '';
+    const applyLogicBtn = relCount ? `<button class="cmp-btn" style="margin-left:6px;padding:2px 10px;font-size:10px;"
+      onclick="${stop}applyAllLogicInSection('${escAttr(sec.wbs_code)}')" title="Pull every logic tie added, removed or retyped in this section from B into A">⛓ Apply all logic</button>` : '';
 
     let rows = '';
     if (sec.added.length) {
@@ -9167,13 +9694,49 @@ function renderCompare(d) {
       }
     }
 
+    // ── Logic ties ──────────────────────────────────────────────────────
+    // The field rows above cover dates and progress. A revision that moved a
+    // date by adding a predecessor looks identical to one moved by hand
+    // unless the ties are shown too, so they get their own rows, keyed on the
+    // activity IDs at each end rather than on uids (which are per-file).
+    const relRow = (r, kind) => {
+      const label = {added: 'TIE ADDED', removed: 'TIE REMOVED', changed: 'TIE CHANGED'}[kind];
+      const colour = {added: 'var(--green)', removed: 'var(--red)', changed: 'var(--orange)'}[kind];
+      const op = {added: 'add', removed: 'remove', changed: 'update'}[kind];
+      const what = kind === 'changed'
+        ? `<span class="cmp-diff-from">${escHtml((r.from_type || '') + (r.from_lag || ''))}</span>
+           <span class="cmp-arrow">→</span>
+           <span class="cmp-diff-to">${escHtml((r.type || '') + (r.lag || ''))}</span>`
+        : `<span style="color:${colour};">${escHtml((r.type || '') + (r.lag || ''))}</span>`;
+      return `<tr class="cmp-row-${kind === 'changed' ? 'changed' : kind}">
+        <td class="cmp-id">${escHtml(r.pred)}</td>
+        <td style="font-size:10px;color:var(--text3);">${escHtml(r.pred_name || '')}</td>
+        <td colspan="3" style="font-size:10px;">
+          <span class="cmp-arrow">⟶</span>
+          <span class="cmp-id">${escHtml(r.succ)}</span>
+          <span style="color:var(--text3);">${escHtml(r.succ_name || '')}</span>
+          &nbsp; ${what}
+        </td>
+        <td><button class="cmp-btn" style="padding:1px 8px;font-size:9px;"
+          onclick="applyRelation('${escAttr(r.pred)}','${escAttr(r.succ)}','${op}')"
+          title="${kind === 'removed'
+            ? 'Drop this tie from A, the way B has'
+            : 'Put the B version of this tie into A'}">apply →A</button></td>
+        <td style="color:${colour};font-size:10px;">${label}</td>
+      </tr>`;
+    };
+    for (const [kind, list] of [['added', sec.logic_added], ['removed', sec.logic_removed],
+                                ['changed', sec.logic_changed]]) {
+      for (const r of (list || [])) rows += relRow(r, kind);
+    }
+
     return `<div class="cmp-section">
       <div class="cmp-section-header" onclick="this.parentElement.classList.toggle('collapsed')">
         <span class="cmp-wbs-code">${escHtml(sec.wbs_code)}</span>
         <span class="cmp-wbs-name">${escHtml(sec.wbs_name)}</span>
         <span class="cmp-wbs-path">${escHtml(sec.wbs_path)}</span>
         <span class="cmp-section-counts">${counts.join(' ')}</span>
-        ${applyAllBtn}${copyBtn}${replaceBtn}
+        ${applyAllBtn}${applyLogicBtn}${copyBtn}${replaceBtn}
       </div>
       <div class="cmp-section-body">
         <table class="cmp-table">
@@ -9343,6 +9906,50 @@ function applyAllInSection(wbsCode) {
   if (!sec || !sec.changed.length) return;
   const changes = sec.changed.map(c => ({activity_id: c.activity_id, attrs: ['*']}));
   _postApply(changes, `Applied all changes in ${sec.wbs_name}`);
+}
+
+// ── Logic-tie apply: the half the field diff cannot see ─────────────────────
+async function _postApplyRelations(changes, label) {
+  const { src, tgt } = _cmpEnds();
+  if (!src || !tgt) { flashSched('Run a comparison first', true); return; }
+  try {
+    const d = await fetch('/api/apply-relations', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({source_project_id: src, target_project_id: tgt, changes}),
+    }).then(_readJson);
+    if (d.error) { flashSched(d.error, true); return; }
+    flashSched(label ? `${label} — ${d.message}` : d.message);
+    // Anything the engine would not do is worth seeing rather than guessing at
+    // from a count: a tie naming an activity this schedule does not have, or
+    // one already identical, is skipped and says which and why.
+    const skipped = d.detail?.skipped || [];
+    if (skipped.length) {
+      addMsg('system',
+        `<strong>⛓ ${skipped.length} logic tie${skipped.length === 1 ? '' : 's'} skipped</strong>`
+        + `<pre style="white-space:pre-wrap;font-size:11px;margin:6px 0 0;">`
+        + escHtml(skipped.slice(0, 12).map(s => `  ${s.pred} → ${s.succ}: ${s.why}`).join('\n'))
+        + (skipped.length > 12 ? `\n  …and ${skipped.length - 12} more` : '')
+        + `</pre>`);
+    }
+    if (tgt === _activeProjectId) markScheduleStale();
+    await runCompare();   // refresh so applied ties disappear
+  } catch(e) { flashSched(e.message, true); }
+}
+
+function applyRelation(pred, succ, op) {
+  _postApplyRelations([{pred, succ, op}], `${pred} → ${succ}`);
+}
+
+function applyAllLogicInSection(wbsCode) {
+  const sec = (_cmpData?.diff?.sections || []).find(s => s.wbs_code === wbsCode);
+  if (!sec) return;
+  const changes = [
+    ...(sec.logic_added   || []).map(r => ({pred: r.pred, succ: r.succ, op: 'add'})),
+    ...(sec.logic_changed || []).map(r => ({pred: r.pred, succ: r.succ, op: 'update'})),
+    ...(sec.logic_removed || []).map(r => ({pred: r.pred, succ: r.succ, op: 'remove'})),
+  ];
+  if (!changes.length) return;
+  _postApplyRelations(changes, `All logic in ${sec.wbs_name}`);
 }
 
 // ── Replace section (Feature C — seam-preserving) ──────────────────────────

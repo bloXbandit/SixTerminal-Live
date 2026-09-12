@@ -126,7 +126,18 @@ def classify(lag: Optional[int]) -> Tuple[str, str]:
 
 # ── WBS helpers ──────────────────────────────────────────────────────────────
 
-def wbs_path(project: Project, act: Activity) -> str:
+def wbs_segments(project: Project, act: Activity) -> List[str]:
+    """
+    The folder names above an activity, root first, as a LIST.
+
+    Anything that wants the levels — phase, area, sub-area — has to ask for
+    them this way. Splitting wbs_path() back apart looks equivalent and is
+    not: the separator is " / " and a folder is perfectly entitled to have
+    that in its own name. The subject job has three called
+    "Commissioning / Closeout", and the tracker was reading each as a
+    "Commissioning" area containing a "Closeout" sub-area — two levels that
+    do not exist in the WBS, on a sheet whose whole job is to show the WBS.
+    """
     by_uid = {w.uid: w for w in project.wbs_nodes}
     parts: List[str] = []
     cur = by_uid.get(act.wbs_uid)
@@ -135,7 +146,12 @@ def wbs_path(project: Project, act: Activity) -> str:
         seen.add(cur.uid)
         parts.insert(0, cur.name)
         cur = by_uid.get(cur.parent_uid)
-    return " / ".join(parts)
+    return parts
+
+
+def wbs_path(project: Project, act: Activity) -> str:
+    """The same thing as one string, for display. Do not split it back."""
+    return " / ".join(wbs_segments(project, act))
 
 
 def wbs_node_path(project: Project, node: WBSNode) -> str:

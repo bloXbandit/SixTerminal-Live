@@ -80,28 +80,111 @@ def _find_activity(project: Project, activity_id: Optional[str] = None,
     return results
 
 
+def _wbs_full_path(project: Project, node: WBSNode) -> str:
+    """The folder's whole path, used to tell same-named folders apart."""
+    by_uid = {w.uid: w for w in project.wbs_nodes}
+    parts, cur, guard = [], node, 0
+    while cur and guard < 200:
+        parts.insert(0, cur.name)
+        cur = by_uid.get(cur.parent_uid)
+        guard += 1
+    return " / ".join(parts)
+
+
+def _ambiguous(project: Project, needle: str, hits: List[WBSNode]) -> str:
+    shown = "; ".join(f"{w.code or w.uid} — {_wbs_full_path(project, w)}"
+                      for w in hits[:8])
+    more = f" …and {len(hits) - 8} more" if len(hits) > 8 else ""
+    return (f"'{needle}' matches {len(hits)} folders in this schedule, so it is "
+            f"not clear which one you mean: {shown}{more}. "
+            f"Name the folder by its code, or give enough of its path to be "
+            f"unique (for example \"Phase 1 / Generator Rooms / Gen 315\").")
+
+
 def _find_wbs(project: Project, wbs_code: Optional[str] = None,
               wbs_name: Optional[str] = None,
               wbs_uid: Optional[str] = None) -> Optional[WBSNode]:
     """
     Find a WBS node by uid, code, or name — in that order of precision.
-    Name matching is a substring match, so it can hit the wrong folder when
-    one name contains another ('Site' inside 'Sitework'); the grid passes
-    wbs_uid so a click always targets exactly the folder that was clicked.
+
+    Name matching used to be a bare substring scan that returned the FIRST hit
+    and said nothing about the rest. On a real job that is not a near miss, it
+    is routinely the wrong folder: of 203 distinct folder names in the subject
+    schedule, 70 match more than one folder, and asking for "Area 1" returned
+    "Precast Area 1" — silently, and the edit then reported success against
+    work nobody meant to touch.
+
+    So the order is now strictest first:
+
+      uid            — exact, what the grid passes on a click
+      code           — exact
+      name, exact    — "Area 1" is now "Area 1", not "Precast Area 1"
+      path           — "Phase 1 / Generator Rooms / Gen 315", or just enough
+                       segments of it to be unique, which is how same-named
+                       folders are told apart
+      name, substring — only when it lands on exactly one folder
+
+    And when a query still matches several, it RAISES with all of them rather
+    than picking. A refusal that lists the candidates costs one more turn; a
+    silent wrong folder costs an edit nobody asked for, in a file that gets
+    imported into P6.
     """
     if wbs_uid:
         for w in project.wbs_nodes:
             if w.uid == wbs_uid:
                 return w
     if wbs_code:
-        for w in project.wbs_nodes:
-            if w.code.lower() == wbs_code.lower():
-                return w
+        hits = [w for w in project.wbs_nodes
+                if (w.code or "").lower() == wbs_code.lower()]
+        if len(hits) == 1:
+            return hits[0]
+        if len(hits) > 1:
+            raise EditError(_ambiguous(project, wbs_code, hits))
     if wbs_name:
-        name_low = wbs_name.lower()
-        for w in project.wbs_nodes:
-            if name_low in w.name.lower():
-                return w
+        needle = wbs_name.strip()
+        low = needle.lower()
+
+        exact = [w for w in project.wbs_nodes if w.name.strip().lower() == low]
+        if len(exact) == 1:
+            return exact[0]
+
+        # A path, whole or partial. Segments must appear in order but need not
+        # be adjacent, so "Phase 1 / Gen 315" reaches a folder nested three
+        # deep without naming every level in between.
+        segs = [s.strip().lower() for s in re.split(r"\s*/\s*", needle) if s.strip()]
+        if len(segs) > 1:
+            byp = []
+            for w in project.wbs_nodes:
+                parts = [p.strip().lower()
+                         for p in _wbs_full_path(project, w).split(" / ")]
+                i = 0
+                for p in parts:
+                    if i < len(segs) and segs[i] in p:
+                        i += 1
+                if i == len(segs):
+                    byp.append(w)
+            if len(byp) == 1:
+                return byp[0]
+            if len(byp) > 1:
+                # Asking for ".../ Gen 315" means that folder, not "Gen 315 -
+                # JER" beside it, so an exact last segment wins over a partial
+                # one before anything is called ambiguous.
+                tail = [w for w in byp if w.name.strip().lower() == segs[-1]]
+                if len(tail) == 1:
+                    return tail[0]
+                loose = [w for w in byp if segs[-1] in w.name.strip().lower()]
+                if len(loose) == 1:
+                    return loose[0]
+                raise EditError(_ambiguous(project, needle, tail or loose or byp))
+
+        if len(exact) > 1:
+            raise EditError(_ambiguous(project, needle, exact))
+
+        sub = [w for w in project.wbs_nodes if low in w.name.lower()]
+        if len(sub) == 1:
+            return sub[0]
+        if len(sub) > 1:
+            raise EditError(_ambiguous(project, needle, sub))
     return None
 
 
@@ -435,6 +518,18 @@ def apply_command(project: Project, command: Dict[str, Any]) -> Tuple[bool, str]
             return _bulk_update_activity_id(project, command)
         elif action == "normalize_activity_ids":
             return _normalize_activity_ids(project, command)
+        elif action in ("tag_by_folder", "tag_activities_by_folder"):
+            return _tag_by_folder(project, command)
+        elif action in ("group_into_subfolder", "group_activities_into_subfolder"):
+            return _group_into_subfolder(project, command)
+        elif action in ("align_child_tokens", "match_subfolders_to_parent"):
+            return _align_child_tokens(project, command)
+        elif action in ("excel_customise", "excel_customize", "tweak_tracker"):
+            return _excel_customise(project, command)
+        elif action in ("connect_folders", "ensure_connected", "check_connected"):
+            return _connect_folders(project, command)
+        elif action in ("actualize", "actualise", "status_from_evidence"):
+            return _actualize(project, command)
         elif action == "set_wbs_color":
             return _set_wbs_color(project, command)
         elif action in ("set_wbs_id_prefix", "set_folder_prefix"):
@@ -4031,3 +4126,341 @@ def _normalize_activity_ids(project: Project, cmd: Dict) -> Tuple[bool, str]:
     n = id_normalizer.apply_changes(project, changes)
     return True, "\n".join([f"Renamed {n} activity id(s) onto the project pattern."]
                            + _listing(lambda f, t, nm: f"    {f} → {t}"))
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Pattern edits — the value comes from the folder, not from the command
+# ──────────────────────────────────────────────────────────────────────────────
+
+def _pattern_scope(project: Project, cmd: Dict) -> Optional[WBSNode]:
+    """The branch to work inside, if one was named. Ambiguity still refuses."""
+    if any(cmd.get(k) for k in ("under_wbs", "scope_wbs", "wbs_name",
+                                "wbs_code", "wbs_uid")):
+        node = _find_wbs(project,
+                         cmd.get("wbs_code"),
+                         cmd.get("under_wbs") or cmd.get("scope_wbs") or cmd.get("wbs_name"),
+                         cmd.get("wbs_uid"))
+        if node is None:
+            raise EditError(_no_wbs(project, cmd.get("under_wbs")
+                                    or cmd.get("scope_wbs") or cmd.get("wbs_name")
+                                    or cmd.get("wbs_code")))
+        return node
+    return None
+
+
+def _pattern_preview(cmd: Dict) -> bool:
+    """
+    These report unless told to apply.
+
+    A pattern edit reaches every folder that matches, which on a real job is
+    hundreds of rows from a one-line request — 768 activities across 55
+    folders for the Gen rooms in the subject schedule. Defaulting to write
+    means a misread pattern is discovered afterwards. Defaulting to report
+    costs one extra call and makes the plan the thing the user says yes to,
+    which is also the honest way to ask "did you mean these?".
+    """
+    if cmd.get("apply") is True or cmd.get("preview") is False:
+        return False
+    return True
+
+
+def _tag_by_folder(project: Project, cmd: Dict) -> Tuple[bool, str]:
+    """
+    Name every activity after the folder it sits in.
+
+    "In the Gen 316 folder, Install High Steel should read Install High Steel
+     (Gen 316)" — said once, applied to every Gen folder, each taking its own
+    number off its own name rather than out of a list the agent had to type.
+
+      folder_pattern    regex selecting the folders      (e.g. "Gen\\s*\\d+")
+      token_pattern     regex lifting the token from the FOLDER name; a
+                        capture group wins. Default: the whole folder name.
+      template          default "{name} ({token})"
+      under_wbs         limit to one branch, e.g. "Phase 1 (Build-Out)"
+      recursive         include the folder's sub-folders (default false)
+      replace_existing  correct a wrong trailing "(...)" instead of stacking
+                        a second one on (default true)
+      preview           true to report without changing anything
+
+    Run it with preview first on a wide scope. The report names every folder
+    whose token could not be read, because a folder called "Gen Yard" is not
+    "Gen 0" and a guessed number is worse than a gap.
+    """
+    from .bulk_patterns import describe, tag_by_folder
+    preview = _pattern_preview(cmd)
+    res = tag_by_folder(
+        project,
+        folder_pattern=cmd.get("folder_pattern") or cmd.get("folders"),
+        token_pattern=cmd.get("token_pattern"),
+        template=cmd.get("template") or "{name} ({token})",
+        under=_pattern_scope(project, cmd),
+        recursive=bool(cmd.get("recursive")),
+        replace_existing=cmd.get("replace_existing", True),
+        apply=not preview,
+    )
+    return True, describe(res)
+
+
+def _group_into_subfolder(project: Project, cmd: Dict) -> Tuple[bool, str]:
+    """
+    Gather matching work into a sub-folder, one per folder that has any.
+
+    "Add a WBO sub-folder to each folder that has WBO activities, move them
+     in, prefix the sub-folder name with WBO" — one command, and a sub-folder
+    created only where there is something to put in it.
+
+      match               regex against the ACTIVITY name (e.g. "\\*+\\s*WBO")
+      subfolder_template  default "WBO - {parent}"; {parent} is the folder name
+      under_wbs           limit to one branch
+      direct_only         only work sitting directly in the folder (default
+                          true) — otherwise a parent hoovers up rows that
+                          already live somewhere sensible
+      preview             true to report without changing anything
+
+    A folder already holding a sub-folder of that name reuses it, so running
+    this again after new work arrives tidies the new rows and leaves the rest.
+    """
+    from .bulk_patterns import describe, group_into_subfolder
+    match = cmd.get("match") or cmd.get("name_contains") or cmd.get("pattern")
+    if not match:
+        raise EditError(
+            "match is required for group_into_subfolder — the pattern that "
+            "picks the activities to gather, e.g. \"WBO\" or \"\\\\*+\\\\s*WBO\".")
+    preview = _pattern_preview(cmd)
+    res = group_into_subfolder(
+        project,
+        match=match,
+        subfolder_template=(cmd.get("subfolder_template")
+                            or cmd.get("subfolder_name") or "WBO - {parent}"),
+        code_template=cmd.get("code_template") or "WBO-{code}",
+        under=_pattern_scope(project, cmd),
+        folder_pattern=cmd.get("folder_pattern"),
+        direct_only=cmd.get("direct_only", True),
+        marker=cmd.get("marker"),
+        apply=not preview,
+    )
+    return True, describe(res)
+
+
+def _align_child_tokens(project: Project, cmd: Dict) -> Tuple[bool, str]:
+    """
+    Make every sub-folder carry its parent's number.
+
+    "Gen 326 has a Gen 315 - JER and a Gen 315 - WBO under it; flip the 315s to
+     326 so they all match." One command, every folder, and by default the
+    activities inside are brought in line too — renaming the folder alone
+    leaves every activity still reading the old number, which is half a job.
+
+      token_pattern     what a room tag looks like. Default finds "Gen 326",
+                        "ER 208", "MV 101" however they are spaced.
+      under_wbs         hold it to one branch
+      folder_pattern    only sub-folders whose name matches
+      retag_activities  default true
+      preview           reports by default; send apply:true to write
+
+    Only the matched token is replaced, so "Gen 318- JER" under "Gen 306"
+    becomes "Gen 306- JER" with its spacing and trade suffix intact. A
+    sub-folder carrying a DIFFERENT kind of tag from its parent is reported,
+    never rewritten: an "MV 101" under an "ER 208" is a folder in the wrong
+    place, and renaming it would bury that.
+    """
+    from .bulk_patterns import DEFAULT_TOKEN, align_child_tokens, describe
+    res = align_child_tokens(
+        project,
+        token_pattern=cmd.get("token_pattern") or DEFAULT_TOKEN,
+        under=_pattern_scope(project, cmd),
+        folder_pattern=cmd.get("folder_pattern"),
+        retag_activities=cmd.get("retag_activities", True),
+        activity_template=cmd.get("activity_template") or "{name} ({token})",
+        apply=not _pattern_preview(cmd),
+    )
+    return True, describe(res)
+
+
+def _connect_folders(project: Project, cmd: Dict) -> Tuple[bool, str]:
+    """
+    Confirm every folder matching a pattern reaches its own governing activity
+    — and tie in the ones that do not.
+
+    "Make sure all my generator rooms connect to commissioning" is not one
+    edit, it is twenty-eight questions about the network, each of which has to
+    find the RIGHT commissioning activity: a phase 3 room must reach phase 3's
+    milestone, not phase 1's, and the two sides sit in different branches so
+    the folder tree cannot pair them. They are paired instead on a key both
+    carry — by default the phase number, read out of the path or the name.
+
+      folder_pattern   regex over folder names, e.g. "^Gen\\s*\\d+".
+                       A match nested inside another match (a room's "- WBO"
+                       sub-folder) is folded into it, so a room is one source.
+      target_pattern   regex over ACTIVITY names, e.g. "commission"
+      scope_pattern    the key that pairs a folder with its own target.
+                       Default reads a phase number — "(PH3)", "Phase 3".
+                       Anything else the job numbers work by works too: give a
+                       regex whose capture group is the key.
+      target_pick      "earliest" (default) or "latest" when a scope holds
+                       several matching activities
+      tail             which activity carries the tie out of the folder:
+                       "last" (default) the latest-finishing activity nothing
+                       inside the folder waits on — the room's termination;
+                       "open" every activity with no successor at all;
+                       "all"  every logical end
+      type / lag_days  the relation to add, default Finish to Start, 0 lag
+      under_wbs        hold the whole thing to one branch
+      preview          reports by default; send apply:true to write
+
+    It only ever ADDS. A folder already reaching its target is reported and
+    left completely alone, whatever route it takes to get there. A folder
+    whose scope key cannot be read, or whose key has no target, is named and
+    skipped — wiring it to some other phase's milestone would be far worse
+    than leaving the gap where it can be seen.
+
+    Run it with no apply first. The report is also the answer to "are they all
+    connected?", which is usually the real question.
+    """
+    from .connect import DEFAULT_SCOPE, connect, describe
+    folders = cmd.get("folder_pattern") or cmd.get("folders")
+    target = cmd.get("target_pattern") or cmd.get("target")
+    if not folders:
+        raise EditError(
+            "folder_pattern is required for connect_folders — the pattern that "
+            "picks the folders to check, e.g. '^Gen\\\\s*\\\\d+'")
+    if not target:
+        raise EditError(
+            "target_pattern is required for connect_folders — the pattern that "
+            "picks the activity they should reach, e.g. 'commission'")
+    try:
+        res = connect(
+            project,
+            folder_pattern=folders,
+            target_pattern=target,
+            scope_pattern=cmd.get("scope_pattern") or DEFAULT_SCOPE,
+            under=_pattern_scope(project, cmd),
+            target_pick=(cmd.get("target_pick") or "earliest").lower(),
+            tail=(cmd.get("tail") or "last").lower(),
+            relation_type={"fs": "Finish to Start", "ss": "Start to Start",
+                           "ff": "Finish to Finish", "sf": "Start to Finish",
+                           }.get((cmd.get("type") or "fs").lower(),
+                                 "Finish to Start"),
+            lag_days=float(cmd.get("lag_days") or 0),
+            apply=not _pattern_preview(cmd),
+        )
+    except ValueError as e:
+        raise EditError(str(e))
+    return True, describe(res)
+
+
+def _actualize(project: Project, cmd: Dict) -> Tuple[bool, str]:
+    """
+    Status the schedule from a statement of progress.
+
+    What the user sends is never a list of activity IDs — it is a front.
+    "Several gens are complete", "we're out to terminations in ER 208", a
+    lookahead whose data date is three weeks past the app's. Each of those
+    implies far more than it says: a finished room is also saying its feeders
+    are pulled, its gear is set and the precast under it went in months ago.
+
+    Nobody lists that, and it is not a judgement call — it is what the named
+    work DEPENDS ON, transitively, which is a computation over the whole
+    network. That closure is the reason to use this instead of a string of
+    set_progress calls.
+
+      folder_pattern       regex over folder names the evidence is about
+      activity_ids         explicit activities said to be complete
+      through              the activity the work has REACHED in each folder.
+                           It goes In Progress, everything feeding it goes
+                           Complete, and work past it is left alone.
+      as_of                the date the evidence describes — a lookahead's
+                           data date. Defaults to the project's own, and the
+                           project's data date is never moved by this.
+      include_predecessors default true. Off makes it status only what was
+                           named, which is rarely what the evidence means.
+      preserve             an activity whose finish the user wants held; its
+                           date before and after is reported.
+      under_wbs            hold it to one branch
+      preview              reports by default; send apply:true to write
+
+    It never un-completes anything: work already statused keeps its own actual
+    dates. The implied set is reported SEPARATELY from what was named, because
+    a closure reaching somewhere it should not is something to catch by
+    reading it, not after three hundred rows have actual dates on them.
+    """
+    from .actualize import actualize, describe
+    ids = cmd.get("activity_ids") or ([cmd["activity_id"]]
+                                      if cmd.get("activity_id") else None)
+    if not cmd.get("folder_pattern") and not cmd.get("folders") and not ids:
+        raise EditError(
+            "actualize needs something to go on — folder_pattern (the folders "
+            "the evidence is about, e.g. '^Gen\\\\s*\\\\d+') or activity_ids.")
+    try:
+        res = actualize(
+            project,
+            folder_pattern=cmd.get("folder_pattern") or cmd.get("folders"),
+            activity_ids=ids,
+            through=cmd.get("through"),
+            as_of=cmd.get("as_of") or cmd.get("data_date"),
+            include_predecessors=cmd.get("include_predecessors", True),
+            under=_pattern_scope(project, cmd),
+            preserve=cmd.get("preserve"),
+            apply=not _pattern_preview(cmd),
+        )
+    except ValueError as e:
+        raise EditError(str(e))
+    return True, describe(res)
+
+
+def _excel_customise(project: Project, cmd: Dict) -> Tuple[bool, str]:
+    """
+    Change the Excel tracker, in a way that survives the next export.
+
+    The obvious reading of "tweak the workbook" is to edit the .xlsx. That
+    works exactly once: the next export is built from the schedule again —
+    which is the point of a generated tracker — and the hand change is gone,
+    silently, because the file still looks right. So what is recorded is the
+    CHANGE, and the generator re-applies it on every build. A tweak then
+    survives a schedule revision, a re-export and a restart, and goes on
+    applying to rows that did not exist when it was asked for.
+
+      op    hide | show | rename | colour | add_sheet | drop_sheet | clear | show_spec
+      column    the Update heading to hide, show or rename
+      to        what it should read instead (rename)
+      phase     which phase to colour, and colour: a name or a hex code
+      sheet     the name of a sheet to add or drop
+      headers   its column headings
+      rows      its rows, each a list
+
+    It cannot touch a formula or move a column. A moved column shifts every
+    reference behind it and a hand-edited formula is one nobody regenerates
+    correctly — hiding leaves the column computing and out of the way, which
+    is what "I do not need to see that" actually means.
+    """
+    from .sheet_spec import SheetSpec
+    spec = getattr(project, "_sheet_spec", None)
+    if not isinstance(spec, SheetSpec):
+        spec = SheetSpec()
+        setattr(project, "_sheet_spec", spec)
+
+    op = str(cmd.get("op") or cmd.get("operation") or "").strip().lower()
+    col = cmd.get("column") or cmd.get("header") or ""
+    if op in ("hide", "hide_column"):
+        return True, spec.hide(str(col))
+    if op in ("show", "show_column", "unhide"):
+        return True, spec.show(str(col))
+    if op in ("rename", "rename_column"):
+        return True, spec.rename(str(col), str(cmd.get("to") or cmd.get("name") or ""))
+    if op in ("colour", "color", "colour_phase", "color_phase"):
+        return True, spec.colour_phase(str(cmd.get("phase") or ""),
+                                       str(cmd.get("colour") or cmd.get("color") or ""))
+    if op in ("add_sheet", "sheet", "new_sheet"):
+        return True, spec.add_sheet(str(cmd.get("sheet") or cmd.get("name") or ""),
+                                    cmd.get("headers"), cmd.get("rows"),
+                                    str(cmd.get("note") or ""))
+    if op in ("drop_sheet", "remove_sheet", "delete_sheet"):
+        return True, spec.drop_sheet(str(cmd.get("sheet") or cmd.get("name") or ""))
+    if op in ("clear", "reset"):
+        return True, spec.clear()
+    if op in ("show_spec", "describe", "list", ""):
+        return True, spec.describe()
+    raise EditError(
+        f"'{op}' is not something I can change about the tracker. The options "
+        f"are hide, show, rename, colour, add_sheet, drop_sheet, clear and "
+        f"show_spec.")

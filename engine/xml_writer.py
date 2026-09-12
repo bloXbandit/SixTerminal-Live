@@ -88,6 +88,14 @@ _WBS_OID_START = 26059       # first explicit WBS block starts after hidden proj
 _ACTIVITY_OID_START = 101923 # mirrors clean native XML range
 _RELATIONSHIP_OID_START = 41150
 _ASSIGNMENT_OID_START = 83399
+# Real resources read off an import get their own range, clear of the single
+# synthetic _RES_OID / _RRATE_OID stub above (which stays for the case where
+# the app has assignments but no library to go with them).
+# The project's OWN calendars, written as themselves. Clear of the fixed
+# P6603/6604/6602/6605 block below, which stays for a project that has none.
+_PCAL_OID_START = 6700
+_RESOURCE_OID_START = 6900
+_RESOURCE_RATE_OID_START = 7200
 _PROJECT_OID_FALLBACK = "4510"
 _INT32_MAX = 2_147_483_647
 
@@ -654,20 +662,62 @@ def _nil(parent: ET.Element, tag: str) -> ET.Element:
     return el
 
 
-def _workweek(parent: ET.Element, days_on: tuple):
+_DAY_NAMES = ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday",
+              "Saturday", "Sunday")          # index == Calendar.work_days value
+
+
+def _days_on(cal) -> tuple:
+    """The day NAMES this calendar works, from the pattern it was read with."""
+    wd = getattr(cal, "work_days", None)
+    if not wd:
+        return _DAY_NAMES[:5]
+    return tuple(_DAY_NAMES[d] for d in sorted(wd) if 0 <= d < 7)
+
+
+def _shifts(hours_per_day: float) -> list:
+    """
+    The work times that add up to a day of this length.
+
+    Hardcoded 08:00-11:59 + 13:00-16:59 meant every exported calendar was an
+    eight-hour day whatever the schedule said, so a 6-day 10-hour job came back
+    from P6 as 5-day 8-hour and every duration re-read as a different number of
+    days. The shape is kept — a morning, an hour for lunch, an afternoon — and
+    only the length moves.
+
+    P6 writes a shift's Finish as the last working minute (11:59, not 12:00),
+    so the same convention is used here.
+    """
+    h = float(hours_per_day or 8.0)
+    if h <= 0:
+        h = 8.0
+    half = h / 2.0
+    start = 8 * 60                       # 08:00
+    m_end = start + int(round(half * 60))
+    a_start = m_end + 60                 # an hour for lunch
+    a_end = a_start + int(round((h - half) * 60))
+    if a_end > 24 * 60 - 1:              # a very long day: run it straight
+        m_end = start + int(round(h * 60))
+        return [(start, m_end)]
+    return [(start, m_end), (a_start, a_end)]
+
+
+def _hhmm(minutes: int) -> str:
+    return f"{minutes // 60:02d}:{minutes % 60:02d}:00"
+
+
+def _workweek(parent: ET.Element, days_on: tuple, hours_per_day: float = 8.0):
     """Write StandardWorkWeek. days_on is tuple of day names that are working."""
     all_days = ("Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday")
+    shifts = _shifts(hours_per_day)
     sww = _sub(parent, "StandardWorkWeek")
     for day in all_days:
         swh = _sub(sww, "StandardWorkHours")
         _sub(swh, "DayOfWeek", day)
         if day in days_on:
-            wt1 = _sub(swh, "WorkTime")
-            _sub(wt1, "Start", "08:00:00")
-            _sub(wt1, "Finish", "11:59:00")
-            wt2 = _sub(swh, "WorkTime")
-            _sub(wt2, "Start", "13:00:00")
-            _sub(wt2, "Finish", "16:59:00")
+            for s, e in shifts:
+                wt = _sub(swh, "WorkTime")
+                _sub(wt, "Start", _hhmm(s))
+                _sub(wt, "Finish", _hhmm(e - 1))
         else:
             _nil(swh, "WorkTime")
 
@@ -751,6 +801,71 @@ def _calendar_target_from_name(name: str) -> str:
     return _PCAL_5_NOHOL
 
 
+
+def _keep_or_mint(uids, start: int, reserved=()) -> Dict[str, str]:
+    """
+    Map each source uid to the ObjectId it should be written with.
+
+    A uid that is already a plausible P6 ObjectId is KEPT. That matters most
+    for resources, which are enterprise-global: P6 matches an imported one to
+    the library by its Id, but handing it a fabricated ObjectId invites it to
+    match — or overwrite — whatever else happens to hold that number. Anything
+    the app minted itself gets a fresh id from `start`, stepping over numbers
+    already claimed above so the two schemes cannot collide.
+    """
+    out: Dict[str, str] = {}
+    # Numbers this file already spends elsewhere. The global calendar block is
+    # written from fixed ids, and a project calendar that arrived carrying one
+    # of those would otherwise be declared a second time under the same
+    # ObjectId — P6 then resolves every reference to whichever it loaded last.
+    taken = {str(r) for r in reserved}
+    for u in uids:
+        key = _key(u)
+        if key.isdigit() and 0 < int(key) <= _INT32_MAX and key not in taken:
+            out[key] = key
+            taken.add(key)
+    nxt = start
+    for u in uids:
+        key = _key(u)
+        if key in out:
+            continue
+        while str(nxt) in taken:
+            nxt += 1
+        out[key] = str(nxt)
+        taken.add(str(nxt))
+        nxt += 1
+    return out
+
+
+_RESERVED_CAL_OIDS = ("_GCAL_5_NOHOL", "_GCAL_7_NOHOL", "_GCAL_5_HOL", "_GCAL_6_HOL")
+
+
+def _reserved_cal_oids() -> tuple:
+    return tuple(globals()[n] for n in _RESERVED_CAL_OIDS)
+
+
+def _own_calendars(project) -> list:
+    """
+    The PROJECT calendars this schedule carries, if any are usable.
+
+    A calendar needs a uid to be pointed at and a name to be recognised in P6.
+    With none that qualify the export falls back to the fixed set below, which
+    is what an app-built schedule with no calendar data has always had.
+
+    Global calendars are deliberately excluded. They belong to the database,
+    not the project, and are written in the global section from fixed ids —
+    emitting one here as well declares the same ObjectId twice, which P6
+    resolves to whichever it happened to load last. A schedule whose calendars
+    are all marked Global still gets them, since an app-built one often marks
+    nothing and would otherwise lose its calendars entirely.
+    """
+    usable = [c for c in (getattr(project, "calendars", None) or [])
+              if getattr(c, "uid", None) and (getattr(c, "name", "") or "").strip()]
+    scoped = [c for c in usable
+              if str(getattr(c, "type", "") or "").lower() != "global"]
+    return scoped or usable
+
+
 def _build_calendar_oid_map(project: Project) -> Dict[str, str]:
     """
     Map app/XER calendar ids to the fixed project calendar ids written below.
@@ -762,6 +877,24 @@ def _build_calendar_oid_map(project: Project) -> Dict[str, str]:
     "Referenced business object Calendar ... cannot be found, ignoring field
     CalendarObjectId", leaving the activity with no calendar at all.
     """
+    own = _own_calendars(project)
+    if own:
+        # The project's calendars are written as themselves, so an activity
+        # points at the calendar it is actually on. Before this, every calendar
+        # was matched to one of three canned ones BY NAME and a six-day
+        # ten-hour week had nowhere to land — which is why every import came
+        # back on P6 5-day and had to be set by hand.
+        mapping = _keep_or_mint([c.uid for c in own], _PCAL_OID_START,
+                                reserved=_reserved_cal_oids())
+        # An activity naming a calendar this project does not have must land on
+        # one that WAS written. Falling through to the fixed P5-DAY id when the
+        # fixed calendars are no longer emitted gives P6 "Referenced business
+        # object Calendar ... cannot be found, ignoring field
+        # CalendarObjectId" — and an activity with no calendar at all.
+        mapping[_DEFAULT_KEY] = mapping[_key(own[0].uid)]
+        mapping.setdefault("", mapping[_DEFAULT_KEY])
+        return mapping
+
     six = _project_uses_6day(project)
     mapping: Dict[str, str] = {}
     for cal in getattr(project, "calendars", []) or []:
@@ -776,8 +909,15 @@ def _build_calendar_oid_map(project: Project) -> Dict[str, str]:
     return mapping
 
 
+# Where an unknown calendar id lands. Held in the map itself so it is always a
+# calendar THIS export wrote, whichever set of calendars that turned out to be.
+_DEFAULT_KEY = "__default__"
+
+
 def _map_calendar_oid(calendar_uid: Any, calendar_oid_map: Dict[str, str]) -> str:
-    return calendar_oid_map.get(_key(calendar_uid), _DEFAULT_PROJECT_CALENDAR_OID)
+    return (calendar_oid_map.get(_key(calendar_uid))
+            or calendar_oid_map.get(_DEFAULT_KEY)
+            or _DEFAULT_PROJECT_CALENDAR_OID)
 
 
 def _get_any(obj: Any, *names: str, default: Any = None) -> Any:
@@ -1093,20 +1233,29 @@ def _cal_is_6day(cal) -> bool:
     return bool(wd) and len(wd) == 6
 
 
-def _global_calendar(root: ET.Element, oid: str, name: str, days_on: tuple, holidays=()):
+def _global_calendar(root: ET.Element, oid: str, name: str, days_on: tuple,
+                     holidays=(), hours_per_day: float = 8.0):
+    """
+    A global calendar the project calendars sit on top of.
+
+    The hours follow the project rather than being fixed at eight: a project
+    calendar inheriting from a base that disagrees with it about the length of
+    a day is how a 10-hour job reads back as an 8-hour one.
+    """
+    h = float(hours_per_day or 8.0)
     cal = _sub(root, "Calendar")
     _nil(cal, "BaseCalendarObjectId")
-    _sub(cal, "HoursPerDay",   "8")
-    _sub(cal, "HoursPerMonth", "172")
-    _sub(cal, "HoursPerWeek",  "40")
-    _sub(cal, "HoursPerYear",  "2000")
+    _sub(cal, "HoursPerDay",   str(int(h)))
+    _sub(cal, "HoursPerMonth", str(int(round(h * len(days_on) * 4.333))))
+    _sub(cal, "HoursPerWeek",  str(int(round(h * len(days_on)))))
+    _sub(cal, "HoursPerYear",  str(int(round(h * len(days_on) * 52))))
     _sub(cal, "IsDefault",     "0")
     _sub(cal, "IsPersonal",    "0")
     _sub(cal, "Name",          name)
     _sub(cal, "ObjectId",      oid)
     _nil(cal, "ProjectObjectId")
     _sub(cal, "Type",          "Global")
-    _workweek(cal, days_on)
+    _workweek(cal, days_on, h)
     _holiday_exceptions(cal, holidays)
 
 
@@ -1166,6 +1315,85 @@ def _section_resource(root: ET.Element):
     _nil(r, "UserObjectId")
 
 
+_RES_TYPES = {"Labor", "Nonlabor", "Material"}
+
+
+def _section_real_resources(root: ET.Element, project: Project) -> Dict[str, str]:
+    """
+    Write the resource library the import actually found, and return
+    {resource uid -> the ObjectId it was written with}.
+
+    This exists because the alternative was worse than nothing: the export
+    used to write ONE synthetic "Costs MLCB" resource and point every
+    assignment at it, so a file that arrived with six crews on it came back
+    with six assignments to a made-up nonlabor line. Now each resource is
+    written as itself, and the assignment block points at the right one.
+
+    Every resource gets a rate block whether or not it has a rate: P6 reads
+    Max Units/Time off the rate, and a resource without one imports with a
+    zero availability that quietly breaks levelling.
+    """
+    res_oid = _keep_or_mint([r.uid for r in project.resources],
+                            _RESOURCE_OID_START)
+    for i, r in enumerate(project.resources):
+        oid = res_oid[_key(r.uid)]
+        el = _sub(root, "Resource")
+        _sub(el, "AutoComputeActuals",     "1")
+        _sub(el, "CalculateCostFromUnits", "1")
+        _sub(el, "CalendarObjectId",       _GCAL_OID)
+        _sub(el, "CurrencyObjectId",       _CUR_OID)
+        _sub(el, "DefaultUnitsPerTime",    _num(r.max_units, 1))
+        _nil(el, "EmailAddress")
+        _nil(el, "EmployeeId")
+        _sub(el, "GUID",                   _guid())
+        _sub(el, "Id",                     r.id or f"RSRC-{i + 1}")
+        _sub(el, "IsActive",               "1" if r.is_active else "0")
+        _sub(el, "IsOverTimeAllowed",      "0")
+        _sub(el, "Name",                   r.name or r.id or f"Resource {i + 1}")
+        _sub(el, "ObjectId",               oid)
+        _nil(el, "OfficePhone")
+        _nil(el, "OtherPhone")
+        _sub(el, "OvertimeFactor",         "0")
+        # A parent outside this library would dangle, so an unknown parent is
+        # written as no parent rather than as a reference P6 cannot resolve.
+        parent = res_oid.get(_key(r.parent_uid)) if r.parent_uid else None
+        if parent:
+            _sub(el, "ParentObjectId", parent)
+        else:
+            _nil(el, "ParentObjectId")
+        _nil(el, "PrimaryRoleObjectId")
+        _nil(el, "ResourceNotes")
+        _sub(el, "ResourceType", r.type if r.type in _RES_TYPES else "Labor")
+        _sub(el, "SequenceNumber",         str((i + 1) * 10))
+        _nil(el, "ShiftObjectId")
+        _nil(el, "TimesheetApprovalManagerObjectId")
+        _nil(el, "Title")
+        _nil(el, "UnitOfMeasureObjectId")
+        _sub(el, "UseTimesheets",          "0")
+        _nil(el, "UserObjectId")
+
+    for i, r in enumerate(project.resources):
+        rr = _sub(root, "ResourceRate")
+        _sub(rr, "EffectiveDate",    "2024-01-01T00:00:00")
+        _sub(rr, "MaxUnitsPerTime",  _num(r.max_units, 1))
+        _sub(rr, "ObjectId",         str(_RESOURCE_RATE_OID_START + i))
+        _sub(rr, "PricePerUnit",     _num(r.rate, 0))
+        for n in range(2, 6):
+            _sub(rr, f"PricePerUnit{n}", "0")
+        _sub(rr, "ResourceObjectId", res_oid[_key(r.uid)])
+        _nil(rr, "ShiftPeriodObjectId")
+    return res_oid
+
+
+def _num(v: Any, default: float = 0.0) -> str:
+    """A number P6 will read: no exponent, no trailing noise, never blank."""
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        f = float(default)
+    return str(int(f)) if f == int(f) else f"{f:.6f}".rstrip("0").rstrip(".")
+
+
 def _section_resource_rate(root: ET.Element):
     rr = _sub(root, "ResourceRate")
     _sub(rr, "EffectiveDate",       "2024-01-01T00:00:00")
@@ -1188,13 +1416,35 @@ def _section_fpt(root: ET.Element):
 
 # ── Project calendar (nested inside <Project>) ─────────────────────────────────
 
-def _project_calendar(proj_el: ET.Element, cal: Calendar, proj_uid: str):
-    """Write a project-scoped calendar inside the Project block."""
+def _project_calendar(proj_el: ET.Element, cal: Calendar, proj_uid: str,
+                      oid: Optional[str] = None):
+    """
+    Write a project-scoped calendar inside the Project block.
+
+    This used to write Monday-to-Friday regardless of what the calendar said,
+    and pick its base calendar by looking for a "7" in the NAME. So a six-day
+    calendar went out as five-day, every import landed back on P6 5-day, and
+    the working pattern had to be set by hand after every single import. The
+    reader gets the pattern right and the app's own CPM uses it; only the
+    export was throwing it away.
+
+    Both now come off the calendar itself: the days it works, and the hours it
+    works them. Holidays are written too — a calendar named for its holiday
+    set that observes none of them is the same bug one level down.
+    """
     c = _sub(proj_el, "Calendar")
-    lname = (cal.name or "").lower()
-    base_oid = _GCAL_7_NOHOL if "7" in lname or "seven" in lname else _GCAL_5_NOHOL
-    if "hol" in lname and "no hol" not in lname:
-        base_oid = _GCAL_5_HOL
+    days = _days_on(cal)
+    hol = _cal_holidays(cal)
+    # The base calendar is chosen by what this calendar DOES, not by what it is
+    # called. A job named "6-Day 10hr" has no "7" in it and was landing on the
+    # five-day base.
+    n = len(days)
+    if n >= 7:
+        base_oid = _GCAL_7_NOHOL
+    elif n == 6:
+        base_oid = _GCAL_6_HOL if hol else _GCAL_7_NOHOL
+    else:
+        base_oid = _GCAL_5_HOL if hol else _GCAL_5_NOHOL
     _sub(c, "BaseCalendarObjectId", base_oid)
     _sub(c, "HoursPerDay",          str(int(cal.hours_per_day)))
     _sub(c, "HoursPerMonth",        str(int(cal.hours_per_month)))
@@ -1203,10 +1453,11 @@ def _project_calendar(proj_el: ET.Element, cal: Calendar, proj_uid: str):
     _sub(c, "IsDefault",            "0")
     _sub(c, "IsPersonal",           "0")
     _sub(c, "Name",                 cal.name)
-    _sub(c, "ObjectId",             cal.uid)
+    _sub(c, "ObjectId",             oid or str(cal.uid))
     _sub(c, "ProjectObjectId",      proj_uid)     # must equal the Project ObjectId
     _sub(c, "Type",                 "Project")    # NOT Global
-    _workweek(c, ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday"))
+    _workweek(c, days, cal.hours_per_day)
+    _holiday_exceptions(c, hol)
 
 
 
@@ -1234,6 +1485,14 @@ def _section_project_calendars(proj_el: ET.Element, proj_uid: str, project=None)
     when the project uses it. Holidays are attached only when present, keeping
     output unchanged for schedules that do not use them.
     """
+    own = _own_calendars(project)
+    if own:
+        oids = _keep_or_mint([c.uid for c in own], _PCAL_OID_START,
+                             reserved=_reserved_cal_oids())
+        for cal in own:
+            _project_calendar(proj_el, cal, proj_uid, oids[_key(cal.uid)])
+        return
+
     hol = frozenset()
     six = False
     if project is not None:
@@ -1406,7 +1665,11 @@ def _write_activity(
         _nil(a, "ActualFinishDate")
 
     _sub(a, "ActualLaborCost",    "0")
-    _sub(a, "ActualLaborUnits",   "0")
+    # What has actually been spent. Written as a hard zero until now, which
+    # erased the history of any job already under way: the usage profile plots
+    # Actual Units BEHIND the data date, so a schedule with 79 finished
+    # activities came back with nothing before the data date and no clue why.
+    _sub(a, "ActualLaborUnits",   _num(act.actual_labor_units))
     _sub(a, "ActualNonLaborCost", "0")
     _sub(a, "ActualNonLaborUnits","0")
 
@@ -1424,7 +1687,10 @@ def _write_activity(
     _sub(a, "AtCompletionDuration",         _as_int_text(act.planned_duration, 0))
     _sub(a, "AtCompletionExpenseCost",      "0")
     _sub(a, "AtCompletionLaborCost",        "0")
-    _sub(a, "AtCompletionLaborUnits",       "0")
+    # P6's own definition, so the three agree rather than contradicting:
+    # at completion is what has been spent plus what is left.
+    _sub(a, "AtCompletionLaborUnits",
+         _num((act.actual_labor_units or 0) + (act.remaining_labor_units or 0)))
     _sub(a, "AtCompletionNonLaborCost",     "0")
     _sub(a, "AtCompletionNonLaborUnits",    "0")
     _sub(a, "AutoComputeActuals",           "0")
@@ -1497,7 +1763,9 @@ def _write_activity(
         _nil(a, "RemainingEarlyStartDate")
 
     _sub(a, "RemainingLaborCost",    "0")
-    _sub(a, "RemainingLaborUnits",   "0")
+    # What is left to spend — the half of the profile in front of the data
+    # date. Zeroing it meant an imported schedule forecast no labour at all.
+    _sub(a, "RemainingLaborUnits",   _num(act.remaining_labor_units))
 
     if act.late_finish:
         _sub(a, "RemainingLateFinishDate", _dt_activity_finish(act.late_finish, act))
@@ -1567,6 +1835,8 @@ def _write_resource_assignment(
     activity_oid_map: Dict[str, str],
     wbs_oid_map: Dict[str, str],
     activity_by_uid: Dict[str, Activity],
+    res_oid_map: Optional[Dict[str, str]] = None,
+    res_type_by_uid: Optional[Dict[str, str]] = None,
 ) -> bool:
     """Write a native-style ResourceAssignment if assignment data exists in the model."""
     activity_uid = _get_any(
@@ -1597,19 +1867,33 @@ def _write_resource_assignment(
     remaining_cost = _get_any(assignment, "remaining_cost", default=planned_cost)
     remaining_duration = _get_any(assignment, "remaining_duration", default=getattr(act, "remaining_duration", None) or getattr(act, "planned_duration", 0))
 
+    # Which resource this is actually for. With a real library the assignment
+    # points at the resource it came in on; with only the synthetic stub there
+    # is one to point at, and that is the old behaviour left intact.
+    res_key = _key(_get_any(assignment, "resource_uid", "resource_object_id",
+                            "rsrc_id", default=None))
+    res_oid = (res_oid_map or {}).get(res_key) or _RES_OID
+    res_type = (res_type_by_uid or {}).get(res_key) or "Nonlabor"
+
+    # Actuals as recorded. Zeroing these threw away progress that the file
+    # arrived with — on a job part-built, that is the difference between what
+    # has been spent and a clean sheet.
+    act_units = float(_get_any(assignment, "actual_units", default=0) or 0)
+    act_cost = float(_get_any(assignment, "actual_cost", default=0) or 0)
+
     ra = _sub(proj_el, "ResourceAssignment")
     _sub(ra, "ActivityObjectId", activity_oid_map[activity_key])
-    _sub(ra, "ActualCost", "0")
+    _sub(ra, "ActualCost", _num(act_cost))
     _nil(ra, "ActualCurve")
     _nil(ra, "ActualFinishDate")
     _sub(ra, "ActualOvertimeCost", "0")
     _sub(ra, "ActualOvertimeUnits", "0")
-    _sub(ra, "ActualRegularCost", "0")
-    _sub(ra, "ActualRegularUnits", "0")
+    _sub(ra, "ActualRegularCost", _num(act_cost))
+    _sub(ra, "ActualRegularUnits", _num(act_units))
     _nil(ra, "ActualStartDate")
     _sub(ra, "ActualThisPeriodCost", "0")
     _sub(ra, "ActualThisPeriodUnits", "0")
-    _sub(ra, "ActualUnits", "0")
+    _sub(ra, "ActualUnits", _num(act_units))
     _sub(ra, "AtCompletionCost", str(planned_cost or 0))
     _sub(ra, "AtCompletionUnits", str(planned_units or 0))
     _nil(ra, "CostAccountObjectId")
@@ -1636,7 +1920,7 @@ def _write_resource_assignment(
         _nil(ra, "PlannedStartDate")
     _sub(ra, "PlannedUnits", str(planned_units or 0))
     _sub(ra, "PlannedUnitsPerTime", str(_get_any(assignment, "planned_units_per_time", default=0) or 0))
-    _sub(ra, "PricePerUnit", "1")
+    _sub(ra, "PricePerUnit", _num(_get_any(assignment, "rate", "price_per_unit", default=1) or 1))
     _sub(ra, "Proficiency", "3 - Skilled")
     _sub(ra, "ProjectObjectId", proj_uid)
     _sub(ra, "RateSource", "Resource")
@@ -1656,8 +1940,8 @@ def _write_resource_assignment(
     _sub(ra, "RemainingUnits", str(remaining_units or 0))
     _sub(ra, "RemainingUnitsPerTime", str(_get_any(assignment, "remaining_units_per_time", default=0) or 0))
     _nil(ra, "ResourceCurveObjectId")
-    _sub(ra, "ResourceObjectId", _RES_OID)
-    _sub(ra, "ResourceType", "Nonlabor")
+    _sub(ra, "ResourceObjectId", res_oid)
+    _sub(ra, "ResourceType", res_type)
     _nil(ra, "RoleObjectId")
     if planned_start:
         _sub(ra, "StartDate", _dt_start(planned_start))
@@ -1778,9 +2062,19 @@ def _write_p6_xml_impl(project: Project, output_path: str,
     _section_obs(root)
     _section_global_calendars(root, project)
 
-    # Resource blocks are only written when assignments exist.
-    # This avoids an orphan resource/resource-rate stub when the app has no assignment data.
-    if assignments:
+    # The resource library, when the import brought one. Each resource is
+    # written as itself and the assignments below point at the right one —
+    # before this, everything was pinned to a single synthetic "Costs MLCB"
+    # line, so a file that arrived with six crews came back with six
+    # assignments to a nonlabor account nobody had ever created.
+    #
+    # With assignments but no library (an app-built schedule, or an XER whose
+    # RSRC table was not in the file) the original stub still stands: it is
+    # what makes those assignments importable at all.
+    res_oid_map: Dict[str, str] = {}
+    if getattr(project, "resources", None):
+        res_oid_map = _section_real_resources(root, project)
+    elif assignments:
         _section_resource(root)
         _section_resource_rate(root)
 
@@ -1789,7 +2083,11 @@ def _write_p6_xml_impl(project: Project, output_path: str,
     proj_el = _sub(root, "Project")
 
     _sub(proj_el, "ActivityDefaultActivityType",           "Task Dependent")
-    _sub(proj_el, "ActivityDefaultCalendarObjectId",       _GCAL_OID)
+    # The calendar P6 gives a NEW activity typed into this project. It pointed
+    # at the global five-day one, so even with the project's own calendar
+    # imported correctly, anything added afterwards came in on five days.
+    _sub(proj_el, "ActivityDefaultCalendarObjectId",
+         calendar_oid_map.get(_DEFAULT_KEY) or _GCAL_OID)
     _nil(proj_el, "ActivityDefaultCostAccountObjectId")
     _sub(proj_el, "ActivityDefaultDurationType",           "Fixed Duration and Units")
     _sub(proj_el, "ActivityDefaultPercentCompleteType",    "Physical")
@@ -1905,6 +2203,8 @@ def _write_p6_xml_impl(project: Project, output_path: str,
 
     # If the app carries assignments, export them with safe 83400+ ObjectIds.
     # If not, no orphan Resource/ResourceRate blocks are written above.
+    res_type_by_uid = {_key(r.uid): (r.type if r.type in _RES_TYPES else "Labor")
+                       for r in (getattr(project, "resources", None) or [])}
     for idx, assignment in enumerate(assignments):
         _write_resource_assignment(
             proj_el,
@@ -1914,6 +2214,8 @@ def _write_p6_xml_impl(project: Project, output_path: str,
             activity_oid_map,
             wbs_oid_map,
             activity_by_uid,
+            res_oid_map,
+            res_type_by_uid,
         )
 
     # Native export includes ScheduleOptions after relationships/assignments.
