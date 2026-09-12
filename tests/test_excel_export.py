@@ -362,19 +362,27 @@ def test_a_schedule_with_no_dates_exports(book):
 # time. Now there are two columns — one you set, one worked out for you — and
 # the names say which is which.
 
-def _col(path, sheet, letter, first=5, last=None):
-    from openpyxl import load_workbook
-    ws = load_workbook(path)[sheet]
-    return [ws[f"{letter}{r}"].value
-            for r in range(first, (last or ws.max_row) + 1)]
+def _letter(ws, header, row=4):
+    """
+    The column carrying this header, found rather than assumed.
+
+    These tests used to name columns by letter — "W" for the flag, "A5:W" for
+    the body. Adding "Sub Area" shifted all of them by one and five tests broke
+    without a single thing being wrong with the workbook. A test that pins a
+    letter is testing the layout, not the behaviour.
+    """
+    for c in ws[row]:
+        if c.value == header:
+            return c.column_letter
+    raise AssertionError(f"no {header!r} column on {ws.title}")
 
 
 def test_the_flag_is_a_cell_the_field_can_actually_type_in(book):
     from openpyxl import load_workbook
     ws = load_workbook(book())["Update"]
-    assert ws["W4"].value.startswith("Flag")
-    assert ws["W5"].protection.locked is False, "the flag cannot be set"
-    assert ws["W5"].value in (None, ""), "a flag is raised by a person, not seeded"
+    f = _letter(ws, "Flag \u2691")
+    assert ws[f"{f}5"].protection.locked is False, "the flag cannot be set"
+    assert ws[f"{f}5"].value in (None, ""), "a flag is raised by a person, not seeded"
 
 
 def test_the_flag_offers_the_reasons_work_stops_without_gating_them(book):
@@ -382,7 +390,8 @@ def test_the_flag_offers_the_reasons_work_stops_without_gating_them(book):
     from openpyxl import load_workbook
     from engine.excel_export import FLAGS
     ws = load_workbook(book())["Update"]
-    dv = [d for d in ws.data_validations.dataValidation if "W5" in str(d.sqref)]
+    f = _letter(ws, "Flag \u2691")
+    dv = [d for d in ws.data_validations.dataValidation if f"{f}5" in str(d.sqref)]
     assert dv, "no dropdown on the flag column"
     assert all(f in dv[0].formula1 for f in FLAGS)
     assert dv[0].showErrorMessage is False, "typed text would be refused"
@@ -391,7 +400,8 @@ def test_the_flag_offers_the_reasons_work_stops_without_gating_them(book):
 def test_the_column_that_is_computed_no_longer_calls_itself_a_flag(book):
     from openpyxl import load_workbook
     ws = load_workbook(book())["Update"]
-    assert ws["V4"].value == "Next Step"
+    assert _letter(ws, "Next Step"), "the computed column lost its name"
+    assert "Flag" not in "Next Step"
 
 
 def test_the_computed_column_says_something_on_every_row(book):
@@ -405,9 +415,12 @@ def test_the_computed_column_says_something_on_every_row(book):
 def test_a_raised_flag_reaches_the_dashboard(book):
     """Somewhere to type that nobody reads is worse than nowhere."""
     from openpyxl import load_workbook
+    up = load_workbook(book())["Update"]
+    flag = _letter(up, "Flag \u2691")
     ws = load_workbook(book())["Dashboard"]
-    assert ws["M6"].value.startswith("Flags")
-    assert "$W$" in str(ws["M7"].value), "the count does not look at the flag column"
+    col = _letter(ws, "Flags \u2691", row=6)
+    assert f"${flag}$" in str(ws[f"{col}7"].value), \
+        "the dashboard count does not look at the flag column"
 
 
 def test_blocked_outranks_complete_in_the_row_colouring(book):
@@ -415,8 +428,140 @@ def test_blocked_outranks_complete_in_the_row_colouring(book):
     thing that must not be painted over."""
     from openpyxl import load_workbook
     ws = load_workbook(book())["Update"]
+    f = _letter(ws, "Flag \u2691")
     body = [rng for rng in ws.conditional_formatting
-            if str(rng.sqref).startswith("A5:W")]
-    assert body
+            if str(rng.sqref).startswith(f"A5:{f}")]
+    assert body, "no rule covers the whole row"
     first = body[0].rules[0].formula[0]
-    assert 'W5="Blocked"' in first, f"first rule is {first}"
+    assert f'{f}5="Blocked"' in first, f"first rule is {first}"
+
+
+# ── the sheet reads in the order the work runs ───────────────────────────────
+#
+# Everything was sorted by NAME. That is why the Areas sheet put Closeout and
+# Commissioning in the middle of Phase 1 and Procurement at the bottom of the
+# job: alphabetically that is exactly where they belong, and it bears no
+# relation to how the work runs or to how the app and P6 show the same tree.
+
+def _deep():
+    """A WBS whose alphabetical order and real order disagree — which is every
+    real one, because "Closeout" sorts before "Rough-In"."""
+    p = Project(uid="p", name="Job", id="J1", data_date="2026-01-05")
+    p.calendars = [Calendar(uid="1", name="Standard")]
+    p.wbs_nodes = [WBSNode(uid="root", name="Job", code="J")]
+    p.activities, p.relations = [], []
+    n = 0
+    for i, (phase, areas) in enumerate([
+            ("Procurement", [("Design", [])]),
+            ("Phase 1", [("CUP", ["Lineup 1", "Lineup 2"]), ("Closeout", [])])]):
+        pu = f"ph{i}"
+        p.wbs_nodes.append(WBSNode(uid=pu, name=phase, code=f"P{i}",
+                                   parent_uid="root", sequence_num=i))
+        for j, (area, subs) in enumerate(areas):
+            au = f"{pu}a{j}"
+            p.wbs_nodes.append(WBSNode(uid=au, name=area, code=f"A{i}{j}",
+                                       parent_uid=pu, sequence_num=j))
+            holders = [(au, "")] if not subs else []
+            for k, sub in enumerate(subs):
+                su = f"{au}s{k}"
+                p.wbs_nodes.append(WBSNode(uid=su, name=sub, code=f"S{i}{j}{k}",
+                                           parent_uid=au, sequence_num=k))
+                holders.append((su, sub))
+            for uid, _ in holders:
+                n += 1
+                p.activities.append(Activity(
+                    uid=f"u{n}", activity_id=f"A{n}0", name="Set Equipment",
+                    wbs_uid=uid, calendar_uid="1", planned_duration=40,
+                    planned_start="2026-02-02", planned_finish="2026-02-06"))
+    p.build_lookups()
+    return p
+
+
+def _groups(rows):
+    out, seen = [], set()
+    for r in rows:
+        k = (r["phase"], r["area"], r["sub_area"])
+        if k not in seen:
+            seen.add(k)
+            out.append(k)
+    return out
+
+
+def test_rows_follow_the_wbs_not_the_alphabet():
+    """Procurement comes first because it IS first, not because P < C."""
+    got = _groups(_collect(_deep(), "ACME")["rows"])
+    assert [g[0] for g in got][:1] == ["Procurement"]
+    assert got[1][:2] == ("Phase 1", "CUP")
+    assert got[-1][:2] == ("Phase 1", "Closeout"), \
+        "Closeout sorted into the middle again"
+
+
+def test_sibling_order_comes_from_the_schedule_not_the_name():
+    p = _deep()
+    for w in p.wbs_nodes:                      # reverse the stated order
+        w.sequence_num = 10 - (w.sequence_num or 0)
+    got = _groups(_collect(p, "ACME")["rows"])
+    assert got[0][0] == "Phase 1", "sequence_num was ignored"
+
+
+def test_everything_below_the_area_is_kept():
+    """"CUP" alone put 280 activities in one bucket with Lineup 1 and Room
+    Builds indistinguishable — the division the user filters on was exactly
+    the part being discarded."""
+    got = _groups(_collect(_deep(), "ACME")["rows"])
+    cup = [g[2] for g in got if g[1] == "CUP"]
+    assert sorted(cup) == ["Lineup 1", "Lineup 2"]
+
+
+def test_an_area_with_nothing_below_it_has_an_empty_sub_area():
+    got = _groups(_collect(_deep(), "ACME")["rows"])
+    assert ("Procurement", "Design", "") in got
+
+
+def test_the_update_sheet_carries_the_area_split(book):
+    from openpyxl import load_workbook
+    ws = load_workbook(book(_deep()))["Update"]
+    assert _letter(ws, "Sub Area"), "no Sub Area column"
+    col = _letter(ws, "Sub Area")
+    assert any(ws[f"{col}{r}"].value == "Lineup 1" for r in range(5, ws.max_row + 1))
+
+
+def test_the_column_that_normalises_the_activity_name_says_what_it_is(book):
+    """It was headed "Work Type", which reads as a trade category and is not
+    one — it is the activity name with its room tag and WBO marker stripped,
+    so every "Device Trim Out" filters together. The category IS the Area."""
+    from openpyxl import load_workbook
+    ws = load_workbook(book(_deep()))["Update"]
+    assert _letter(ws, "Task")
+    with pytest.raises(AssertionError):
+        _letter(ws, "Work Type")
+
+
+# ── the divisions are visible without breaking the filter ────────────────────
+
+def test_each_phase_gets_its_own_colour(book):
+    """Header rows were the obvious answer and the wrong one: the Update sheet
+    is a Table with a filter on it, and a row holding no activity either
+    breaks the filter or vanishes under it. A colour belongs to the row."""
+    from openpyxl import load_workbook
+    ws = load_workbook(book(_deep()))["Update"]
+    col = _letter(ws, "Phase")
+    seen = {}
+    for r in range(5, ws.max_row + 1):
+        c = ws.cell(row=r, column=ws[f"{col}4"].column)
+        if c.value:
+            seen.setdefault(c.value, set()).add((c.fill.fgColor.rgb or "")[-6:])
+    assert len(seen) >= 2
+    bands = [next(iter(v)) for v in seen.values()]
+    assert len(set(bands)) == len(bands), "two phases share a colour"
+
+
+def test_the_colour_survives_a_filter_because_it_is_on_the_row(book):
+    """Nothing static is inserted between the rows — no header row, no divider
+    — so a filter cannot leave the sheet nonsense."""
+    from openpyxl import load_workbook
+    ws = load_workbook(book(_deep()))["Update"]
+    ids = _letter(ws, "Activity ID")
+    blanks = [r for r in range(5, ws.max_row + 1)
+              if not ws[f"{ids}{r}"].value]
+    assert not blanks, f"rows with no activity at {blanks[:3]}"

@@ -53,6 +53,22 @@ WBO_BG, WBO_TX = 'E4DFEC', '5F497A'
 TBD_BG, TBD_TX = 'FFF2CC', '806000'
 FLAG_BG, FLAG_TX = 'FCE4D6', '974706'
 ENTRY = 'FFF9E3'
+# One tint per phase, pale enough to read black text over and to print. A
+# colour belongs to its row, so it survives every filter and sort the field
+# applies — which a header row or a divider line does not.
+PHASE_BANDS = ['DDEBF7', 'E2EFDA', 'FFF2CC', 'FCE4D6', 'E4DFEC', 'DAEEF3']
+
+# The Update sheet's columns, by name. Used as identifiers rather than quoted
+# strings so a name can sit inside an f-string formula without fighting it.
+COL_PROJECT, COL_LEAD, COL_PHASE, COL_AREA = 'Project', 'Lead', 'Phase', 'Area'
+COL_SUBAREA, COL_ROOM, COL_TASK = 'Sub Area', 'Room', 'Task'
+COL_ID, COL_NAME, COL_BY = 'Activity ID', 'Activity Name', 'By'
+COL_BLSTART, COL_BLFINISH, COL_DAYS, COL_CREW = 'BL Start', 'BL Finish', 'Days', 'Crew'
+COL_STATUS, COL_PCT = 'Status', '% Comp'
+COL_ASTART, COL_AFINISH, COL_NOTES, COL_UPDBY = 'Act Start', 'Act Finish', 'Notes', 'Updated By'
+COL_VAR, COL_WINDOW, COL_NEXT, COL_FLAG = 'Var (d)', 'Window', 'Next Step', 'Flag \u2691'
+
+
 FONT = 'Arial'
 
 # Who is doing the work. "TBD" is the honest default for anything nobody has
@@ -154,6 +170,45 @@ def _cf(ws, rng, formula, bg, tx, bold=False, italic=False, sz=9):
         font=Font(name=FONT, size=sz, color=tx, bold=bold, italic=italic)))
 
 
+
+def _wbs_order(project) -> Dict[str, int]:
+    """
+    Where each folder sits when the WBS is unfolded top to bottom — the order
+    the app's own tree shows, and the order P6 shows.
+
+    Everything used to be sorted by NAME, which is why the Areas sheet put
+    Closeout and Commissioning in the middle of Phase 1 and Procurement at the
+    bottom of the job: alphabetically that is exactly where they belong, and it
+    bears no relation to how the work runs. P6 orders siblings by
+    sequence_num, so a depth-first walk in that order reproduces the tree.
+    """
+    by_uid = {w.uid: w for w in project.wbs_nodes}
+    kids: Dict[Any, List] = {}
+    for w in project.wbs_nodes:
+        kids.setdefault(w.parent_uid, []).append(w)
+    for v in kids.values():
+        v.sort(key=lambda x: ((x.sequence_num or 0), x.name or ''))
+
+    out: Dict[str, int] = {}
+    n = [0]
+
+    def walk(uid):
+        for w in kids.get(uid, []):
+            if w.uid in out:
+                continue                      # a cyclic parent chain
+            out[w.uid] = n[0]
+            n[0] += 1
+            walk(w.uid)
+
+    for root in [w for w in project.wbs_nodes if w.parent_uid not in by_uid]:
+        if root.uid not in out:
+            out[root.uid] = n[0]
+            n[0] += 1
+            walk(root.uid)
+    walk(None)
+    return out
+
+
 def _collect(project, project_code: str) -> Dict[str, Any]:
     """Flatten the schedule into the rows the workbook is built from."""
     from engine.logic_advisor import location_tag, strip_location, wbs_path
@@ -179,6 +234,7 @@ def _collect(project, project_code: str) -> Dict[str, Any]:
         crew_field = (pref[0] if pref
                       else max(crew_counts.items(), key=lambda kv: kv[1])[0])
 
+    order_of = _wbs_order(project)
     by_uid = {a.uid: a for a in project.activities}
     preds: Dict[str, List[str]] = {}
     fin: Dict[str, str] = {}
@@ -194,12 +250,19 @@ def _collect(project, project_code: str) -> Dict[str, Any]:
         seg = path.split(' / ')
         phase = seg[1] if len(seg) > 1 else '(unfiled)'
         area = seg[2] if len(seg) > 2 else phase
+        # Everything below the work area, kept rather than thrown away. "CUP"
+        # alone put 280 activities in one bucket with Lineup 1 and Room Builds
+        # indistinguishable; the division the user needs to filter on is
+        # exactly the part that was being discarded.
+        sub = ' / '.join(seg[3:]) if len(seg) > 3 else ''
         name = a.name or ''
         wbo = bool(_WBO_RE.search(name))
         rows.append({
             'project': project_code,
             'phase': phase,
             'area': area,
+            'sub_area': sub,
+            'order': order_of.get(a.wbs_uid, 10 ** 6),
             'room': location_tag(name) or '',
             'work_type': _WBO_RE.sub('', strip_location(name)).strip(' *-'),
             'activity_id': a.activity_id,
@@ -221,7 +284,9 @@ def _collect(project, project_code: str) -> Dict[str, Any]:
             'constraint': a.constraint_type or '',
             'path': path,
         })
-    rows.sort(key=lambda r: (r['phase'], r['area'], r['bl_start'] or '9999', r['activity_id']))
+    # WBS order, not alphabetical. Within a folder the dates still decide, so
+    # the rows read the way the work runs at both levels.
+    rows.sort(key=lambda r: (r['order'], r['bl_start'] or '9999', r['activity_id']))
 
     # The run that decides each phase date: walk back from a Substantial
     # Completion milestone, each step taking whichever predecessor finishes
@@ -361,99 +426,147 @@ def build_workbook(project, out_path: str, project_code: Optional[str] = None,
            'filters to see the whole schedule. Raise a Flag \u2691 on the far right for '
            'anything that needs attention — it colours the row and counts on the '
            'Dashboard. "Next Step" is worked out for you.', 23)
-    HDR = ['Project', 'Lead', 'Phase', 'Area', 'Room', 'Work Type', 'Activity ID',
-           'Activity Name', 'By', 'BL Start', 'BL Finish', 'Days', 'Crew',
-           'Status', '% Comp', 'Act Start', 'Act Finish', 'Notes', 'Updated By',
-           'Var (d)', 'Window', 'Next Step', 'Flag ⚑']
-    _head(up, 4, HDR, [9, 9, 15, 22, 11, 26, 22, 46, 15, 11, 11, 7, 7,
+    # "Sub Area" is everything below the work area — "Mech Line-Ups / Lineup 1"
+    # under CUP, "Gen 315 / Gen 315 - JER" under Generator Rooms. Without it
+    # 280 CUP activities filtered as one undifferentiated block.
+    #
+    # "Task" is the activity name with its room tag and WBO marker stripped, so
+    # every "Device Trim Out" on the job filters together however it is
+    # labelled. It was headed "Work Type", which read as a trade category and
+    # is not one — the category IS the Area. Renamed to what it is.
+    HDR = [COL_PROJECT, COL_LEAD, COL_PHASE, COL_AREA, COL_SUBAREA, COL_ROOM,
+           COL_TASK, COL_ID, COL_NAME, COL_BY, COL_BLSTART, COL_BLFINISH,
+           COL_DAYS, COL_CREW, COL_STATUS, COL_PCT, COL_ASTART, COL_AFINISH,
+           COL_NOTES, COL_UPDBY, COL_VAR, COL_WINDOW, COL_NEXT, COL_FLAG]
+    _head(up, 4, HDR, [9, 9, 15, 20, 26, 11, 26, 22, 46, 15, 11, 11, 7, 7,
                        14, 8, 11, 11, 34, 12, 9, 13, 14, 15])
+    # Column letters by NAME. Every formula below reads through this, so a
+    # column can be added or moved without hunting $N and $U through a hundred
+    # lines and getting one of them wrong — which is exactly what adding
+    # "Sub Area" would otherwise have cost.
+    C = {h: CL(i) for i, h in enumerate(HDR, start=1)}
+    LASTCOL = CL(len(HDR))
     HR = 4
+    N = {h: i for i, h in enumerate(HDR, start=1)}      # name -> column NUMBER
+
+    # One colour per phase, so the divisions are visible at a glance without a
+    # header row. Header rows were the obvious answer and the wrong one: the
+    # Update sheet is an Excel Table with a filter on it, and a row that holds
+    # no activity either breaks the filter or vanishes under it. A colour
+    # belongs to the row, so it survives every filter and sort the field
+    # applies. Assigned in WBS order, so Phase 1 is always the first colour.
+    phase_order, seen_ph = [], set()
+    for rec in ROWS:
+        if rec['phase'] not in seen_ph:
+            seen_ph.add(rec['phase'])
+            phase_order.append(rec['phase'])
+    phase_bg = {ph: PHASE_BANDS[i % len(PHASE_BANDS)]
+                for i, ph in enumerate(phase_order)}
+
     for i, rec in enumerate(ROWS):
         r = HR + 1 + i
-        base = [rec['project'], leads.get(rec['project'], ''), rec['phase'], rec['area'],
-                rec['room'], rec['work_type'], rec['activity_id'], rec['name']]
-        for j, v in enumerate(base, start=1):
-            c = up.cell(row=r, column=j, value=v)
+        base = [('Project', rec['project']),
+                ('Lead', leads.get(rec['project'], '')),
+                ('Phase', rec['phase']),
+                ('Area', rec['area']),
+                ('Sub Area', rec['sub_area']),
+                ('Room', rec['room']),
+                ('Task', rec['work_type']),
+                ('Activity ID', rec['activity_id']),
+                ('Activity Name', rec['name'])]
+        for key, v in base:
+            c = up.cell(row=r, column=N[key], value=v)
             c.font = _f(9); c.border = BOX
-            c.alignment = CTR if j in (1, 2, 5) else LEFT
+            c.alignment = CTR if key in ('Project', 'Lead', 'Room') else LEFT
+        # The phase band, on the columns that say where the row belongs.
+        band = phase_bg.get(rec['phase'])
+        if band:
+            for key in ('Project', 'Lead', 'Phase', 'Area', 'Sub Area'):
+                up.cell(row=r, column=N[key]).fill = _fill(band)
+
         # "By" is an ENTRY cell seeded from the **WBO tag in the name.
-        c = up.cell(row=r, column=9, value=rec['by'])
+        c = up.cell(row=r, column=N['By'], value=rec['by'])
         c.fill = _fill(ENTRY); c.border = BOX; c.font = _f(9); c.alignment = CTR
         c.protection = Protection(locked=False)
-        for j, v in ((10, _date(rec['bl_start'])), (11, _date(rec['bl_finish']))):
-            c = up.cell(row=r, column=j, value=v)
+        for key, v in (('BL Start', _date(rec['bl_start'])),
+                       ('BL Finish', _date(rec['bl_finish']))):
+            c = up.cell(row=r, column=N[key], value=v)
             c.number_format = 'mm/dd/yy'; c.font = _f(9); c.border = BOX; c.alignment = CTR
-        for j, v in ((12, rec['days']), (13, rec['crew'])):
-            c = up.cell(row=r, column=j)
-            if j == 13 and v not in ('', None):
+        for key, v in (('Days', rec['days']), ('Crew', rec['crew'])):
+            if key == 'Crew' and v not in ('', None):
                 try:
                     v = int(v)
                 except (TypeError, ValueError):
                     pass
-            c.value = v; c.font = _f(9); c.border = BOX; c.alignment = CTR
+            c = up.cell(row=r, column=N[key], value=v)
+            c.font = _f(9); c.border = BOX; c.alignment = CTR
         st = {'Completed': 'Complete', 'In Progress': 'In Progress'}.get(rec['status'], 'Not Started')
-        seed = [st, (rec['pct'] or (1.0 if st == 'Complete' else 0.0)),
-                _date(rec['act_start']), _date(rec['act_finish']), None, None]
-        for j, v in zip(range(14, 20), seed):
-            c = up.cell(row=r, column=j, value=v)
+        for key, v in (('Status', st),
+                       ('% Comp', rec['pct'] or (1.0 if st == 'Complete' else 0.0)),
+                       ('Act Start', _date(rec['act_start'])),
+                       ('Act Finish', _date(rec['act_finish'])),
+                       ('Notes', None), ('Updated By', None)):
+            c = up.cell(row=r, column=N[key], value=v)
             c.fill = _fill(ENTRY); c.border = BOX; c.font = _f(9)
             c.protection = Protection(locked=False)
-            if j == 15:
+            if key == '% Comp':
                 c.number_format = '0%'; c.alignment = CTR
-            elif j in (16, 17):
+            elif key in ('Act Start', 'Act Finish'):
                 c.number_format = 'mm/dd/yy'; c.alignment = CTR
             else:
-                c.alignment = CTR if j == 14 else LEFT
-        up.cell(row=r, column=20,
-                value=f'=IF(AND($Q{r}<>"",$K{r}<>""),$Q{r}-$K{r},'
-                      f'IF(AND($N{r}<>"Complete",$K{r}<>"",StatusDate>$K{r}),StatusDate-$K{r},""))')
-        up.cell(row=r, column=21,
-                value=f'=IF($N{r}="Complete","Complete",IF($K{r}="","No dates",'
-                      f'IF($K{r}<StatusDate,"OVERDUE",IF($J{r}<=StatusDate+7,"This Week",'
-                      f'IF($J{r}<=StatusDate+14,"2-Week",'
-                      f'IF($J{r}<=StatusDate+LookaheadWeeks*7,"Lookahead","Later"))))))')
-        # What this row wants doing, worked out rather than typed. It used to
-        # be headed "Flag", which read as something to click and was blank on
-        # most rows — a column that shows nothing is worse than no column, so
-        # every row now lands somewhere and the name says it is a suggestion.
-        up.cell(row=r, column=22,
-                value=f'=IF($N{r}="Complete","Done",'
-                      f'IF($U{r}="OVERDUE","Behind",'
-                      f'IF(AND($N{r}="In Progress",$O{r}>0),"Running",'
-                      f'IF($N{r}="On Hold","On hold",'
-                      f'IF($I{r}="{CREW_WBO}","By others",'
-                      f'IF($U{r}="This Week","Start now",'
-                      f'IF(AND($I{r}="{CREW_TBD}",OR($U{r}="2-Week",$U{r}="Lookahead")),"Needs a crew",'
-                      f'IF($U{r}="2-Week","Coming up",'
-                      f'IF($U{r}="Lookahead","In lookahead",'
-                      f'IF($U{r}="No dates","No dates","Later"))))))))))')
-        for j in (20, 21, 22):
-            c = up.cell(row=r, column=j); c.font = _f(9); c.border = BOX; c.alignment = CTR
-        up.cell(row=r, column=20).number_format = '+0;-0;;@'
+                c.alignment = CTR if key == 'Status' else LEFT
+
+        st_, pc, af, bf, bs, win, by = (C['Status'], C['% Comp'], C['Act Finish'],
+                                        C['BL Finish'], C['BL Start'], C['Window'],
+                                        C['By'])
+        up.cell(row=r, column=N['Var (d)'],
+                value=f'=IF(AND(${af}{r}<>"",${bf}{r}<>""),${af}{r}-${bf}{r},'
+                      f'IF(AND(${st_}{r}<>"Complete",${bf}{r}<>"",StatusDate>${bf}{r}),'
+                      f'StatusDate-${bf}{r},""))')
+        up.cell(row=r, column=N['Window'],
+                value=f'=IF(${st_}{r}="Complete","Complete",IF(${bf}{r}="","No dates",'
+                      f'IF(${bf}{r}<StatusDate,"OVERDUE",IF(${bs}{r}<=StatusDate+7,"This Week",'
+                      f'IF(${bs}{r}<=StatusDate+14,"2-Week",'
+                      f'IF(${bs}{r}<=StatusDate+LookaheadWeeks*7,"Lookahead","Later"))))))')
+        up.cell(row=r, column=N['Next Step'],
+                value=f'=IF(${st_}{r}="Complete","Done",'
+                      f'IF(${win}{r}="OVERDUE","Behind",'
+                      f'IF(AND(${st_}{r}="In Progress",${pc}{r}>0),"Running",'
+                      f'IF(${st_}{r}="On Hold","On hold",'
+                      f'IF(${by}{r}="{CREW_WBO}","By others",'
+                      f'IF(${win}{r}="This Week","Start now",'
+                      f'IF(AND(${by}{r}="{CREW_TBD}",OR(${win}{r}="2-Week",${win}{r}="Lookahead")),"Needs a crew",'
+                      f'IF(${win}{r}="2-Week","Coming up",'
+                      f'IF(${win}{r}="Lookahead","In lookahead",'
+                      f'IF(${win}{r}="No dates","No dates","Later"))))))))))')
+        for key in ('Var (d)', 'Window', 'Next Step'):
+            c = up.cell(row=r, column=N[key])
+            c.font = _f(9); c.border = BOX; c.alignment = CTR
+        up.cell(row=r, column=N['Var (d)']).number_format = '+0;-0;;@'
         # The flag the FIELD raises — the column that was being looked for.
-        # Yellow, unlocked, a dropdown that still takes typed text.
-        c = up.cell(row=r, column=23)
+        c = up.cell(row=r, column=N[COL_FLAG])
         c.fill = _fill(ENTRY); c.border = BOX; c.font = _f(9, True); c.alignment = CTR
         c.protection = Protection(locked=False)
 
     LAST = HR + len(ROWS)
-    up.freeze_panes = 'H5'
-    t = Table(displayName='UpdateTbl', ref=f'A{HR}:W{LAST}')
+    ST, BY, PC, FL, WN = (C['Status'], C['By'], C['% Comp'], C[COL_FLAG], C['Window'])
+    up.freeze_panes = f"{C['Activity ID']}5"
+    t = Table(displayName='UpdateTbl', ref=f'A{HR}:{LASTCOL}{LAST}')
     t.tableStyleInfo = TableStyleInfo(name='TableStyleLight1', showRowStripes=True)
     up.add_table(t)
 
     dv = DataValidation(type='list', formula1='"Not Started,In Progress,Complete,On Hold"',
                         allow_blank=True, showDropDown=False)
-    up.add_data_validation(dv); dv.add(f'N{HR+1}:N{LAST}')
+    up.add_data_validation(dv); dv.add(f'{ST}{HR+1}:{ST}{LAST}')
     # Suggests the three, still lets anyone type a subcontractor's name —
     # showErrorMessage off is what makes it a suggestion rather than a gate.
     dvby = DataValidation(type='list', formula1=_crew_options(own_crew), allow_blank=True,
                           showDropDown=False, showErrorMessage=False)
-    up.add_data_validation(dvby); dvby.add(f'I{HR+1}:I{LAST}')
+    up.add_data_validation(dvby); dvby.add(f'{BY}{HR+1}:{BY}{LAST}')
     dvp = DataValidation(type='decimal', operator='between', formula1=0, formula2=1,
                          allow_blank=True)
     dvp.error = 'Enter a percent between 0% and 100%'
-    up.add_data_validation(dvp); dvp.add(f'O{HR+1}:O{LAST}')
+    up.add_data_validation(dvp); dvp.add(f'{PC}{HR+1}:{PC}{LAST}')
     # The reasons work actually stops, in the words the field uses. Like the
     # By column this suggests rather than gates, so anything else can be typed.
     dvflag = DataValidation(type='list', formula1=f'"{",".join(FLAGS)}"',
@@ -463,22 +576,23 @@ def build_workbook(project, out_path: str, project_code: Optional[str] = None,
                      'or type your own, then filter the column to see them all.')
     dvflag.promptTitle = 'Flag this activity'
     dvflag.showInputMessage = True
-    up.add_data_validation(dvflag); dvflag.add(f'W{HR+1}:W{LAST}')
+    up.add_data_validation(dvflag); dvflag.add(f'{FL}{HR+1}:{FL}{LAST}')
 
-    BODY = f'A{HR+1}:W{LAST}'
+    BODY = f'A{HR+1}:{LASTCOL}{LAST}'
+    R1 = HR + 1
     # First rule wins in Excel, and a blocked row is the one you must not miss
     # — it goes ahead of Complete, which would otherwise paint over it.
-    _cf(up, BODY, f'$W{HR+1}="Blocked"', BAD_BG, BAD_TX, bold=True)
-    _cf(up, BODY, f'$N{HR+1}="Complete"', OK_BG, OK_TX)
-    _cf(up, BODY, f'AND($N{HR+1}<>"Complete",$I{HR+1}="{CREW_WBO}")', WBO_BG, WBO_TX, italic=True)
-    _cf(up, BODY, f'AND($N{HR+1}<>"Complete",$U{HR+1}="OVERDUE")', BAD_BG, BAD_TX, bold=True)
-    _cf(up, BODY, f'$N{HR+1}="In Progress"', WIP_BG, WIP_TX)
-    _cf(up, BODY, f'AND($N{HR+1}="Not Started",$U{HR+1}="This Week")', WARN_BG, WARN_TX)
-    _cf(up, BODY, f'$N{HR+1}="On Hold"', 'FFE0CC', '974706')
-    _cf(up, f'I{HR+1}:I{LAST}', f'$I{HR+1}="{CREW_TBD}"', TBD_BG, TBD_TX, bold=True)
+    _cf(up, BODY, f'${FL}{R1}="Blocked"', BAD_BG, BAD_TX, bold=True)
+    _cf(up, BODY, f'${ST}{R1}="Complete"', OK_BG, OK_TX)
+    _cf(up, BODY, f'AND(${ST}{R1}<>"Complete",${BY}{R1}="{CREW_WBO}")', WBO_BG, WBO_TX, italic=True)
+    _cf(up, BODY, f'AND(${ST}{R1}<>"Complete",${WN}{R1}="OVERDUE")', BAD_BG, BAD_TX, bold=True)
+    _cf(up, BODY, f'${ST}{R1}="In Progress"', WIP_BG, WIP_TX)
+    _cf(up, BODY, f'AND(${ST}{R1}="Not Started",${WN}{R1}="This Week")', WARN_BG, WARN_TX)
+    _cf(up, BODY, f'${ST}{R1}="On Hold"', 'FFE0CC', '974706')
+    _cf(up, f'{BY}{R1}:{BY}{LAST}', f'${BY}{R1}="{CREW_TBD}"', TBD_BG, TBD_TX, bold=True)
     # Any flag at all stands out in its own column, whatever was typed there.
-    _cf(up, f'W{HR+1}:W{LAST}', f'$W{HR+1}<>""', FLAG_BG, FLAG_TX, bold=True)
-    up.conditional_formatting.add(f'O{HR+1}:O{LAST}', DataBarRule(
+    _cf(up, f'{FL}{R1}:{FL}{LAST}', f'${FL}{R1}<>""', FLAG_BG, FLAG_TX, bold=True)
+    up.conditional_formatting.add(f'{PC}{R1}:{PC}{LAST}', DataBarRule(
         start_type='num', start_value=0, end_type='num', end_value=1, color=ACCENT))
     up.protection.sheet = True
     up.protection.autoFilter = False
@@ -486,7 +600,10 @@ def build_workbook(project, out_path: str, project_code: Optional[str] = None,
     up.protection.password = project_code.lower()
 
     U = 'Update!'
-    R = lambda col: f"{U}${col}${HR+1}:${col}${LAST}"
+    # A whole Update column, addressed by the NAME of that column. Reading
+    # through the same map the sheet was written with is what lets a column be
+    # added without every dashboard formula silently pointing one column left.
+    R = lambda name: (lambda col: f"{U}${col}${HR+1}:${col}${LAST}")(C[name])
 
     # ══════════════════════════════════════════════════════════ DASHBOARD ══
     db = wb.create_sheet('Dashboard')
@@ -503,22 +620,22 @@ def build_workbook(project, out_path: str, project_code: Optional[str] = None,
             seen.add(rec['phase']); phases.append(rec['phase'])
     for i, ph in enumerate(phases):
         r = 7 + i
-        q = f'{R("C")},$A{r}'
+        q = f'{R(COL_PHASE)},$A{r}'
         db.cell(row=r, column=1, value=ph)
         for j, fx in ((2, f'=COUNTIFS({q})'),
-                      (3, f'=COUNTIFS({q},{R("N")},"Complete")'),
-                      (4, f'=COUNTIFS({q},{R("N")},"In Progress")'),
-                      (5, f'=COUNTIFS({q},{R("N")},"Not Started")'),
-                      (6, f'=COUNTIFS({q},{R("I")},"{CREW_WBO}")'),
-                      (7, f'=IFERROR(AVERAGEIFS({R("O")},{q}),0)'),
-                      (8, f'=COUNTIFS({q},{R("U")},"OVERDUE")'),
-                      (9, f'=COUNTIFS({q},{R("U")},"This Week")'),
-                      (10, f'=COUNTIFS({q},{R("U")},"Lookahead")'),
-                      (11, f'=IFERROR(_xlfn.MINIFS({R("J")},{q}),"")'),
-                      (12, f'=IFERROR(_xlfn.MAXIFS({R("K")},{q}),"")'),
+                      (3, f'=COUNTIFS({q},{R(COL_STATUS)},"Complete")'),
+                      (4, f'=COUNTIFS({q},{R(COL_STATUS)},"In Progress")'),
+                      (5, f'=COUNTIFS({q},{R(COL_STATUS)},"Not Started")'),
+                      (6, f'=COUNTIFS({q},{R(COL_BY)},"{CREW_WBO}")'),
+                      (7, f'=IFERROR(AVERAGEIFS({R(COL_PCT)},{q}),0)'),
+                      (8, f'=COUNTIFS({q},{R(COL_WINDOW)},"OVERDUE")'),
+                      (9, f'=COUNTIFS({q},{R(COL_WINDOW)},"This Week")'),
+                      (10, f'=COUNTIFS({q},{R(COL_WINDOW)},"Lookahead")'),
+                      (11, f'=IFERROR(_xlfn.MINIFS({R(COL_BLSTART)},{q}),"")'),
+                      (12, f'=IFERROR(_xlfn.MAXIFS({R(COL_BLFINISH)},{q}),"")'),
                       # Flags raised by the field, so they are not typed into
                       # a column nobody reads. "<>" is COUNTIFS for non-blank.
-                      (13, f'=COUNTIFS({q},{R("W")},"<>")')):
+                      (13, f'=COUNTIFS({q},{R(COL_FLAG)},"<>")')):
             db.cell(row=r, column=j, value=fx)
         for j in range(1, 14):
             c = db.cell(row=r, column=j); c.border = BOX
@@ -529,12 +646,12 @@ def build_workbook(project, out_path: str, project_code: Optional[str] = None,
                 c.number_format = 'mm/dd/yy'
     rT = 7 + len(phases)
     db.cell(row=rT, column=1, value=f'ALL {project_code}')
-    for j, fx in ((2, f'=COUNTA({R("G")})'), (3, f'=COUNTIFS({R("N")},"Complete")'),
-                  (4, f'=COUNTIFS({R("N")},"In Progress")'), (5, f'=COUNTIFS({R("N")},"Not Started")'),
-                  (6, f'=COUNTIFS({R("I")},"{CREW_WBO}")'), (7, f'=IFERROR(AVERAGE({R("O")}),0)'),
-                  (8, f'=COUNTIFS({R("U")},"OVERDUE")'), (9, f'=COUNTIFS({R("U")},"This Week")'),
-                  (10, f'=COUNTIFS({R("U")},"Lookahead")'),
-                  (13, f'=COUNTIFS({R("W")},"<>")')):
+    for j, fx in ((2, f'=COUNTA({R(COL_ID)})'), (3, f'=COUNTIFS({R(COL_STATUS)},"Complete")'),
+                  (4, f'=COUNTIFS({R(COL_STATUS)},"In Progress")'), (5, f'=COUNTIFS({R(COL_STATUS)},"Not Started")'),
+                  (6, f'=COUNTIFS({R(COL_BY)},"{CREW_WBO}")'), (7, f'=IFERROR(AVERAGE({R(COL_PCT)}),0)'),
+                  (8, f'=COUNTIFS({R(COL_WINDOW)},"OVERDUE")'), (9, f'=COUNTIFS({R(COL_WINDOW)},"This Week")'),
+                  (10, f'=COUNTIFS({R(COL_WINDOW)},"Lookahead")'),
+                  (13, f'=COUNTIFS({R(COL_FLAG)},"<>")')):
         db.cell(row=rT, column=j, value=fx)
     for j in range(1, 14):
         c = db.cell(row=rT, column=j)
@@ -562,10 +679,10 @@ def build_workbook(project, out_path: str, project_code: Optional[str] = None,
         db.cell(row=r, column=2, value=aid)
         c = db.cell(row=r, column=3, value=_date(m['bl_finish'])); c.number_format = 'mm/dd/yy'
         db.cell(row=r, column=4,
-                value=f'=IFERROR(IF(INDEX({R("Q")},MATCH("{aid}",{R("G")},0))<>"",'
-                      f'INDEX({R("Q")},MATCH("{aid}",{R("G")},0)),$C{r}),$C{r})')
+                value=f'=IFERROR(IF(INDEX({R(COL_AFINISH)},MATCH("{aid}",{R(COL_ID)},0))<>"",'
+                      f'INDEX({R(COL_AFINISH)},MATCH("{aid}",{R(COL_ID)},0)),$C{r}),$C{r})')
         db.cell(row=r, column=5, value=f'=IFERROR($D{r}-$C{r},"")')
-        db.cell(row=r, column=6, value=f'=IFERROR(INDEX({R("N")},MATCH("{aid}",{R("G")},0)),"")')
+        db.cell(row=r, column=6, value=f'=IFERROR(INDEX({R(COL_STATUS)},MATCH("{aid}",{R(COL_ID)},0)),"")')
         key = 'Substantial Completion' in m['name'] or 'Certificate of Occupancy' in m['name']
         for j in range(1, 7):
             c = db.cell(row=r, column=j); c.border = BOX
@@ -592,47 +709,59 @@ def build_workbook(project, out_path: str, project_code: Optional[str] = None,
 
     # ══════════════════════════════════════════════════════════════ AREAS ══
     ar = wb.create_sheet('Areas')
-    _title(ar, 'Areas — folder level', 'One line per work area, in schedule order.', 12)
-    _head(ar, 4, ['Phase', 'Area', 'Activities', 'Complete', 'Running', 'Not Started',
-                  'By others', '% Complete', 'Overdue', 'Starts', 'Ends', 'Flag'],
-          [18, 32, 10, 10, 9, 11, 10, 12, 9, 11, 11, 14])
+    _title(ar, 'Areas — folder level',
+           'One line per work area, in the order the WBS unfolds — the same '
+           'order the app and P6 show it. Sub Area is everything below the '
+           'area, so CUP breaks out into its line-ups instead of reading as '
+           'one block of 280.', 13)
+    _head(ar, 4, ['Phase', 'Area', 'Sub Area', 'Activities', 'Complete', 'Running',
+                  'Not Started', 'By others', '% Complete', 'Overdue', 'Starts',
+                  'Ends', 'Flag'],
+          [18, 24, 30, 10, 10, 9, 11, 10, 12, 9, 11, 11, 14])
     areas, seen = [], set()
     for rec in ROWS:
-        k = (rec['phase'], rec['area'])
+        k = (rec['phase'], rec['area'], rec['sub_area'])
         if k not in seen:
             seen.add(k); areas.append(k)
-    for i, (ph, a) in enumerate(areas):
+    for i, (ph, a, sub) in enumerate(areas):
         r = 5 + i
-        q = f'{R("C")},$A{r},{R("D")},$B{r}'
+        q = (f'{R(COL_PHASE)},$A{r},{R(COL_AREA)},$B{r},'
+             f'{R(COL_SUBAREA)},$C{r}')
         ar.cell(row=r, column=1, value=ph)
         ar.cell(row=r, column=2, value=a)
-        for j, fx in ((3, f'=COUNTIFS({q})'),
-                      (4, f'=COUNTIFS({q},{R("N")},"Complete")'),
-                      (5, f'=COUNTIFS({q},{R("N")},"In Progress")'),
-                      (6, f'=COUNTIFS({q},{R("N")},"Not Started")'),
-                      (7, f'=COUNTIFS({q},{R("I")},"{CREW_WBO}")'),
-                      (8, f'=IFERROR(AVERAGEIFS({R("O")},{q}),0)'),
-                      (9, f'=COUNTIFS({q},{R("U")},"OVERDUE")'),
-                      (10, f'=IFERROR(_xlfn.MINIFS({R("J")},{q}),"")'),
-                      (11, f'=IFERROR(_xlfn.MAXIFS({R("K")},{q}),"")'),
-                      (12, f'=IF($C{r}=0,"",IF($D{r}=$C{r},"COMPLETE",'
-                           f'IF($I{r}>0,"BEHIND",IF($E{r}>0,"Running",'
-                           f'IF($D{r}>0,"Part done","Not started")))))')):
+        ar.cell(row=r, column=3, value=sub)
+        # The same phase colour the Update sheet uses, so the two read as one
+        # document and a phase is recognisable without reading its name.
+        band = phase_bg.get(ph)
+        for j, fx in ((4, f'=COUNTIFS({q})'),
+                      (5, f'=COUNTIFS({q},{R(COL_STATUS)},"Complete")'),
+                      (6, f'=COUNTIFS({q},{R(COL_STATUS)},"In Progress")'),
+                      (7, f'=COUNTIFS({q},{R(COL_STATUS)},"Not Started")'),
+                      (8, f'=COUNTIFS({q},{R(COL_BY)},"{CREW_WBO}")'),
+                      (9, f'=IFERROR(AVERAGEIFS({R(COL_PCT)},{q}),0)'),
+                      (10, f'=COUNTIFS({q},{R(COL_WINDOW)},"OVERDUE")'),
+                      (11, f'=IFERROR(_xlfn.MINIFS({R(COL_BLSTART)},{q}),"")'),
+                      (12, f'=IFERROR(_xlfn.MAXIFS({R(COL_BLFINISH)},{q}),"")'),
+                      (13, f'=IF($D{r}=0,"",IF($E{r}=$D{r},"COMPLETE",'
+                           f'IF($J{r}>0,"BEHIND",IF($F{r}>0,"Running",'
+                           f'IF($E{r}>0,"Part done","Not started")))))')):
             ar.cell(row=r, column=j, value=fx)
-        for j in range(1, 13):
+        for j in range(1, 14):
             c = ar.cell(row=r, column=j); c.border = BOX
-            c.font = _f(9, j == 2); c.alignment = LEFT if j in (1, 2) else CTR
-            if j == 8:
+            if band and j <= 3:
+                c.fill = _fill(band)
+            c.font = _f(9, j == 2); c.alignment = LEFT if j <= 3 else CTR
+            if j == 9:
                 c.number_format = '0%'
-            if j in (10, 11):
+            if j in (11, 12):
                 c.number_format = 'mm/dd/yy'
     ALAST = 4 + len(areas)
-    ar.freeze_panes = 'C5'
-    ar.auto_filter.ref = f'A4:L{ALAST}'
+    ar.freeze_panes = 'D5'
+    ar.auto_filter.ref = f'A4:M{ALAST}'
     for flag, bg, tx, bold in (('COMPLETE', OK_BG, OK_TX, False), ('BEHIND', BAD_BG, BAD_TX, True),
                                ('Running', WIP_BG, WIP_TX, False), ('Part done', 'DEEBF7', WIP_TX, False)):
-        _cf(ar, f'A5:L{ALAST}', f'$L5="{flag}"', bg, tx, bold=bold)
-    ar.conditional_formatting.add(f'H5:H{ALAST}', DataBarRule(
+        _cf(ar, f'D5:M{ALAST}', f'$M5="{flag}"', bg, tx, bold=bold)
+    ar.conditional_formatting.add(f'I5:I{ALAST}', DataBarRule(
         start_type='num', start_value=0, end_type='num', end_value=1, color=ACCENT))
     ar.protection.sheet = True
     ar.protection.autoFilter = False
@@ -679,13 +808,13 @@ def build_workbook(project, out_path: str, project_code: Optional[str] = None,
             idc = cp.cell(row=r, column=2,
                           value=(seed[k]['activity_id'] if k < len(seed) else None))
             idc.fill = _fill(ENTRY); idc.font = _f(9); idc.protection = Protection(locked=False)
-            cp.cell(row=r, column=3, value=f'=IFERROR(INDEX({R("H")},MATCH($B{r},{R("G")},0)),"")')
-            cp.cell(row=r, column=4, value=f'=IFERROR(INDEX({R("L")},MATCH($B{r},{R("G")},0)),"")')
+            cp.cell(row=r, column=3, value=f'=IFERROR(INDEX({R(COL_NAME)},MATCH($B{r},{R(COL_ID)},0)),"")')
+            cp.cell(row=r, column=4, value=f'=IFERROR(INDEX({R(COL_DAYS)},MATCH($B{r},{R(COL_ID)},0)),"")')
             if k == 0:
                 cp.cell(row=r, column=5,
-                        value=f'=IFERROR(IF(INDEX({R("P")},MATCH($B{r},{R("G")},0))<>"",'
-                              f'INDEX({R("P")},MATCH($B{r},{R("G")},0)),'
-                              f'INDEX({R("J")},MATCH($B{r},{R("G")},0))),"")')
+                        value=f'=IFERROR(IF(INDEX({R(COL_ASTART)},MATCH($B{r},{R(COL_ID)},0))<>"",'
+                              f'INDEX({R(COL_ASTART)},MATCH($B{r},{R(COL_ID)},0)),'
+                              f'INDEX({R(COL_BLSTART)},MATCH($B{r},{R(COL_ID)},0))),"")')
             else:
                 # Next working day on a 6-day week: +1, and +1 again only if
                 # that lands on a Sunday (WEEKDAY(...,2)=7).
@@ -696,13 +825,13 @@ def build_workbook(project, out_path: str, project_code: Optional[str] = None,
                     # Add the remaining duration across a 6-day week. Every 6
                     # working days from the start weekday crosses one Sunday, so
                     # INT((weekday-1+n)/6) is exactly the number to skip.
-                    value=f'=IF($B{r}="","",IFERROR(IF(INDEX({R("Q")},MATCH($B{r},{R("G")},0))<>"",'
-                          f'INDEX({R("Q")},MATCH($B{r},{R("G")},0)),'
+                    value=f'=IF($B{r}="","",IFERROR(IF(INDEX({R(COL_AFINISH)},MATCH($B{r},{R(COL_ID)},0))<>"",'
+                          f'INDEX({R(COL_AFINISH)},MATCH($B{r},{R(COL_ID)},0)),'
                           f'$E{r}+MAX(0,ROUND($D{r}*(1-$I{r}),0))'
                           f'+INT((WEEKDAY($E{r},2)-1+MAX(0,ROUND($D{r}*(1-$I{r}),0)))/6)),""))')
-            cp.cell(row=r, column=7, value=f'=IFERROR(INDEX({R("K")},MATCH($B{r},{R("G")},0)),"")')
+            cp.cell(row=r, column=7, value=f'=IFERROR(INDEX({R(COL_BLFINISH)},MATCH($B{r},{R(COL_ID)},0)),"")')
             cp.cell(row=r, column=8, value=f'=IF($B{r}="","",IFERROR($F{r}-$G{r},""))')
-            cp.cell(row=r, column=9, value=f'=IFERROR(INDEX({R("O")},MATCH($B{r},{R("G")},0)),0)')
+            cp.cell(row=r, column=9, value=f'=IFERROR(INDEX({R(COL_PCT)},MATCH($B{r},{R(COL_ID)},0)),0)')
             n = cp.cell(row=r, column=10)
             n.fill = _fill(ENTRY); n.protection = Protection(locked=False)
             for j in range(1, 11):
@@ -733,30 +862,35 @@ def build_workbook(project, out_path: str, project_code: Optional[str] = None,
     # ══════════════════════════════════════════════════════════════ NOTES ══
     nt = wb.create_sheet('Notes')
     _title(nt, 'Notes — by area', 'Longer than fits on an activity line. Yellow columns are yours.', 7)
-    _head(nt, 4, ['Project', 'Phase', 'Area', 'Note / issue', 'Raised by', 'Date', 'Status'],
-          [10, 18, 30, 74, 14, 12, 10])
-    for i, (ph, a) in enumerate(areas):
+    _head(nt, 4, ['Project', 'Phase', 'Area', 'Sub Area', 'Note / issue',
+                  'Raised by', 'Date', 'Status'],
+          [10, 18, 24, 28, 66, 14, 12, 10])
+    for i, (ph, a, sub) in enumerate(areas):
         r = 5 + i
         nt.cell(row=r, column=1, value=project_code)
         nt.cell(row=r, column=2, value=ph)
         nt.cell(row=r, column=3, value=a)
-        for j in (4, 5, 6, 7):
+        nt.cell(row=r, column=4, value=sub)
+        band = phase_bg.get(ph)
+        for j in (5, 6, 7, 8):
             c = nt.cell(row=r, column=j)
             c.fill = _fill(ENTRY); c.protection = Protection(locked=False)
-            if j == 6:
+            if j == 7:
                 c.number_format = 'mm/dd/yy'
-        for j in range(1, 8):
+        for j in range(1, 9):
             c = nt.cell(row=r, column=j); c.border = BOX; c.font = _f(9, j == 3)
-            c.alignment = WRAP if j == 4 else (LEFT if j in (2, 3) else CTR)
+            c.alignment = WRAP if j == 5 else (LEFT if j in (2, 3, 4) else CTR)
+            if band and j <= 4:
+                c.fill = _fill(band)
         nt.row_dimensions[r].height = 22
     NLAST = 4 + len(areas)
     dvn = DataValidation(type='list', formula1='"Open,Watching,Closed"',
                          allow_blank=True, showDropDown=False, showErrorMessage=False)
-    nt.add_data_validation(dvn); dvn.add(f'G5:G{NLAST}')
-    _cf(nt, f'A5:G{NLAST}', '$G5="Closed"', NEW_BG, MUTE, italic=True)
-    _cf(nt, f'A5:G{NLAST}', 'AND($D5<>"",$G5<>"Closed")', WARN_BG, WARN_TX)
-    nt.freeze_panes = 'D5'
-    nt.auto_filter.ref = f'A4:G{NLAST}'
+    nt.add_data_validation(dvn); dvn.add(f'H5:H{NLAST}')
+    _cf(nt, f'A5:H{NLAST}', '$H5="Closed"', NEW_BG, MUTE, italic=True)
+    _cf(nt, f'A5:H{NLAST}', 'AND($E5<>"",$H5<>"Closed")', WARN_BG, WARN_TX)
+    nt.freeze_panes = 'E5'
+    nt.auto_filter.ref = f'A4:H{NLAST}'
     nt.protection.sheet = True
     nt.protection.autoFilter = False
     nt.protection.password = project_code.lower()
