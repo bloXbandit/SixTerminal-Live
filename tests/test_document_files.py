@@ -165,3 +165,64 @@ def test_a_document_from_before_this_feature_loads_without_it():
                      "lines": ["a"], "places": ["1"], "line_count": 1}]}
     back = Library.from_json(old)
     assert back is not None and back.docs[0].has_file is False
+
+
+# ── every path that files a document keeps the file ──────────────────────────
+
+def test_a_pdf_dropped_in_the_chat_keeps_the_file_not_only_the_reading(app, monkeypatch):
+    """
+    A chat drop classifies a PDF as a drawing sheet and reads it with vision.
+    That is fine — but the reading is a summary and a dozen facts, and the
+    drawing is the drawing. Throwing the original away put the document in the
+    library with Download greyed out, which is the worst of both: it looks
+    filed and it is gone.
+    """
+    import io
+
+    from interpreter import vision as _vision
+
+    monkeypatch.setattr(_vision, "classify_image_intent", lambda *a, **k: "drawing")
+    monkeypatch.setattr(_vision, "read_drawing", lambda *a, **k: {
+        "sheet_number": "E-101", "sheet_title": "Power Plan",
+        "discipline": "electrical", "summary": "Gen room power",
+        "facts": ["Gen 315 feeds MV 101"], "directives": []})
+
+    blob = b"%PDF-1.4 not really a pdf but never parsed here"
+    r = app.post(
+        "/api/brain/image",
+        data={"file": (io.BytesIO(blob), "E-101.pdf")},
+        content_type="multipart/form-data")
+    assert r.status_code == 200, r.get_data(as_text=True)[:200]
+
+    docs = app.get("/api/documents").get_json()["documents"]
+    assert len(docs) == 1
+    assert docs[0]["has_file"] is True, "the sheet was read and then discarded"
+
+    back = app.get(f"/api/documents/{docs[0]['id']}/file")
+    assert back.status_code == 200 and back.data == blob
+
+
+def test_a_scope_pdf_keeps_its_file_too(app, monkeypatch):
+    """The extraction is lossy wherever it happens, so the rule is the same."""
+    import io
+
+    from engine import scope_graph as _sg
+
+    # A real ScopeGraph, not a stand-in — a hand-rolled stub only tracks the
+    # interface until the endpoint reaches for the next method on it.
+    from engine.scope_graph import ScopeGraph, ScopeNode
+    g = ScopeGraph()
+    g.nodes = {"conduit": ScopeNode(system="conduit", stage="rough_in",
+                                    phase="Phase 1")}
+    g.classified = 1
+    monkeypatch.setattr(_sg, "read_and_build", lambda b, n: (
+        g, {"line_count": 10, "pages": 2, "lines": [], "sheets": [],
+            "method": "text-layer"}))
+
+    blob = b"%PDF-1.4 scope"
+    r = app.post(
+        "/api/scope", data={"file": (io.BytesIO(blob), "scope.pdf")},
+        content_type="multipart/form-data")
+    assert r.status_code == 200, r.get_data(as_text=True)[:200]
+    docs = app.get("/api/documents").get_json()["documents"]
+    assert docs[0]["has_file"] is True

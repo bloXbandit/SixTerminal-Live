@@ -2435,7 +2435,11 @@ def scope_upload():
     brain = _brain_for(project)
     brain.scope = graph
     from engine import doc_library as _dl
-    brain.docs().add_text(name, _dl.PDF, report)
+    _doc = brain.docs().add_text(name, _dl.PDF, report)
+    # Same reason as everywhere else a file is filed: the extraction is lossy
+    # and "show me that scope again" should have an answer.
+    _keep_document_file(_active_id[0], _doc, blob, name,
+                        f.mimetype or _mimetype_of(name))
     _mark_dirty(_active_id[0])
 
     systems = graph.systems()
@@ -2548,6 +2552,12 @@ def _local_doc_path(pid: str, doc_id: str, ext: str = "") -> Path:
     d = _DOC_DIR / (pid or "_")
     d.mkdir(parents=True, exist_ok=True)
     return d / f"{doc_id}{ext}"
+
+
+def _mimetype_of(filename: str) -> str:
+    """Best guess from the name — only ever a hint for the stored object."""
+    import mimetypes
+    return mimetypes.guess_type(filename or "")[0] or ""
 
 
 def _keep_document_file(pid, doc, blob, filename, content_type=""):
@@ -3180,9 +3190,15 @@ def brain_image():
     # sheet you sent about MV 105", not enough to pretend it can be searched
     # like a text document.
     from engine import doc_library as _dl
-    _brain_for(sess["project"]).docs().add_image(
+    _doc = _brain_for(sess["project"]).docs().add_image(
         reading.get("sheet_number") or reading.get("sheet_title") or filename,
         reading.get("summary", ""), reading.get("facts") or [])
+    # Keep the sheet itself, not only what a model made of it. A reading is a
+    # summary and a dozen facts; the drawing is the drawing. Discarding it
+    # meant a PDF dropped in the chat showed up in the library with Download
+    # greyed out, which is the worst of both — it looks filed and it is gone.
+    _keep_document_file(_active_id[0], _doc, blob, filename,
+                        _mimetype_of(filename))
     _mark_dirty(_active_id[0])
     _append_chat("user", f"[uploaded drawing: {filename}]"
                          + (f" — {question}" if question else ""))
