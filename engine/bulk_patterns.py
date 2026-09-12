@@ -365,4 +365,151 @@ def describe(result: Dict[str, Any], limit: int = 12) -> str:
                 lines.append(f"  …and {len(ag) - limit} more")
         return "\n".join([head] + lines)
 
+    if result.get("action") == "align_child_tokens":
+        n, rt = result["renamed"], result["retagged_activities"]
+        if not n:
+            head = "Nothing to align — every sub-folder already carries its parent's number."
+        else:
+            head = (f"{'Renamed' if result['applied'] else 'Would rename'} {n} "
+                    f"sub-folder{'' if n == 1 else 's'} to match their parent"
+                    + (f", and {'retagged' if result['applied'] else 'retag'} "
+                       f"{rt} activit{'y' if rt == 1 else 'ies'} inside them"
+                       if rt else "") + ".")
+        lines = [f"  under {c['parent']}:  {c['from']}  ->  {c['to']}"
+                 for c in result["changes"][:limit]]
+        if n > limit:
+            lines.append(f"  …and {n - limit} more")
+        if result["wrong_kind"]:
+            lines.append("")
+            lines.append("Left alone — these carry a different kind of tag from "
+                         "their parent, which reads as a folder in the wrong "
+                         "place rather than one with the wrong number:")
+            lines += [f"  {e['path']}" for e in result["wrong_kind"][:limit]]
+        return "\n".join([head] + lines)
+
     return ""
+
+
+# ── 3. make a sub-folder's number agree with its parent's ────────────────────
+
+# "Gen 326", "ER 208", "MV 101", "Gen 318- JER" — a word or two and a number,
+# however it was spaced. Generic enough to find a room tag without being told
+# which kind, and the kind is then checked so it never rewrites one as another.
+DEFAULT_TOKEN = r"\b[A-Za-z]{2,5}\s*-?\s*\d{2,4}\b"
+
+
+def _kind_of(token: str) -> str:
+    """The non-numeric half of a tag, normalised: "Gen 318- " -> "gen"."""
+    return re.sub(r"[^a-z]", "", (token or "").lower())
+
+
+def align_child_tokens(project: Project,
+                       token_pattern: str = DEFAULT_TOKEN,
+                       under: Optional[WBSNode] = None,
+                       folder_pattern: Optional[str] = None,
+                       retag_activities: bool = True,
+                       activity_template: str = "{name} ({token})",
+                       apply: bool = False) -> Dict[str, Any]:
+    """
+    Make every sub-folder carry its PARENT's number.
+
+    "Gen 326 has a Gen 315 - JER and a Gen 315 - WBO under it; flip the 315s to
+    326 so they all match." The subject schedule has 30 of these — a Gen 301
+    room holding a "Gen 326- JER", a Gen 324 holding a "Gen 315 - JER" — which
+    is why an activity in one room ends up labelled with another's number.
+
+    Only the matched token is replaced, so everything else in the name
+    survives: "Gen 318- JER" under "Gen 306" becomes "Gen 306- JER", odd
+    spacing and trade suffix intact.
+
+    Two things it will not do:
+
+      It will not rewrite one KIND of tag as another. An "MV 101" sitting
+      under an "ER 208" is a folder in the wrong place, not a folder with the
+      wrong number, and renaming it would bury that rather than show it — so
+      it is reported instead.
+
+      It will not touch a sub-folder carrying no tag at all. "Rough-Ins" under
+      "Gen 326" is a stage, not a mis-numbered room.
+
+    Folders are walked parents-first, so a corrected folder passes its number
+    on to its own children in the same run.
+
+    retag_activities also brings the activity names inside the renamed folders
+    in line, which is the other half of "so all match" — renaming the folder
+    alone leaves every activity still reading the old number.
+    """
+    rx = re.compile(token_pattern, re.I)
+    by_uid = {w.uid: w for w in project.wbs_nodes}
+    kids = _children(project)
+    scope = {w.uid for w in _folders(project, folder_pattern, under)}
+
+    # Parents first: a folder fixed on this pass must hand its new number down
+    # to its own children in the same run, not the one it arrived with.
+    order: List[WBSNode] = []
+    stack = [w for w in project.wbs_nodes if w.parent_uid not in by_uid]
+    seen = {w.uid for w in stack}
+    while stack:
+        cur = stack.pop(0)
+        order.append(cur)
+        for c in kids.get(cur.uid, []):
+            if c.uid not in seen:
+                seen.add(c.uid)
+                stack.append(c)
+
+    renamed: List[Dict[str, str]] = []
+    wrong_kind: List[Dict[str, str]] = []
+    for w in order:
+        par = by_uid.get(w.parent_uid)
+        if par is None or w.uid not in scope:
+            continue
+        mp, mc = rx.search(par.name or ""), rx.search(w.name or "")
+        if not mp or not mc:
+            continue
+        p_tok, c_tok = mp.group(0), mc.group(0)
+        if _kind_of(p_tok) != _kind_of(c_tok):
+            wrong_kind.append({"folder": w.name, "parent": par.name,
+                               "path": _path(project, w),
+                               "why": "a different kind of tag, so this looks "
+                                      "like a folder in the wrong place rather "
+                                      "than one with the wrong number"})
+            continue
+        if p_tok.strip() == c_tok.strip():
+            continue
+        new = w.name[:mc.start()] + p_tok.strip() + w.name[mc.end():]
+        if new == w.name:
+            continue
+        renamed.append({"from": w.name, "to": new, "parent": par.name,
+                        "path": _path(project, w), "uid": w.uid})
+        if apply:
+            w.name = new
+
+    # Renaming the folder alone leaves every activity inside still reading the
+    # old number, which is half a job and looks like the tool failed.
+    retagged = 0
+    if retag_activities and renamed:
+        for entry in renamed:
+            node = by_uid.get(entry["uid"])
+            if node is None:
+                continue
+            m = rx.search(entry["to"])
+            if not m:
+                continue
+            token = m.group(0).strip()
+            for a in _acts_in(project, node, True):
+                base = _TRAILING_TAG.sub("", a.name or "").strip()
+                new = activity_template.format(name=base, token=token,
+                                               folder=entry["to"])
+                if new != (a.name or ""):
+                    retagged += 1
+                    if apply:
+                        a.name = new
+
+    return {
+        "action": "align_child_tokens",
+        "applied": bool(apply),
+        "renamed": len(renamed),
+        "retagged_activities": retagged,
+        "changes": renamed,
+        "wrong_kind": wrong_kind,
+    }

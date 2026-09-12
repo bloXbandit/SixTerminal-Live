@@ -18,7 +18,7 @@ Supported actions (must match edit_engine.py):
   recommend_logic, update_udf, bulk_rules, normalize_activity_ids,
   read_document,
   update_labor_units, bulk_clear_constraints, bulk_append_name
-  tag_by_folder, group_into_subfolder  (per-folder pattern edits)
+  tag_by_folder, group_into_subfolder, align_child_tokens  (per-folder pattern edits)
 
 Supported models: claude, gpt-4.1-mini, gpt-4.1-nano, gpt-5.4-mini
 """
@@ -1314,6 +1314,24 @@ tag_by_folder:
   - replace_existing (default true): an activity already ending in "(...)" has
     that CORRECTED, not a second tag appended — this is how a wrong room tag
     gets fixed. A folder whose token cannot be read is reported, never guessed.
+
+align_child_tokens  (aliases: match_subfolders_to_parent):
+  Make every sub-folder carry its PARENT's number, and bring the activity names
+  inside along with it. Use this for "match my sub folder numbers to the
+  parent" / "the room numbers under Gen 326 say 315, fix them". One command,
+  every folder. PREVIEWS BY DEFAULT; re-send with "apply": true.
+  {"action": "align_child_tokens"}
+  {"action": "align_child_tokens", "under_wbs": "Generator Rooms", "apply": true}
+  - token_pattern: what a room tag looks like. The default finds "Gen 326",
+    "ER 208", "MV 101" however they are spaced — usually leave it alone.
+  - retag_activities (default true): also rewrite the activity names inside,
+    since renaming the folder alone leaves every activity reading the old number.
+  - under_wbs / folder_pattern: limit the scope.
+  Only the matched token is replaced, so "Gen 318- JER" under "Gen 306" becomes
+  "Gen 306- JER" with its spacing and trade suffix intact. A sub-folder whose
+  tag is a DIFFERENT KIND from its parent — an "MV 101" under an "ER 208" — is
+  reported and left alone, because that reads as a folder in the wrong place
+  rather than one with the wrong number. Read that list back to the user.
 
 group_into_subfolder:
   For every folder holding work that matches, make ONE sub-folder and move that

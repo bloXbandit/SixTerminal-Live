@@ -291,3 +291,130 @@ def test_an_ambiguous_scope_is_still_refused():
     ok, msg = apply_command(p, {"action": "tag_by_folder", "folder_pattern": GEN,
                                 "under_wbs": "Rooms"})
     assert not ok and "matches 2 folders" in msg
+
+
+# ── making a sub-folder carry its parent's number ────────────────────────────
+#
+# "Gen 326 has a Gen 315 - JER and a Gen 315 - WBO under it; flip the 315s to
+# 326 so they all match." The subject schedule had 30 of these, which is how an
+# activity in one room ends up labelled with another room's number.
+
+from engine.bulk_patterns import align_child_tokens
+
+
+def _rooms(*pairs):
+    """pairs: (parent name, [child names]) — the Gen-room shape."""
+    p = Project(uid="p", name="Job", id="J1", data_date="2026-01-05")
+    p.calendars = [Calendar(uid="1", name="Standard")]
+    p.wbs_nodes = [WBSNode(uid="root", name="Job", code="J"),
+                   WBSNode(uid="gens", name="Generator Rooms", code="GR",
+                           parent_uid="root")]
+    p.activities, p.relations = [], []
+    n = 0
+    for i, (parent, children) in enumerate(pairs):
+        pu = f"p{i}"
+        p.wbs_nodes.append(WBSNode(uid=pu, name=parent, code=f"P{i}",
+                                   parent_uid="gens"))
+        for j, ch in enumerate(children):
+            cu = f"{pu}c{j}"
+            p.wbs_nodes.append(WBSNode(uid=cu, name=ch, code=f"C{i}{j}",
+                                       parent_uid=pu))
+            n += 1
+            p.activities.append(Activity(
+                uid=f"u{n}", activity_id=f"A{n}0",
+                name=f"Install High Steel ({ch.split(' -')[0].strip()})",
+                wbs_uid=cu, calendar_uid="1", planned_duration=40))
+    p.build_lookups()
+    return p
+
+
+def _names(p):
+    return {w.name for w in p.wbs_nodes}
+
+
+def test_a_sub_folder_takes_its_parents_number():
+    p = _rooms(("Gen 326", ["Gen 315 - JER", "Gen 315 - WBO"]))
+    align_child_tokens(p, apply=True)
+    assert "Gen 326 - JER" in _names(p) and "Gen 326 - WBO" in _names(p)
+    assert "Gen 315 - JER" not in _names(p)
+
+
+def test_only_the_number_changes_and_the_rest_of_the_name_survives():
+    """"Gen 318- JER" has no space before the dash. Rebuilding the name from
+    a template would tidy that away and change something nobody asked about."""
+    p = _rooms(("Gen 306", ["Gen 318- JER"]))
+    align_child_tokens(p, apply=True)
+    assert "Gen 306- JER" in _names(p)
+
+
+def test_a_sub_folder_already_matching_is_left_alone():
+    p = _rooms(("Gen 326", ["Gen 326 - JER"]))
+    assert align_child_tokens(p, apply=True)["renamed"] == 0
+
+
+def test_running_it_twice_changes_nothing_the_second_time():
+    p = _rooms(("Gen 326", ["Gen 315 - JER"]))
+    align_child_tokens(p, apply=True)
+    assert align_child_tokens(p, apply=True)["renamed"] == 0
+
+
+def test_a_different_kind_of_tag_is_reported_not_rewritten():
+    """An "MV 101" under an "ER 208" is a folder in the wrong PLACE. Renaming
+    it to "ER 208" would bury that instead of showing it."""
+    p = _rooms(("ER 208", ["MV 101"]))
+    res = align_child_tokens(p, apply=True)
+    assert res["renamed"] == 0
+    assert res["wrong_kind"][0]["folder"] == "MV 101"
+    assert "MV 101" in _names(p)
+    assert "different kind of tag" in describe(res)
+
+
+def test_a_sub_folder_with_no_tag_at_all_is_untouched():
+    """"Rough-Ins" under "Gen 326" is a stage, not a mis-numbered room."""
+    p = _rooms(("Gen 326", ["Rough-Ins"]))
+    assert align_child_tokens(p, apply=True)["renamed"] == 0
+    assert "Rough-Ins" in _names(p)
+
+
+def test_the_activities_inside_are_brought_in_line_too():
+    """Renaming the folder alone leaves every activity still reading the old
+    number, which is half a job and looks like the tool failed."""
+    p = _rooms(("Gen 326", ["Gen 315 - JER"]))
+    align_child_tokens(p, apply=True)
+    assert _named(p, "A10") == "Install High Steel (Gen 326)"
+
+
+def test_the_activities_can_be_left_alone_if_asked():
+    p = _rooms(("Gen 326", ["Gen 315 - JER"]))
+    align_child_tokens(p, retag_activities=False, apply=True)
+    assert "Gen 326 - JER" in _names(p)
+    assert _named(p, "A10") == "Install High Steel (Gen 315)"
+
+
+def test_a_correction_passes_down_to_a_grandchild_in_the_same_run():
+    """Folders are walked parents-first, so a folder fixed on this pass hands
+    its NEW number down rather than the one it arrived with."""
+    p = _rooms(("Gen 326", ["Gen 315 - JER"]))
+    kid = next(w for w in p.wbs_nodes if w.name == "Gen 315 - JER")
+    p.wbs_nodes.append(WBSNode(uid="gc", name="Gen 301 - Trim", code="GC",
+                               parent_uid=kid.uid))
+    p.build_lookups()
+    align_child_tokens(p, apply=True)
+    assert "Gen 326 - Trim" in _names(p)
+
+
+def test_a_preview_changes_nothing():
+    p = _rooms(("Gen 326", ["Gen 315 - JER"]))
+    res = align_child_tokens(p)
+    assert res["renamed"] == 1 and not res["applied"]
+    assert "Gen 315 - JER" in _names(p)
+    assert _named(p, "A10") == "Install High Steel (Gen 315)"
+
+
+def test_it_runs_as_a_command_and_previews_by_default():
+    p = _rooms(("Gen 326", ["Gen 315 - JER"]))
+    ok, msg = apply_command(p, {"action": "align_child_tokens"})
+    assert ok and "Would rename 1 sub-folder" in msg
+    assert "Gen 315 - JER" in _names(p)
+    apply_command(p, {"action": "match_subfolders_to_parent", "apply": True})
+    assert "Gen 326 - JER" in _names(p)

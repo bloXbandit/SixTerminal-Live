@@ -522,6 +522,8 @@ def apply_command(project: Project, command: Dict[str, Any]) -> Tuple[bool, str]
             return _tag_by_folder(project, command)
         elif action in ("group_into_subfolder", "group_activities_into_subfolder"):
             return _group_into_subfolder(project, command)
+        elif action in ("align_child_tokens", "match_subfolders_to_parent"):
+            return _align_child_tokens(project, command)
         elif action == "set_wbs_color":
             return _set_wbs_color(project, command)
         elif action in ("set_wbs_id_prefix", "set_folder_prefix"):
@@ -4230,5 +4232,40 @@ def _group_into_subfolder(project: Project, cmd: Dict) -> Tuple[bool, str]:
         direct_only=cmd.get("direct_only", True),
         marker=cmd.get("marker"),
         apply=not preview,
+    )
+    return True, describe(res)
+
+
+def _align_child_tokens(project: Project, cmd: Dict) -> Tuple[bool, str]:
+    """
+    Make every sub-folder carry its parent's number.
+
+    "Gen 326 has a Gen 315 - JER and a Gen 315 - WBO under it; flip the 315s to
+     326 so they all match." One command, every folder, and by default the
+    activities inside are brought in line too — renaming the folder alone
+    leaves every activity still reading the old number, which is half a job.
+
+      token_pattern     what a room tag looks like. Default finds "Gen 326",
+                        "ER 208", "MV 101" however they are spaced.
+      under_wbs         hold it to one branch
+      folder_pattern    only sub-folders whose name matches
+      retag_activities  default true
+      preview           reports by default; send apply:true to write
+
+    Only the matched token is replaced, so "Gen 318- JER" under "Gen 306"
+    becomes "Gen 306- JER" with its spacing and trade suffix intact. A
+    sub-folder carrying a DIFFERENT kind of tag from its parent is reported,
+    never rewritten: an "MV 101" under an "ER 208" is a folder in the wrong
+    place, and renaming it would bury that.
+    """
+    from .bulk_patterns import DEFAULT_TOKEN, align_child_tokens, describe
+    res = align_child_tokens(
+        project,
+        token_pattern=cmd.get("token_pattern") or DEFAULT_TOKEN,
+        under=_pattern_scope(project, cmd),
+        folder_pattern=cmd.get("folder_pattern"),
+        retag_activities=cmd.get("retag_activities", True),
+        activity_template=cmd.get("activity_template") or "{name} ({token})",
+        apply=not _pattern_preview(cmd),
     )
     return True, describe(res)
