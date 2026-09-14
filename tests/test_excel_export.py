@@ -696,3 +696,55 @@ def test_a_file_that_still_carries_a_fraction_is_not_scaled_twice(book):
     assert _pct_frac(0, "Complete") == 1.0, "Complete with no percent is 100%"
     assert _pct_frac(0, "Not Started") == 0.0
     assert _pct_frac(None, "In Progress") == 0.0
+
+
+# ── the export has to finish inside a web request ────────────────────────────
+
+def test_styles_are_reused_not_rebuilt_per_cell(book):
+    """
+    Reported: Excel exports failing on Render. They were not failing, they were
+    taking 46 seconds on a 2,400-activity job and the gateway hung up at 30.
+
+    Two thirds of that was style objects. openpyxl hashes every style on
+    assignment into a dedup table, and that hash walks the whole descriptor
+    tree — so building a new-but-equal Font per cell cost more than everything
+    else in the workbook put together. ~90,000 fonts for a few dozen distinct
+    ones.
+
+    Asserted as a cache hit rate rather than a stopwatch: deterministic, and it
+    fails for the actual reason rather than because CI was busy.
+    """
+    from engine.excel_export import _f, _fill
+
+    _f.cache_clear()
+    _fill.cache_clear()
+    book(_job(phases=3))
+
+    fi = _f.cache_info()
+    assert fi.hits + fi.misses > 500, "the sheet got smaller; re-check this bound"
+    assert fi.misses < 60, f"{fi.misses} distinct fonts — a style is being built per cell"
+    assert fi.hits > fi.misses * 10, "fonts are barely being reused"
+
+    fl = _fill.cache_info()
+    assert fl.misses < 40, f"{fl.misses} distinct fills"
+
+
+def test_a_big_export_finishes_well_inside_a_gateway_timeout(tmp_path):
+    """A loose bound — it is the shape of the cost that matters, not the clock."""
+    import time
+
+    from engine.excel_export import build_workbook
+
+    p = _job(phases=6)
+    for i in range(1200):
+        src = p.activities[i % len(p.activities)]
+        import copy
+        a = copy.copy(src)
+        a.uid, a.activity_id = f"x{i}", f"X{9000 + i}"
+        p.activities.append(a)
+    p.build_lookups()
+
+    t = time.time()
+    build_workbook(p, str(tmp_path / "big.xlsx"))
+    elapsed = time.time() - t
+    assert elapsed < 25, f"{elapsed:.0f}s for {len(p.activities)} activities"
