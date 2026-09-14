@@ -601,3 +601,51 @@ def test_a_folder_with_a_slash_in_its_name_is_one_level_not_two(tmp_path):
     col = {c.value: c.column_letter for c in ws[4] if c.value}
     assert ws[f"{col['Area']}5"].value == "Commissioning / Closeout"
     assert not ws[f"{col['Sub Area']}5"].value, "it invented a sub-area"
+
+
+def test_the_activity_picker_shows_names_not_just_ids(book):
+    """
+    A list of 2,400 bare codes cannot be picked from, only confirmed against
+    something you already knew. The dropdown lists "id  -  name" so typing part
+    of a NAME finds the row too.
+    """
+    from openpyxl import load_workbook
+
+    wb = load_workbook(book())
+    da = wb["Data"]
+    hdr = [c.value for c in da[4]]
+    assert hdr[-1] == "Pick list"
+    label = da.cell(row=5, column=len(hdr)).value
+    assert "  -  " in label
+    aid = da.cell(row=5, column=1).value
+    assert label.startswith(aid) and label.endswith(da.cell(row=5, column=2).value)
+
+    # the dropdown must point at the LABEL column, not the bare ids
+    dn = wb.defined_names["ActivityIDs"]
+    assert f"${_letter_of(len(hdr))}$" in dn.attr_text, dn.attr_text
+
+
+def _letter_of(n):
+    from openpyxl.utils import get_column_letter
+    return get_column_letter(n)
+
+
+def test_the_critical_path_still_finds_the_row_from_a_picked_label(book):
+    """
+    The pick cell now holds a label, so every lookup takes the id back off the
+    front. Appending a space before FIND means a RAW id typed by hand still
+    resolves — both ways of filling the cell have to keep working.
+    """
+    from openpyxl import load_workbook
+
+    from engine.excel_export import _picked_id
+
+    assert _picked_id("$B7") == 'LEFT($B7,FIND(" ",$B7&" ")-1)'
+
+    cp = load_workbook(book())["Critical Path"]
+    hits = [str(cp.cell(row=r, column=c).value or "")
+            for r in range(5, cp.max_row + 1) for c in range(2, 10)]
+    matches = [h for h in hits if "MATCH(" in h]
+    assert matches, "the critical path lost its lookups"
+    for m in matches:
+        assert 'FIND(" "' in m, f"a lookup still keys on the raw cell: {m[:90]}"
