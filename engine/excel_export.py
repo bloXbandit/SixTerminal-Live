@@ -164,6 +164,23 @@ def _head(ws, r, headers, widths=None):
         ws.column_dimensions[CL(i)].width = w
 
 
+def _picked_id(cell: str) -> str:
+    """
+    The activity id out of a Critical Path pick cell.
+
+    The dropdown now lists "MDC1.PH1.GEN1230  -  Install High Steel", because a
+    bare 22-character code tells nobody which activity it is and the list was
+    unusable for picking rather than confirming. The cell therefore holds the
+    label, not the id, and every lookup has to take the id back off the front.
+
+    No activity id in a P6 export contains a space, so the first space is the
+    boundary. Appending one before FIND means a cell holding a RAW id — typed
+    rather than picked — comes back unchanged, so both ways of filling the cell
+    keep working.
+    """
+    return f'LEFT({cell},FIND(" ",{cell}&" ")-1)'
+
+
 def _cf(ws, rng, formula, bg, tx, bold=False, italic=False, sz=9):
     ws.conditional_formatting.add(rng, FormulaRule(
         formula=[formula], stopIfTrue=False, fill=_fill(bg),
@@ -854,13 +871,16 @@ def build_workbook(project, out_path: str, project_code: Optional[str] = None,
             idc = cp.cell(row=r, column=2,
                           value=(seed[k]['activity_id'] if k < len(seed) else None))
             idc.fill = _fill(ENTRY); idc.font = _f(9); idc.protection = Protection(locked=False)
-            cp.cell(row=r, column=3, value=f'=IFERROR(INDEX({R(COL_NAME)},MATCH($B{r},{R(COL_ID)},0)),"")')
-            cp.cell(row=r, column=4, value=f'=IFERROR(INDEX({R(COL_DAYS)},MATCH($B{r},{R(COL_ID)},0)),"")')
+            # Hoisted: a nested quote inside an f-string is a syntax error
+            # before 3.12, and this expression carries one.
+            pid = _picked_id(f'$B{r}')
+            cp.cell(row=r, column=3, value=f'=IFERROR(INDEX({R(COL_NAME)},MATCH({pid},{R(COL_ID)},0)),"")')
+            cp.cell(row=r, column=4, value=f'=IFERROR(INDEX({R(COL_DAYS)},MATCH({pid},{R(COL_ID)},0)),"")')
             if k == 0:
                 cp.cell(row=r, column=5,
-                        value=f'=IFERROR(IF(INDEX({R(COL_ASTART)},MATCH($B{r},{R(COL_ID)},0))<>"",'
-                              f'INDEX({R(COL_ASTART)},MATCH($B{r},{R(COL_ID)},0)),'
-                              f'INDEX({R(COL_BLSTART)},MATCH($B{r},{R(COL_ID)},0))),"")')
+                        value=f'=IFERROR(IF(INDEX({R(COL_ASTART)},MATCH({pid},{R(COL_ID)},0))<>"",'
+                              f'INDEX({R(COL_ASTART)},MATCH({pid},{R(COL_ID)},0)),'
+                              f'INDEX({R(COL_BLSTART)},MATCH({pid},{R(COL_ID)},0))),"")')
             else:
                 # Next working day on a 6-day week: +1, and +1 again only if
                 # that lands on a Sunday (WEEKDAY(...,2)=7).
@@ -871,13 +891,13 @@ def build_workbook(project, out_path: str, project_code: Optional[str] = None,
                     # Add the remaining duration across a 6-day week. Every 6
                     # working days from the start weekday crosses one Sunday, so
                     # INT((weekday-1+n)/6) is exactly the number to skip.
-                    value=f'=IF($B{r}="","",IFERROR(IF(INDEX({R(COL_AFINISH)},MATCH($B{r},{R(COL_ID)},0))<>"",'
-                          f'INDEX({R(COL_AFINISH)},MATCH($B{r},{R(COL_ID)},0)),'
+                    value=f'=IF($B{r}="","",IFERROR(IF(INDEX({R(COL_AFINISH)},MATCH({pid},{R(COL_ID)},0))<>"",'
+                          f'INDEX({R(COL_AFINISH)},MATCH({pid},{R(COL_ID)},0)),'
                           f'$E{r}+MAX(0,ROUND($D{r}*(1-$I{r}),0))'
                           f'+INT((WEEKDAY($E{r},2)-1+MAX(0,ROUND($D{r}*(1-$I{r}),0)))/6)),""))')
-            cp.cell(row=r, column=7, value=f'=IFERROR(INDEX({R(COL_BLFINISH)},MATCH($B{r},{R(COL_ID)},0)),"")')
+            cp.cell(row=r, column=7, value=f'=IFERROR(INDEX({R(COL_BLFINISH)},MATCH({pid},{R(COL_ID)},0)),"")')
             cp.cell(row=r, column=8, value=f'=IF($B{r}="","",IFERROR($F{r}-$G{r},""))')
-            cp.cell(row=r, column=9, value=f'=IFERROR(INDEX({R(COL_PCT)},MATCH($B{r},{R(COL_ID)},0)),0)')
+            cp.cell(row=r, column=9, value=f'=IFERROR(INDEX({R(COL_PCT)},MATCH({pid},{R(COL_ID)},0)),0)')
             n = cp.cell(row=r, column=10)
             n.fill = _fill(ENTRY); n.protection = Protection(locked=False)
             for j in range(1, 11):
@@ -947,19 +967,25 @@ def build_workbook(project, out_path: str, project_code: Optional[str] = None,
            'Straight from the schedule. Read-only — nothing here feeds the other tabs. '
            'Column A also backs the Activity ID dropdown on Critical Path.', 10)
     _head(da, 4, ['Activity ID', 'Activity Name', 'WBS path', 'Type', 'Float (d)',
-                  'Predecessors', 'Constraint', 'Crew', 'Status', 'Phase'],
-          [24, 46, 62, 16, 9, 34, 16, 7, 12, 18])
+                  'Predecessors', 'Constraint', 'Crew', 'Status', 'Phase', 'Pick list'],
+          [24, 46, 62, 16, 9, 34, 16, 7, 12, 18, 70])
     for i, rec in enumerate(ROWS):
         r = 5 + i
+        # The last column is what the Activity ID dropdown shows. An id alone
+        # is unreadable in a list of 2,400 — you cannot pick from it, only
+        # confirm something you already knew. Written as a VALUE rather than a
+        # formula because a validation source that is itself a formula does
+        # not narrow as you type.
+        label = f"{rec['activity_id']}  -  {rec['name']}"
         for j, v in enumerate([rec['activity_id'], rec['name'], rec['path'], rec['type'],
                                rec['float_d'], rec['preds'], rec['constraint'],
-                               rec['crew'], rec['status'], rec['phase']], start=1):
+                               rec['crew'], rec['status'], rec['phase'], label], start=1):
             c = da.cell(row=r, column=j, value=v)
             c.font = _f(9); c.border = BOX
             c.alignment = CTR if j in (4, 5, 7, 8, 9) else LEFT
     DLAST = 4 + len(ROWS)
     da.freeze_panes = 'B5'
-    da.auto_filter.ref = f'A4:J{DLAST}'
+    da.auto_filter.ref = f'A4:K{DLAST}'
     da.conditional_formatting.add(f'E5:E{DLAST}', CellIsRule(
         operator='lessThanOrEqual', formula=['0'], fill=_fill(BAD_BG),
         font=Font(name=FONT, size=9, color=BAD_TX, bold=True)))
@@ -972,14 +998,18 @@ def build_workbook(project, out_path: str, project_code: Optional[str] = None,
     wb.defined_names.add(DefinedName('LookaheadWeeks', attr_text="'Start Here'!$B$7"))
     # Backs the Activity ID dropdown. Excel 365 narrows a validation list as you
     # type, so this is the type-ahead: three characters gets you to the row
-    # instead of copying a 22-character code by hand.
-    wb.defined_names.add(DefinedName('ActivityIDs', attr_text=f"Data!$A$5:$A${DLAST}"))
+    # instead of copying a 22-character code by hand. It points at the LABEL
+    # column, so the list reads "MDC1.PH1.GEN1230  -  Install High Steel" —
+    # ids alone cannot be picked from, only recognised, and typing part of a
+    # NAME now finds the row too.
+    wb.defined_names.add(DefinedName('ActivityIDs', attr_text=f"Data!$K$5:$K${DLAST}"))
 
     # Applied after the name exists, since the formula refers to it.
     for ws_cp in (wb['Critical Path'],):
         dvid = DataValidation(type='list', formula1='=ActivityIDs', allow_blank=True,
                               showDropDown=False, showErrorMessage=False)
-        dvid.prompt = 'Pick an Activity ID, or start typing to narrow the list'
+        dvid.prompt = ('Pick an activity, or type part of its id or name to '
+                       'narrow the list')
         dvid.promptTitle = 'Activity'
         ws_cp.add_data_validation(dvid)
         r = 6
