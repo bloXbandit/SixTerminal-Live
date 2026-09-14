@@ -156,3 +156,52 @@ def test_a_written_export_omits_the_bad_date_rather_than_shipping_it():
     xml = open(path, encoding="utf-8").read()
     os.unlink(path)
     assert "0001-01-01" not in xml
+
+
+def test_percent_complete_comes_off_p6_xml_as_0_to_100():
+    """
+    P6 XML carries a FRACTION (1.0 is complete); XER carries 0-100, and
+    set_progress, actualize and the writer all assume 0-100. Passing the
+    fraction through raw made the scale depend on which format a project
+    arrived in — the same schedule read two ways disagreed by 100x.
+    """
+    from engine.xml_reader import _pct_0_100
+    assert _pct_0_100(1.0) == 100.0
+    assert _pct_0_100(0.5) == 50.0
+    assert _pct_0_100(0) == 0.0
+    assert _pct_0_100(None) == 0.0
+    # a file that already wrote 0-100 is taken at face value, not sent to 8000%
+    assert _pct_0_100(80) == 80.0
+    assert _pct_0_100("nonsense") == 0.0
+
+
+def test_percent_survives_a_round_trip_at_the_same_scale(tmp_path):
+    import os
+    import sys
+
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+    from engine.schedule_model import (Activity, Calendar, Project, WBSNode)
+    from engine.xml_reader import load_xml
+    from engine.xml_writer import write_p6_xml
+
+    p = Project(uid="1", name="J", id="J", data_date="2026-01-05")
+    p.calendars = [Calendar(uid="1", name="Std")]
+    p.wbs_nodes = [WBSNode(uid="w", name="A", code="A")]
+    p.activities = [
+        Activity(uid="a1", activity_id="A10", name="Done", wbs_uid="w",
+                 calendar_uid="1", status="Completed", percent_complete=100.0,
+                 actual_start="2026-01-02", actual_finish="2026-01-03",
+                 planned_duration=8),
+        Activity(uid="a2", activity_id="A20", name="Half", wbs_uid="w",
+                 calendar_uid="1", status="In Progress", percent_complete=50.0,
+                 actual_start="2026-01-02", planned_duration=8),
+    ]
+    p.relations = []
+    p.build_lookups()
+    out = str(tmp_path / "rt.xml")
+    write_p6_xml(p, out)
+    back = load_xml(out)
+    got = {a.activity_id: round(float(a.percent_complete or 0), 1)
+           for a in back.activities}
+    assert got["A10"] == 100.0
+    assert got["A20"] == 50.0, f"a half-done activity came back as {got['A20']}"

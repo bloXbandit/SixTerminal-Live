@@ -649,3 +649,50 @@ def test_the_critical_path_still_finds_the_row_from_a_picked_label(book):
     assert matches, "the critical path lost its lookups"
     for m in matches:
         assert 'FIND(" "' in m, f"a lookup still keys on the raw cell: {m[:90]}"
+
+
+# ── percent complete has exactly one scale ───────────────────────────────────
+
+def test_a_completed_row_reads_100_percent_not_10000(book):
+    """
+    The cell is formatted 0% and validated 0..1, so it takes a FRACTION.
+    percent_complete is 0-100 everywhere else in the app, and writing it raw
+    rendered a finished row as 10000% and an area average in the thousands.
+    Reported on a real export.
+    """
+    from openpyxl import load_workbook
+
+    p = _job()
+    for a in p.activities[:3]:
+        a.status, a.percent_complete = "Completed", 100.0
+        a.actual_start, a.actual_finish = "2026-02-02", "2026-02-06"
+    ws = load_workbook(book(p))["Update"]
+    col = _letter(ws, "% Comp")
+    vals = [ws[f"{col}{r}"].value for r in range(5, ws.max_row + 1)]
+    assert max(v for v in vals if isinstance(v, (int, float))) <= 1.0, \
+        f"a percent above 1 renders as thousands: {sorted(set(vals))[-3:]}"
+    assert 1.0 in [float(v) for v in vals if isinstance(v, (int, float))]
+
+
+def test_a_part_complete_row_keeps_its_value(book):
+    from openpyxl import load_workbook
+
+    p = _job()
+    p.activities[0].status = "In Progress"
+    p.activities[0].percent_complete = 40.0
+    ws = load_workbook(book(p))["Update"]
+    col = _letter(ws, "% Comp")
+    got = [ws[f"{col}{r}"].value for r in range(5, ws.max_row + 1)]
+    assert 0.4 in [round(float(v), 4) for v in got if isinstance(v, (int, float))]
+
+
+def test_a_file_that_still_carries_a_fraction_is_not_scaled_twice(book):
+    """Guarded both ways — 1.0 must not become 0.01%."""
+    from engine.excel_export import _pct_frac
+    assert _pct_frac(1.0, "Complete") == 1.0
+    assert _pct_frac(100.0, "Complete") == 1.0
+    assert _pct_frac(40.0, "In Progress") == 0.4
+    assert _pct_frac(0.4, "In Progress") == 0.4
+    assert _pct_frac(0, "Complete") == 1.0, "Complete with no percent is 100%"
+    assert _pct_frac(0, "Not Started") == 0.0
+    assert _pct_frac(None, "In Progress") == 0.0
