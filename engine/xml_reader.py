@@ -269,6 +269,21 @@ def _read_work_pattern(cal_el):
     return days, (frozenset(hol) if hol else None)
 
 
+def _pct_0_100(v) -> float:
+    """
+    P6 XML's fractional percent as the 0-100 this app works in.
+
+    Values above 1 are already 0-100 — a file written by a tool that did not
+    follow P6's own convention, which is worth accepting rather than turning
+    into 8000%.
+    """
+    try:
+        f = float(v or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+    return round(f * 100.0, 4) if f <= 1.0 else min(100.0, f)
+
+
 def load_xml(path: str) -> Project:
     """
     Parse a P6 XML file and return a Project object.
@@ -439,9 +454,18 @@ def load_xml(path: str) -> Project:
             # 0 the same as "absent", which silently discarded the exact case
             # this was meant to catch: work stalled at 0% physical despite
             # duration already ticking forward. Check presence, not truthiness.
-            percent_complete=(_float(act_el, "PhysicalPercentComplete")
-                              if _has_real_value(act_el, "PhysicalPercentComplete")
-                              else _float(act_el, "PercentComplete")),
+            # ...and scaled to 0-100, which is what the rest of this app
+            # means by percent_complete. P6 XML carries a FRACTION (1.0 is
+            # complete); XER carries 0-100, and set_progress, actualize and
+            # the writer all assume 0-100. Passing the fraction through raw
+            # made the scale depend on which file a project came in as: the
+            # tracker rendered 1.0 as 100% by luck and an XER-loaded 100 as
+            # 10000%, and an activity read at 0.5 exported as 0% because the
+            # writer truncated it to int(0.5).
+            percent_complete=_pct_0_100(
+                _float(act_el, "PhysicalPercentComplete")
+                if _has_real_value(act_el, "PhysicalPercentComplete")
+                else _float(act_el, "PercentComplete")),
             planned_start=_iso_date(_text(act_el, "PlannedStartDate")),
             planned_finish=_iso_date(_text(act_el, "PlannedFinishDate")),
             actual_start=_iso_date(_text(act_el, "ActualStartDate")),

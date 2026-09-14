@@ -164,6 +164,27 @@ def _head(ws, r, headers, widths=None):
         ws.column_dimensions[CL(i)].width = w
 
 
+def _pct_frac(pct, status: str) -> float:
+    """
+    Percent complete as the fraction the sheet's cells are formatted for.
+
+    Guarded both ways: a value above 1 is 0-100 and is scaled down; a file that
+    somehow still carries a fraction is left alone rather than turned into
+    0.01%. A row marked Complete with no percent recorded is 100% — that is
+    what Complete means, and leaving it 0 made a finished area read as nothing
+    done.
+    """
+    try:
+        v = float(pct or 0.0)
+    except (TypeError, ValueError):
+        v = 0.0
+    if v > 1.0:
+        v = v / 100.0
+    if not v and status == 'Complete':
+        return 1.0
+    return max(0.0, min(1.0, v))
+
+
 def _picked_id(cell: str) -> str:
     """
     The activity id out of a Critical Path pick cell.
@@ -536,7 +557,11 @@ def build_workbook(project, out_path: str, project_code: Optional[str] = None,
             c.font = _f(9); c.border = BOX; c.alignment = CTR
         st = {'Completed': 'Complete', 'In Progress': 'In Progress'}.get(rec['status'], 'Not Started')
         for key, v in (('Status', st),
-                       ('% Comp', rec['pct'] or (1.0 if st == 'Complete' else 0.0)),
+                       # The cell is formatted 0% and validated 0..1, so it
+                       # takes a FRACTION. percent_complete is 0-100 here, and
+                       # writing it raw rendered a completed row as 10000% and
+                       # an area average in the thousands.
+                       ('% Comp', _pct_frac(rec['pct'], st)),
                        ('Act Start', _date(rec['act_start'])),
                        ('Act Finish', _date(rec['act_finish'])),
                        ('Notes', None), ('Updated By', None)):
