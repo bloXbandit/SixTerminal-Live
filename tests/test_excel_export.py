@@ -748,3 +748,99 @@ def test_a_big_export_finishes_well_inside_a_gateway_timeout(tmp_path):
     build_workbook(p, str(tmp_path / "big.xlsx"))
     elapsed = time.time() - t
     assert elapsed < 25, f"{elapsed:.0f}s for {len(p.activities)} activities"
+
+
+# ── the critical path sheet has to fit the job it is built for ───────────────
+
+def _cp_blocks(path):
+    from openpyxl import load_workbook
+    ws = load_workbook(path)["Critical Path"]
+    out = []
+    for r in range(5, ws.max_row + 1):
+        v = ws.cell(row=r, column=1).value
+        if isinstance(v, str) and "Substantial Completion" in v:
+            seeded = blank = 0
+            rr = r + 2
+            while rr <= ws.max_row and isinstance(ws.cell(row=rr, column=1).value, int):
+                if ws.cell(row=rr, column=2).value:
+                    seeded += 1
+                else:
+                    blank += 1
+                rr += 1
+            out.append((v.split("—")[0].strip(), seeded, blank))
+    return out
+
+
+def _phased_job(n):
+    from engine.schedule_model import (Activity, Calendar, Project, Relation,
+                                       WBSNode)
+    p = Project(uid="1", name="J", id="J", data_date="2026-09-01")
+    p.calendars = [Calendar(uid="1", name="Std")]
+    p.wbs_nodes = [WBSNode(uid="r", name="J", code="J")]
+    p.activities, p.relations = [], []
+    k = 0
+    for ph in range(1, n + 1):
+        wu = f"w{ph}"
+        p.wbs_nodes.append(WBSNode(uid=wu, name=f"Phase {ph}", code=f"P{ph}",
+                                   parent_uid="r", sequence_num=ph))
+        prev = None
+        for i in range(3):
+            k += 1
+            a = Activity(uid=f"u{k}", activity_id=f"J.PH{ph}.{1000 + i * 10}",
+                         name=f"Work {i}", wbs_uid=wu, calendar_uid="1",
+                         planned_duration=40, planned_start="2026-10-01",
+                         planned_finish="2026-10-07")
+            p.activities.append(a)
+            if prev:
+                p.relations.append(Relation(uid=f"r{k}", predecessor_uid=prev.uid,
+                                            successor_uid=a.uid))
+            prev = a
+        m = Activity(uid=f"m{ph}", activity_id=f"J.MIL.PH{ph}.9000",
+                     name=f"Substantial Completion (PH{ph})", wbs_uid=wu,
+                     calendar_uid="1", activity_type="Finish Milestone",
+                     planned_duration=0, planned_start="2026-12-01",
+                     planned_finish="2026-12-01")
+        p.activities.append(m)
+        p.relations.append(Relation(uid=f"rm{ph}", predecessor_uid=prev.uid,
+                                    successor_uid=m.uid))
+    p.build_lookups()
+    return p
+
+
+def test_every_phase_gets_a_block_not_the_first_four(book):
+    """A ten-phase job silently lost six of them to a [:4] slice."""
+    got = _cp_blocks(book(_phased_job(10)))
+    assert [g[0] for g in got] == [f"Phase {i}" for i in range(1, 11)]
+
+
+def test_phases_run_in_order_not_in_the_order_the_file_lists_them(book):
+    """Reported: phase 3 drew first. The blocks came off the milestone list in
+    file order, which has nothing to do with how the job runs."""
+    got = [g[0] for g in _cp_blocks(book(_phased_job(3)))]
+    assert got == ["Phase 1", "Phase 2", "Phase 3"]
+
+
+def test_phase_ten_sorts_after_phase_nine(book):
+    got = [g[0] for g in _cp_blocks(book(_phased_job(12)))]
+    assert got.index("Phase 10") > got.index("Phase 9")
+    assert got.index("Phase 2") < got.index("Phase 10"), "sorted as text"
+
+
+def test_each_phase_carries_blank_rows_to_extend_into(book):
+    """Inserting a row would put it outside every range this sheet computes
+    over, so the room has to be there already."""
+    for name, seeded, blank in _cp_blocks(book(_phased_job(4))):
+        assert blank >= 4, f"{name} has only {blank} spare rows"
+
+
+def test_a_spare_row_is_empty_but_still_wired(book):
+    from openpyxl import load_workbook
+    ws = load_workbook(book(_phased_job(2)))["Critical Path"]
+    for r in range(5, ws.max_row + 1):
+        if isinstance(ws.cell(row=r, column=1).value, int) and \
+                not ws.cell(row=r, column=2).value:
+            assert "MATCH(" in str(ws.cell(row=r, column=3).value), \
+                "a spare row has no formula — picking an id would do nothing"
+            assert "MATCH(" in str(ws.cell(row=r, column=4).value)
+            return
+    raise AssertionError("no spare row found")
