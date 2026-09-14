@@ -31,6 +31,7 @@ WHAT THE FORMULAS MAY USE
 
 import datetime as dt
 import re
+from functools import lru_cache
 from typing import Any, Dict, List, Optional
 
 from openpyxl import Workbook
@@ -117,10 +118,18 @@ CTR = Alignment(horizontal='center', vertical='center')
 WRAP = Alignment(horizontal='left', vertical='top', wrap_text=True)
 
 
+# Memoized. A 2,400-activity tracker asks for ~90,000 fonts and ~30,000 fills,
+# and openpyxl hashes every style object into a dedup table on assignment —
+# that hash walks the whole descriptor tree, so CONSTRUCTING a new equal object
+# per cell was two thirds of the export's runtime. There are only a few dozen
+# distinct styles in the sheet; handing back the same instance each time keeps
+# the table small and skips the construction entirely.
+@lru_cache(maxsize=None)
 def _f(sz=10, b=False, c=INK, i=False):
     return Font(name=FONT, size=sz, bold=b, color=c, italic=i)
 
 
+@lru_cache(maxsize=None)
 def _fill(c):
     return PatternFill('solid', fgColor=c)
 
