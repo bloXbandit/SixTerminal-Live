@@ -350,7 +350,9 @@ def _collect(project, project_code: str) -> Dict[str, Any]:
         nm = (m.name or '').lower()
         if 'substantial completion' not in nm or 'Milestone' not in (m.activity_type or ''):
             continue
-        ph = re.search(r'\(?\bPH\s*(\d)\b\)?', m.name or '', re.I)
+        # \d+ — a job can have more than nine phases, and a single digit
+        # read "(PH10)" as phase 1 and merged two chains into one.
+        ph = re.search(r'\(?\bPH\s*(\d+)\b\)?', m.name or '', re.I)
         key = f'Phase {ph.group(1)}' if ph else (m.name or m.activity_id)
         walk, seen, cur = [], {m.uid}, m
         for _ in range(60):
@@ -879,16 +881,36 @@ def build_workbook(project, out_path: str, project_code: Optional[str] = None,
     for m in MILS:
         if 'Substantial Completion' not in m['name']:
             continue
-        g = re.search(r'\(?\bPH\s*(\d)\b\)?', m['name'], re.I)
+        # Two or more digits, because a job can have more than nine phases —
+        # the subject one has three, another has ten, and \d alone silently
+        # read "Phase 10" as phase 1 and merged it with the real one.
+        g = re.search(r'\(?\bPH\s*(\d+)\b\)?', m['name'], re.I)
         key = f'Phase {g.group(1)}' if g else m['name']
         sc.setdefault(key, (m['activity_id'], _date(m['bl_finish'])))
     if not sc:
-        sc = {ph: ('', None) for ph in phases[:3]}
-    BLOCK = 16
+        sc = {ph: ('', None) for ph in phases}
+
+    def _phase_rank(name):
+        """Phase 2 before Phase 10, and anything unnumbered after both."""
+        g = re.search(r'(\d+)', name or '')
+        return (0, int(g.group(1))) if g else (1, 0)
+
+    # In phase order, not the order the milestones happened to appear in the
+    # file — which is why phase 3 was drawn first on the subject job. And every
+    # phase, not the first four: a ten-phase job silently lost six of them.
+    ordered = sorted(sc.items(), key=lambda kv: (_phase_rank(kv[0]), kv[0]))
+
+    # Blank, fully-formulated rows under each chain, so a phase can be extended
+    # in place. Without them the only way to add a step was to insert a row,
+    # which leaves it outside every range this sheet computes over.
+    SPARE = 6
+    byid = {x['activity_id']: x for x in ROWS}
+    seeds = {ph: [byid[i] for i in D['chains'].get(ph, []) if i in byid][-24:]
+             for ph, _ in ordered}
     row = 5
-    for ph, (mid, contract) in list(sc.items())[:4]:
-        byid = {x['activity_id']: x for x in ROWS}
-        seed = [byid[i] for i in D['chains'].get(ph, []) if i in byid][-BLOCK:]
+    for ph, (mid, contract) in ordered:
+        seed = seeds[ph]
+        BLOCK = max(12, len(seed) + SPARE)
         cp.cell(row=row, column=1, value=f'{ph} — Substantial Completion').font = _f(13, True, NAVY)
         cp.cell(row=row, column=5, value='Contract:').font = _f(9, True)
         c = cp.cell(row=row, column=6, value=contract)
@@ -902,9 +924,15 @@ def build_workbook(project, out_path: str, project_code: Optional[str] = None,
         for k in range(BLOCK):
             r = row + 1 + k
             cp.cell(row=r, column=1, value=k + 1).font = _f(9, False, MUTE)
+            spare = k >= len(seed)
             idc = cp.cell(row=r, column=2,
-                          value=(seed[k]['activity_id'] if k < len(seed) else None))
+                          value=(None if spare else seed[k]['activity_id']))
             idc.fill = _fill(ENTRY); idc.font = _f(9); idc.protection = Protection(locked=False)
+            if spare:
+                # Empty but fully formulated: pick an id and the row fills and
+                # joins the chain. An INSERTED row would sit outside every
+                # range on this sheet and quietly compute nothing.
+                cp.cell(row=r, column=1).font = _f(9, False, MUTE, True)
             # Hoisted: a nested quote inside an f-string is a syntax error
             # before 3.12, and this expression carries one.
             pid = _picked_id(f'$B{r}')
