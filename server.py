@@ -208,6 +208,45 @@ app = Flask(__name__, static_folder=STATIC_DIR, template_folder=TEMPLATE_DIR)
 
 _MAX_UNDO = 50
 
+# An undo snapshot is a shallow copy of every activity, relation, folder and
+# calendar — about 1.4 KB per activity. Fifty of those is nothing on a small
+# job and 170 MB on a 2,400-activity one, which on a 512 MB host is the
+# difference between working and having the worker killed mid-request. Since
+# sessions live in this process, a kill loses the project: the user is simply
+# thrown out. So the DEPTH is budgeted in megabytes rather than in steps.
+_UNDO_BUDGET_MB = 40
+_KB_PER_ACTIVITY = 1.4
+
+
+def _undo_depth(project) -> int:
+    """How many steps this project can afford to remember."""
+    n = len(getattr(project, "activities", None) or ())
+    if n <= 0:
+        return _MAX_UNDO
+    per_mb = max(0.05, (n * _KB_PER_ACTIVITY) / 1024.0)
+    return max(5, min(_MAX_UNDO, int(_UNDO_BUDGET_MB / per_mb)))
+
+
+def _shed_idle_history(keep_pid: str) -> int:
+    """
+    Drop the undo/redo history of projects that are not the active one.
+
+    Loading a second schedule used to keep the first one AND its history, which
+    is what made "upload a new project" a reliable way to be thrown out. The
+    projects themselves are kept — switching back to one still works — but
+    nobody expects to undo into a schedule they left an hour ago, and that
+    history is the largest thing in the process.
+    """
+    freed = 0
+    for pid, sess in _projects.items():
+        if pid == keep_pid:
+            continue
+        for key in ("undo_stack", "redo_stack"):
+            freed += len(sess.get(key) or ())
+            sess[key] = []
+        sess["last_undone"] = None
+    return freed
+
 # ── Global settings (not per-project) ─────────────────────────────────────────
 _settings: dict = {
     "model_key": DEFAULT_MODEL,
@@ -382,7 +421,8 @@ def _push_undo(label: str):
         return
     stack = sess["undo_stack"]
     stack.append((label, _snapshot_project(sess["project"])))
-    if len(stack) > _MAX_UNDO:
+    depth = _undo_depth(sess["project"])
+    while len(stack) > depth:
         stack.pop(0)
     _mark_dirty(_active_id[0])
 
@@ -815,6 +855,12 @@ def upload_file():
         sess["source_path"] = tmp.name
         _projects[pid]      = sess
         _active_id[0]       = pid
+        # The schedule just loaded is the one being worked on. Everything
+        # already here keeps its project but gives up its edit history, which
+        # is by far the largest thing in the process — holding two full
+        # histories is what made loading a second schedule a way to run the
+        # host out of memory and lose the session.
+        _shed_idle_history(pid)
         _mark_dirty(pid)
 
         # A re-export of a job already known here keeps what was taught about
