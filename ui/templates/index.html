@@ -6265,7 +6265,7 @@ function renderActivityRow(a, wbsUid, hidden) {
   const selected = selectedIds.has(aid);
   const durEditable = isMilestone ? '' : ' editable';
   return `
-    <tr class="${rowClass}${selected ? ' sel-selected' : ''}" data-wbs="${wbsUid}" data-actid="${escAttr(aid)}" style="${displayStyle}">
+    <tr class="${rowClass}${selected ? ' sel-selected' : ''}" data-wbs="${wbsUid}" data-uid="${escAttr(a.uid || '')}" data-actid="${escAttr(aid)}" style="${displayStyle}">
       <td class="col-sel"><input type="checkbox" class="sel-box" ${selected ? 'checked' : ''} onclick="toggleSel(${escAttrJs(aid)}, this.checked)"></td>
       <td class="editable" data-actid="${escAttr(aid)}" data-edit="id"><span class="sched-id">${escHtml(a.activity_id)}</span></td>
       <td class="editable" data-actid="${escAttr(aid)}" data-edit="name"><span class="sched-name" title="${escAttr(a.name)}">${escHtml(a.name)}</span>${nameBadges}</td>
@@ -6988,6 +6988,19 @@ function rowByActId(id){
   return [...document.querySelectorAll('tr[data-actid]')].find(tr => tr.dataset.actid === id);
 }
 
+/**
+ * A row by its UID — the identity that survives a renumber.
+ *
+ * data-actid is the id on screen and changes when the user normalizes ids;
+ * looking a row up by it right after a rename finds nothing, and the grid
+ * falls back to a full rebuild (losing scroll position and every collapsed
+ * folder). The uid never changes.
+ */
+function rowByUid(uid){
+  if(!uid) return null;
+  return document.querySelector(`tr[data-uid="${CSS.escape(String(uid))}"]`);
+}
+
 /** Every activity id currently in the loaded schedule. */
 function allActivityIds(){
   const out = new Set();
@@ -7171,17 +7184,22 @@ async function directEdit(commands, label, brainOverride, via){
 function patchRows(rows){
   if(!rows || !rows.length) return;
   // index the activity objects currently in lastSchedData by id
+  // Indexed by uid, with the id as a fallback for any row that predates it.
   const dataIndex = {};
   (lastSchedData?.wbs_sections || []).forEach((w, wi) =>
-    (w.activities || []).forEach((a, ai) => { dataIndex[a.activity_id] = [wi, ai, w.uid]; }));
+    (w.activities || []).forEach((a, ai) => {
+      if(a.uid) dataIndex['u:' + a.uid] = [wi, ai, w.uid];
+      dataIndex[a.activity_id] = [wi, ai, w.uid];
+    }));
 
   for(const row of rows){
-    const ref = dataIndex[row.activity_id];
+    const ref = dataIndex['u:' + row.uid] || dataIndex[row.activity_id];
     if(ref){
       const [wi, ai] = ref;
       lastSchedData.wbs_sections[wi].activities[ai] = row;   // keep data in sync
     }
-    const tr = rowByActId(row.activity_id);
+    // by uid first: after a renumber the id on screen is the OLD one
+    const tr = rowByUid(row.uid) || rowByActId(row.activity_id);
     if(!tr) continue;
     const wbsUid = ref ? ref[2] : tr.dataset.wbs;
     const hidden = tr.style.display === 'none';
@@ -7467,11 +7485,13 @@ function beginCellEdit(td){
  * Drop rows that no longer exist, from the DOM and from lastSchedData.
  */
 function removeRows(ids){
-  const gone = new Set(ids);
+  // ids are UIDs (see _flat_rows), with activity ids tolerated for safety.
+  const gone = new Set((ids || []).map(String));
   (lastSchedData?.wbs_sections || []).forEach(w => {
-    w.activities = (w.activities || []).filter(a => !gone.has(a.activity_id));
+    w.activities = (w.activities || []).filter(
+      a => !gone.has(String(a.uid)) && !gone.has(a.activity_id));
   });
-  gone.forEach(id => rowByActId(id)?.remove());
+  gone.forEach(id => (rowByUid(id) || rowByActId(id))?.remove());
   refreshBulkBar();
 }
 

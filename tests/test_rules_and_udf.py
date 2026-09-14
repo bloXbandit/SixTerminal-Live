@@ -427,13 +427,22 @@ def test_adding_an_activity_patches_instead_of_reloading():
 
 
 def test_deleting_an_activity_patches_instead_of_reloading():
+    """
+    removed_ids carries UIDs, not activity ids — the diff keys on the identity
+    that survives a renumber, so that normalizing ids across a job stops
+    reading as every row being deleted and re-added. What matters here is that
+    exactly the deleted row is named, not what it is named by.
+    """
     import server
     c = server.app.test_client()
     _big(c)
+    project = server._projects[server._active_id[0]]["project"]
+    gone = next(a.uid for a in project.activities if a.activity_id == "A1000")
     d = c.post("/api/direct", json={"commands": [
         {"action": "delete_activity", "activity_id": "A1000"}], "label": "del"}).get_json()
     assert d["structural"] is False
-    assert d["removed_ids"] == ["A1000"]
+    assert d["removed_ids"] == [gone]
+    assert all(a.activity_id != "A1000" for a in project.activities)
 
 
 def test_reshaping_the_folder_tree_still_asks_for_a_reload():

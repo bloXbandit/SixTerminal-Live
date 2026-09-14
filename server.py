@@ -4761,9 +4761,18 @@ def _ordered_wbs(project):
 
 
 def _flat_rows(project):
-    """activity_id -> row dict, for diffing before/after an edit."""
+    """
+    uid -> row dict, for diffing before/after an edit.
+
+    Keyed on the UID, not the activity id. The id is a DISPLAYED value the user
+    can change, and normalizing it across a job changes hundreds at once —
+    keyed on the id, every one of those read as a row deleted and a different
+    row added, which is a shape change, which forces a full grid rebuild. The
+    uid is what the row actually IS, so a renumber becomes what it looks like
+    on screen: the id cell changing.
+    """
     preds_map, succs_map = _build_rel_maps(project)
-    return {a.activity_id: _activity_row(a, preds_map, succs_map)
+    return {a.uid: _activity_row(a, preds_map, succs_map)
             for a in project.activities}
 
 
