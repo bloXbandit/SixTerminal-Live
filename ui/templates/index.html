@@ -3331,6 +3331,23 @@ async function openResourceRestore() {
         <input type="checkbox" id="res-overwrite">
         <span>Replace labour that is already there (otherwise only gaps are filled)</span>
       </label>
+      <!-- P6 matches a resource on import by its ID. Written as the built-in
+           "ELEC" it is a code P6 has never seen, so it CREATES rather than
+           matches — and a login without create-resource privilege has the
+           whole import refused. Typed once and remembered with the job. -->
+      <div class="res-row" style="gap:8px;flex-wrap:wrap;">
+        <span style="font-size:11px;color:var(--text3);flex:0 0 100%;">
+          What your P6 calls this crew — take it from Enterprise → Resources.
+          A code P6 does not already have is one it has to create, which is
+          what makes an import fail on privileges.
+        </span>
+        <input id="res-id" placeholder="Resource ID (e.g. MDC-1-DIR)"
+               value="${escAttr(audit.resource_id || '')}"
+               style="flex:1 1 150px;min-width:130px;" />
+        <input id="res-name" placeholder="Resource Name (e.g. MDC-1-Direct Labor)"
+               value="${escAttr(audit.resource_name || '')}"
+               style="flex:2 1 200px;min-width:160px;" />
+      </div>
       <div id="res-plan" class="res-plan">Checking…</div>
       <div class="res-actions">
         <button class="btn btn-ghost" onclick="closeResourceRestore()">Close</button>
@@ -3352,9 +3369,14 @@ function closeResourceRestore() {
 }
 
 function _resBody(apply) {
+  const v = id => (document.getElementById(id)?.value || '').trim();
   return {
     donor_project_id: document.getElementById('res-donor').value || null,
     overwrite: document.getElementById('res-overwrite').checked,
+    // Blank means "keep whatever this job was told last time" — the server
+    // falls back to the remembered code rather than to the built-in one.
+    resource_id: v('res-id'),
+    resource_name: v('res-name'),
     apply: !!apply,
   };
 }

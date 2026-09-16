@@ -1083,6 +1083,14 @@ class Brain:
         # than in the file so it survives every rebuild: the workbook is
         # generated, so a hand edit to it is gone at the next export.
         self.sheet_spec: Optional[Any] = None
+        # What this job's crew is CALLED in the P6 resource pool. P6 matches a
+        # resource on import by id, so a derived crew written as the built-in
+        # "ELEC" is a code P6 has never seen — it creates rather than matches,
+        # and a login without create-resource privilege has the whole import
+        # refused. Set once per job and kept, because retyping it every time is
+        # how it ends up wrong.
+        self.resource_id: Optional[str] = None
+        self.resource_name: Optional[str] = None
         # Testable statements about the job: contract dates, what must lead to
         # what, what must follow what. Unlike a directive these are CHECKED
         # against the network rather than read as prose, so they can be
@@ -1096,7 +1104,8 @@ class Brain:
                 and not self.requirements
                 and not self.feedback and self.scope is None
                 and (self.library is None or not self.library.docs)
-                and (self.sheet_spec is None or self.sheet_spec.is_empty()))
+                and (self.sheet_spec is None or self.sheet_spec.is_empty())
+                and not self.resource_id)
 
     def record(self, pred_name: str, succ_name: str, accepted: bool) -> str:
         """Remember how a proposed tie of this shape was received."""
@@ -1205,7 +1214,9 @@ class Brain:
                 "sheet_spec": (self.sheet_spec.to_json()
                                if self.sheet_spec and not self.sheet_spec.is_empty()
                                else None),
-                "requirements": list(self.requirements)}
+                "requirements": list(self.requirements),
+                "resource_id": self.resource_id,
+                "resource_name": self.resource_name}
 
     @classmethod
     def from_json(cls, data: Dict[str, Any]) -> "Brain":
@@ -1229,6 +1240,12 @@ class Brain:
         reqs = (data or {}).get("requirements")
         if isinstance(reqs, list):
             b.requirements = [r for r in reqs if isinstance(r, dict)]
+        rid = (data or {}).get("resource_id")
+        if isinstance(rid, str) and rid.strip():
+            b.resource_id = rid.strip()
+        rnm = (data or {}).get("resource_name")
+        if isinstance(rnm, str) and rnm.strip():
+            b.resource_name = rnm.strip()
         raw_fb = (data or {}).get("feedback")
         if isinstance(raw_fb, dict):
             for sig, row in raw_fb.items():
