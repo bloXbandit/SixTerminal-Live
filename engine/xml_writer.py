@@ -1318,7 +1318,9 @@ def _section_resource(root: ET.Element):
 _RES_TYPES = {"Labor", "Nonlabor", "Material"}
 
 
-def _section_real_resources(root: ET.Element, project: Project) -> Dict[str, str]:
+def _section_real_resources(root: ET.Element, project: Project,
+                            cal_oid_map: Optional[Dict[str, str]] = None
+                            ) -> Dict[str, str]:
     """
     Write the resource library the import actually found, and return
     {resource uid -> the ObjectId it was written with}.
@@ -1340,8 +1342,26 @@ def _section_real_resources(root: ET.Element, project: Project) -> Dict[str, str
         el = _sub(root, "Resource")
         _sub(el, "AutoComputeActuals",     "1")
         _sub(el, "CalculateCostFromUnits", "1")
-        _sub(el, "CalendarObjectId",       _GCAL_OID)
-        _sub(el, "CurrencyObjectId",       _CUR_OID)
+        # Left EMPTY unless this resource actually names a calendar we are
+        # writing. Pointing every resource at a global calendar id of our own
+        # invention produced, in the user's own import log:
+        #
+        #   Referenced business object Calendar with object id 6590 was not
+        #   imported, ignoring field CalendarObjectId on Resource 'ELEC'
+        #
+        # P6 tolerates that — logs it and moves on — but it is a reference to
+        # something that does not exist in their database, and a resource
+        # CREATE carrying unresolvable references is a worse create than one
+        # without. Empty means "not specified", and P6 applies its own default.
+        _cal = (cal_oid_map or {}).get(_key(r.calendar_uid)) if r.calendar_uid else None
+        if _cal:
+            _sub(el, "CalendarObjectId", _cal)
+        else:
+            _nil(el, "CalendarObjectId")
+        # Same: currency 1 is a guess at "USD in their database", and their log
+        # reports it as an unresolved reference. This app models no currency,
+        # so saying nothing is the honest thing to write.
+        _nil(el, "CurrencyObjectId")
         _sub(el, "DefaultUnitsPerTime",    _num(r.max_units, 1))
         _nil(el, "EmailAddress")
         _nil(el, "EmployeeId")
@@ -2099,7 +2119,7 @@ def _write_p6_xml_impl(project: Project, output_path: str,
         assignments = []
     res_oid_map: Dict[str, str] = {}
     if include_resources and getattr(project, "resources", None):
-        res_oid_map = _section_real_resources(root, project)
+        res_oid_map = _section_real_resources(root, project, calendar_oid_map)
     elif include_resources and assignments:
         _section_resource(root)
         _section_resource_rate(root)
