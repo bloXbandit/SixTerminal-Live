@@ -549,6 +549,7 @@ def load_xml(path: str) -> Project:
             rate=(_float(rr, "PricePerUnit") if rr is not None else 0.0),
             parent_uid=_text(r_el, "ParentObjectId") or None,
             is_active=_text(r_el, "IsActive", "1") not in ("0", "false", "False"),
+            guid=_text(r_el, "GUID") or None,
         ))
 
     known_res = {r.uid for r in project.resources}
