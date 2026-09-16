@@ -3621,11 +3621,20 @@ def download():
     # writes the same schedule with the UDF blocks left out entirely, so the
     # import goes through while the cause is being worked out.
     include_udfs = request.args.get("udfs", "1").lower() not in ("0", "false", "no")
+    # Resources are ENTERPRISE-GLOBAL in P6, so importing one is a create
+    # against the shared pool. A login without that privilege, or whose
+    # Resource Access covers only part of the hierarchy, has the WHOLE import
+    # refused — "You do not have create privileges on object Resource". The
+    # schedule is fine and the privilege has to come from someone else, so
+    # this writes the same file with no resource section and no assignments.
+    include_resources = request.args.get("resources", "1").lower() not in (
+        "0", "false", "no")
     tmp = tempfile.NamedTemporaryFile(suffix=".xml", delete=False)
     tmp.close()
     try:
         write_p6_xml(project, tmp.name, p6_version=p6_version,
-                     include_udfs=include_udfs)
+                     include_udfs=include_udfs,
+                     include_resources=include_resources)
         return send_file(tmp.name, as_attachment=True, download_name=output_name, mimetype="application/xml")
     except Exception as e:
         return jsonify({"error": f"Export failed: {str(e)}"}), 500
