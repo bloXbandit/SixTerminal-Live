@@ -205,3 +205,96 @@ def test_percent_survives_a_round_trip_at_the_same_scale(tmp_path):
            for a in back.activities}
     assert got["A10"] == 100.0
     assert got["A20"] == 50.0, f"a half-done activity came back as {got['A20']}"
+
+
+# ── P6 refuses a whole import over the resource pool alone ───────────────────
+
+def _res_job():
+    import os
+    import sys
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+    from engine.schedule_model import (Activity, Calendar, Project, Resource,
+                                       ResourceAssignment, WBSNode)
+    p = Project(uid="1", name="J", id="J", data_date="2026-01-05")
+    p.calendars = [Calendar(uid="1", name="Std")]
+    p.wbs_nodes = [WBSNode(uid="w", name="A", code="A")]
+    p.activities = [Activity(uid="u1", activity_id="A10", name="Pull Wire",
+                             wbs_uid="w", calendar_uid="1", planned_duration=40,
+                             planned_start="2026-02-02",
+                             planned_finish="2026-02-06",
+                             remaining_labor_units=80)]
+    p.resources = [Resource(uid="r1", name="Electricians", id="ELEC")]
+    p.resource_assignments = [ResourceAssignment(
+        uid="ra1", activity_uid="u1", resource_uid="r1", remaining_units=80)]
+    p.relations = []
+    p.build_lookups()
+    return p
+
+
+def test_resources_can_be_left_out_of_the_export(tmp_path):
+    """
+    Resources are ENTERPRISE-GLOBAL in P6, so importing one is a create against
+    the shared pool. A login without that privilege gets the WHOLE import
+    refused — "You do not have create privileges on object Resource" — and the
+    privilege has to come from an administrator. The schedule is fine, so this
+    ships it without them rather than waiting on someone else.
+    """
+    import re
+
+    from engine.xml_writer import write_p6_xml
+
+    out = str(tmp_path / "r.xml")
+    write_p6_xml(_res_job(), out, include_resources=True)
+    raw = open(out).read()
+    assert re.search(r"<Resource>", raw), "the normal export lost its resources"
+
+    write_p6_xml(_res_job(), out, include_resources=False)
+    raw = open(out).read()
+    assert not re.search(r"<Resource>", raw)
+
+
+def test_dropping_resources_drops_their_assignments_too(tmp_path):
+    """An assignment naming a resource the file does not carry is a dangling
+    reference, and P6 does not fail on one — it logs it and leaves the field
+    empty, which is the silent version of the same problem."""
+    import re
+
+    from engine.xml_audit import audit
+    from engine.xml_writer import write_p6_xml
+
+    out = str(tmp_path / "r.xml")
+    write_p6_xml(_res_job(), out, include_resources=False)
+    raw = open(out).read()
+    assert not re.search(r"<ResourceAssignment>", raw)
+    assert audit(raw)["ok"], audit(raw)
+
+
+def test_the_schedule_itself_is_unaffected_by_dropping_resources(tmp_path):
+    """Dates, logic and the WBS are the point of the file."""
+    from engine.xml_reader import load_xml
+    from engine.xml_writer import write_p6_xml
+
+    a = str(tmp_path / "with.xml")
+    b = str(tmp_path / "without.xml")
+    write_p6_xml(_res_job(), a, include_resources=True)
+    write_p6_xml(_res_job(), b, include_resources=False)
+    pa, pb = load_xml(a), load_xml(b)
+    key = lambda p: sorted((x.activity_id, str(x.planned_start)[:10],
+                            str(x.planned_finish)[:10], x.wbs_uid is not None)
+                           for x in p.activities)
+    assert key(pa) == key(pb)
+    assert len(pa.wbs_nodes) == len(pb.wbs_nodes)
+
+
+def test_the_endpoint_exposes_it():
+    import server
+    from engine.schedule_model import Project
+    server._projects.clear()
+    server._projects["J"] = server._make_session("J", "t.xml")
+    server._projects["J"]["project"] = _res_job()
+    server._active_id[0] = "J"
+    c = server.app.test_client()
+    body = c.get("/api/download?resources=0").data.decode("utf-8", "replace")
+    assert "<Resource>" not in body
+    body = c.get("/api/download").data.decode("utf-8", "replace")
+    assert "<Resource>" in body, "it now omits resources by default"

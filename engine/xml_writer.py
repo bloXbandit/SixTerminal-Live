@@ -1984,7 +1984,8 @@ def _write_schedule_options(proj_el: ET.Element, proj_uid: str):
 
 def _write_p6_xml_impl(project: Project, output_path: str,
                        p6_version: Optional[str] = None,
-                       include_udfs: bool = True) -> str:
+                       include_udfs: bool = True,
+                       include_resources: bool = True) -> str:
     """
     Serialize a Project to a P6-importable XML file.
 
@@ -2071,10 +2072,29 @@ def _write_p6_xml_impl(project: Project, output_path: str,
     # With assignments but no library (an app-built schedule, or an XER whose
     # RSRC table was not in the file) the original stub still stands: it is
     # what makes those assignments importable at all.
+    # Resources are ENTERPRISE-GLOBAL in P6. Importing one is a create against
+    # the shared resource pool, and a user without that privilege — or whose
+    # Resource Access is limited to a branch of the hierarchy — gets the whole
+    # import refused:
+    #
+    #   BoSecurityException: You do not have create privileges on object Resource
+    #   Error occurred when importing resources. You may be attempting to import
+    #   resources outside of your resource access hierarchy.
+    #
+    # The schedule itself is fine, and a permission that has to be granted by
+    # someone else should not hold up an import. Leaving resources out writes
+    # the same dates, logic and WBS with no resource section at all.
+    #
+    # Assignments go with them, necessarily: an assignment naming a resource
+    # the file does not carry is a dangling reference, and P6 does not fail on
+    # one — it logs it and leaves the field empty, which is the silent version
+    # of the same problem.
+    if not include_resources:
+        assignments = []
     res_oid_map: Dict[str, str] = {}
-    if getattr(project, "resources", None):
+    if include_resources and getattr(project, "resources", None):
         res_oid_map = _section_real_resources(root, project)
-    elif assignments:
+    elif include_resources and assignments:
         _section_resource(root)
         _section_resource_rate(root)
 
@@ -2250,6 +2270,7 @@ def write_p6_xml(
     seed_project_id: Optional[str] = None,
     p6_version: Optional[str] = None,
     include_udfs: bool = True,
+    include_resources: bool = True,
 ) -> str:
     """
     Serialize a Project to P6 XML.
@@ -2287,7 +2308,8 @@ def write_p6_xml(
 
     with _TargetProfileContext(profile):
         return _write_p6_xml_impl(project, output_path, p6_version=p6_version,
-                                  include_udfs=include_udfs)
+                                  include_udfs=include_udfs,
+                                  include_resources=include_resources)
 
 
 write_p6_xml.last_warnings = []

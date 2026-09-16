@@ -2283,6 +2283,15 @@
              title="Leave out user-defined fields (crew counts, comments). Use this if P6 refuses the import with a UDF error.">
         <input type="checkbox" id="omit-udfs"> omit user-defined fields
       </label>
+      <!-- Resources are enterprise-global in P6, so importing one is a CREATE
+           against the shared pool. A login without that privilege has the
+           whole import refused, and the privilege has to come from an
+           administrator — so this ships the schedule without them. -->
+      <label style="display:flex;align-items:center;gap:6px;font-size:10.5px;
+                    color:var(--text3);margin:2px 0 4px;cursor:pointer;"
+             title="Leave out resources and their assignments. Use this if P6 refuses the import with &quot;You do not have create privileges on object Resource&quot; or &quot;outside of your resource access hierarchy&quot;. Dates, logic and the WBS are unaffected.">
+        <input type="checkbox" id="omit-resources"> omit resources &amp; assignments
+      </label>
       <button class="btn btn-ghost btn-full" id="cloud-save-btn" onclick="saveToCloud()"
               style="display:none;" title="Save all loaded schedules to Cloudflare R2">
         ☁ Save to cloud <span class="undo-badge" id="cloud-badge" style="display:none"></span>
@@ -4913,6 +4922,8 @@ function downloadUrl(){
   let u = '/api/download?p6_version=' + encodeURIComponent(p6Version());
   const box = document.getElementById('omit-udfs');
   if(box && box.checked) u += '&udfs=0';
+  const res = document.getElementById('omit-resources');
+  if(res && res.checked) u += '&resources=0';
   return u;
 }
 
