@@ -4334,9 +4334,23 @@ def resources_audit():
     if sess is None or sess["project"] is None:
         return jsonify({"error": "No schedule loaded"}), 400
     from engine.resource_restore import audit
-    return jsonify({"success": True,
-                    "audit": audit(sess["project"],
-                                   request.args.get("crew_field") or None)})
+    got = audit(sess["project"], request.args.get("crew_field") or None)
+    # What this job calls its crew in P6, if it has been told. Returned with
+    # the audit so the form opens with it already filled rather than making
+    # the user find it again — and a code typed once is a code that stays
+    # right, which is the whole point of remembering it.
+    brain = _brain_for(sess["project"])
+    got["resource_id"] = getattr(brain, "resource_id", None) or ""
+    got["resource_name"] = getattr(brain, "resource_name", None) or ""
+    # Failing that, what the schedule already carries — an existing resource is
+    # better evidence of the job's convention than any default of ours.
+    if not got["resource_id"]:
+        for r in (getattr(sess["project"], "resources", None) or []):
+            if r.id:
+                got["resource_id"] = r.id
+                got["resource_name"] = r.name or ""
+                break
+    return jsonify({"success": True, "audit": got})
 
 
 @app.route("/api/resources/restore", methods=["POST"])
@@ -4360,6 +4374,22 @@ def resources_restore():
     from engine.resource_restore import plan as _plan, restore as _restore
 
     data = request.get_json() or {}
+    # The job's own code for its crew, remembered per project. P6 matches a
+    # resource on import by id: written as the built-in "ELEC" it is a code P6
+    # has never seen, so it creates instead of matching and a login without
+    # create-resource privilege has the whole import refused. Told once, it
+    # stops being retyped and stops being wrong.
+    _brain = _brain_for(sess["project"])
+    _rid = (data.get("resource_id") or "").strip() or None
+    _rnm = (data.get("resource_name") or "").strip() or None
+    if _rid:
+        _brain.resource_id = _rid
+    if _rnm:
+        _brain.resource_name = _rnm
+    if _rid or _rnm:
+        _mark_dirty(_active_id[0])
+    data.setdefault("resource_id", _brain.resource_id)
+    data.setdefault("resource_name", _brain.resource_name)
     donor = None
     donor_pid = data.get("donor_project_id")
     if donor_pid:

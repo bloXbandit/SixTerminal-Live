@@ -520,3 +520,86 @@ def test_a_resource_pulled_from_a_donor_keeps_its_guid():
     got = [r for r in (target.resources or []) if r.id == donor.resources[0].id]
     assert got, "the donor's resource never reached the target"
     assert got[0].guid == GUID, "the donor's guid was dropped on the way across"
+
+
+# ── the job's own resource code ──────────────────────────────────────────────
+
+def test_the_resource_code_is_remembered_with_the_job():
+    """
+    P6 matches a resource on import by its ID. Written as the built-in "ELEC"
+    it is a code P6 has never seen, so it CREATES rather than matches — and a
+    login without create-resource privilege has the whole import refused.
+
+    The job's real code (MDC-1-DIR on the subject one) has to be told once and
+    then kept, because retyping it every time is how it ends up wrong.
+    """
+    import server
+
+    p = _job()
+    server._projects.clear()
+    server._brains.clear()
+    server._projects["J"] = server._make_session("J", "t.xml")
+    server._projects["J"]["project"] = p
+    server._active_id[0] = "J"
+    c = server.app.test_client()
+
+    assert c.get("/api/resources/audit").get_json()["audit"]["resource_id"] == ""
+
+    c.post("/api/resources/restore",
+           json={"resource_id": "MDC-1-DIR",
+                 "resource_name": "MDC-1-Direct Labor", "apply": False})
+
+    got = c.get("/api/resources/audit").get_json()["audit"]
+    assert got["resource_id"] == "MDC-1-DIR"
+    assert got["resource_name"] == "MDC-1-Direct Labor"
+
+
+def test_the_remembered_code_reaches_a_derived_resource():
+    """Remembering it is pointless if the export still writes ELEC."""
+    import server
+
+    p = _job(crews=(3, 5, 2))
+    server._projects.clear()
+    server._brains.clear()
+    server._projects["J"] = server._make_session("J", "t.xml")
+    server._projects["J"]["project"] = p
+    server._active_id[0] = "J"
+    c = server.app.test_client()
+    c.post("/api/resources/restore",
+           json={"resource_id": "MDC-1-DIR",
+                 "resource_name": "MDC-1-Direct Labor", "apply": False})
+    # a later call that says nothing must still use it, not fall back to ELEC
+    c.post("/api/resources/restore", json={"apply": True})
+    ids = {r.id for r in (p.resources or [])}
+    assert "MDC-1-DIR" in ids, ids
+    assert "ELEC" not in ids
+
+
+def test_the_code_survives_a_brain_round_trip():
+    """It reaches R2 with the brain or it is forgotten on the next restart."""
+    import json
+
+    from engine.project_brain import Brain
+
+    b = Brain("k")
+    b.resource_id, b.resource_name = "MDC-1-DIR", "MDC-1-Direct Labor"
+    back = Brain.from_json(json.loads(json.dumps(b.to_json())))
+    assert back.resource_id == "MDC-1-DIR"
+    assert back.resource_name == "MDC-1-Direct Labor"
+
+
+def test_an_existing_resource_is_a_better_default_than_ours():
+    """A schedule that already carries a resource has told us its convention."""
+    import server
+
+    from engine.schedule_model import Resource
+
+    p = _job()
+    p.resources = [Resource(uid="r9", id="MDC-1-DIR", name="MDC-1-Direct Labor")]
+    server._projects.clear()
+    server._brains.clear()
+    server._projects["J"] = server._make_session("J", "t.xml")
+    server._projects["J"]["project"] = p
+    server._active_id[0] = "J"
+    got = server.app.test_client().get("/api/resources/audit").get_json()["audit"]
+    assert got["resource_id"] == "MDC-1-DIR"
