@@ -343,3 +343,45 @@ def test_a_resource_this_app_invented_still_gets_a_guid(tmp_path):
     write_p6_xml(p, out)
     got = re.search(r"<Resource>.*?<GUID>([^<]+)</GUID>", open(out).read(), re.S)
     assert got and len(got.group(1)) > 30
+
+
+def test_a_resource_does_not_point_at_a_calendar_we_invented(tmp_path):
+    """
+    From the user's own P6 import log:
+
+      Referenced business object Calendar with object id 6590 was not imported,
+      ignoring field CalendarObjectId on business object Resource 'ELEC' (6900)
+      Unresolved reference null on Resource. CurrencyObjectId = 1
+
+    Every resource was pointed at a global calendar id and a currency id of our
+    own invention, neither of which exists in their database. P6 tolerates it —
+    logs it and moves on — but a resource CREATE carrying unresolvable
+    references is a worse create than one without, and it is noise in a log
+    someone has to read to find the real failure.
+    """
+    import re
+
+    from engine.xml_writer import write_p6_xml
+
+    out = str(tmp_path / "r.xml")
+    write_p6_xml(_res_job(), out)
+    block = re.search(r"<Resource>.*?</Resource>", open(out).read(), re.S).group(0)
+    for tag in ("CalendarObjectId", "CurrencyObjectId"):
+        got = re.search(rf"<{tag}[^>]*>([^<]*)</{tag}>", block)
+        assert got is None or not got.group(1).strip(), \
+            f"{tag} still names something: {got.group(0)}"
+
+
+def test_a_resource_keeps_a_calendar_the_file_really_carries(tmp_path):
+    """Empty is for "we do not know", not for discarding what we do."""
+    import re
+
+    from engine.xml_writer import write_p6_xml
+
+    p = _res_job()
+    p.resources[0].calendar_uid = p.calendars[0].uid
+    out = str(tmp_path / "r.xml")
+    write_p6_xml(p, out)
+    block = re.search(r"<Resource>.*?</Resource>", open(out).read(), re.S).group(0)
+    got = re.search(r"<CalendarObjectId[^>]*>([^<]*)</CalendarObjectId>", block)
+    assert got and got.group(1).strip(), "a real calendar was thrown away"
