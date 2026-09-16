@@ -1345,7 +1345,13 @@ def _section_real_resources(root: ET.Element, project: Project) -> Dict[str, str
         _sub(el, "DefaultUnitsPerTime",    _num(r.max_units, 1))
         _nil(el, "EmailAddress")
         _nil(el, "EmployeeId")
-        _sub(el, "GUID",                   _guid())
+        # The GUID it arrived with, not a new one. P6 matches a resource on
+        # import by GUID: a fresh one each export made the same resource look
+        # new every time, so P6 tried to CREATE it in the enterprise-global
+        # pool rather than match what was already there — which is refused
+        # outright for a login without create-resource privilege, taking the
+        # whole import with it. Minted only for a resource this app invented.
+        _sub(el, "GUID",                   r.guid or _guid())
         _sub(el, "Id",                     r.id or f"RSRC-{i + 1}")
         _sub(el, "IsActive",               "1" if r.is_active else "0")
         _sub(el, "IsOverTimeAllowed",      "0")

@@ -298,3 +298,48 @@ def test_the_endpoint_exposes_it():
     assert "<Resource>" not in body
     body = c.get("/api/download").data.decode("utf-8", "replace")
     assert "<Resource>" in body, "it now omits resources by default"
+
+
+def test_a_resource_keeps_the_guid_it_arrived_with(tmp_path):
+    """
+    P6 identifies a resource on import by its GUID. Minting a fresh one each
+    export made the SAME resource look new every time, so P6 tried to CREATE it
+    against the enterprise-global pool instead of matching the one already
+    sitting there — and a login without create-resource privilege had the whole
+    import refused, dates and logic and all.
+
+    This is why an import could fail on a resource the user could see in their
+    own P6: the pool had it, the file did not present it as the same one.
+    """
+    import re
+
+    from engine.xml_reader import load_xml
+    from engine.xml_writer import write_p6_xml
+
+    p = _res_job()
+    p.resources[0].guid = "{11111111-2222-3333-4444-555555555555}"
+    out = str(tmp_path / "r.xml")
+
+    seen = set()
+    for _ in range(3):
+        write_p6_xml(p, out)
+        raw = open(out).read()
+        seen.add(re.search(r"<Resource>.*?<GUID>([^<]+)</GUID>", raw, re.S).group(1))
+    assert seen == {"{11111111-2222-3333-4444-555555555555}"}, \
+        f"the guid changed between exports: {seen}"
+
+    assert load_xml(out).resources[0].guid == p.resources[0].guid
+
+
+def test_a_resource_this_app_invented_still_gets_a_guid(tmp_path):
+    """Only a resource with no guid of its own is given one."""
+    import re
+
+    from engine.xml_writer import write_p6_xml
+
+    p = _res_job()
+    p.resources[0].guid = None
+    out = str(tmp_path / "r.xml")
+    write_p6_xml(p, out)
+    got = re.search(r"<Resource>.*?<GUID>([^<]+)</GUID>", open(out).read(), re.S)
+    assert got and len(got.group(1)) > 30

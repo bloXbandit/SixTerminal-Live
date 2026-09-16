@@ -125,6 +125,12 @@ class Resource:
     rate: float = 0.0                # price per unit
     parent_uid: Optional[str] = None
     is_active: bool = True
+    # P6 identifies a resource on import by its GUID. Minting a fresh one each
+    # export made the SAME resource look new every time, so P6 tried to CREATE
+    # it against the enterprise-global pool instead of matching the one already
+    # there — and a user without create-resource privilege had the whole import
+    # refused. Carried through so a round trip stays the same resource.
+    guid: Optional[str] = None
     extras: Dict[str, str] = field(default_factory=dict)
 
 
