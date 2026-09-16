@@ -499,3 +499,24 @@ def test_crew_counts_alone_can_cover_history_when_they_are_there():
 
 def test_a_schedule_that_has_not_started_reports_no_history_to_fill():
     assert plan(_job())["started_total"] == 0
+
+
+def test_a_resource_pulled_from_a_donor_keeps_its_guid():
+    """
+    P6 recognises a resource on import by its GUID. Copying a donor's resource
+    without one presents P6 with a resource it has never seen, so it tries to
+    CREATE it in the enterprise-global pool — which a login without that
+    privilege cannot do, and the whole import is refused rather than just the
+    resource. The donor's identity has to come with it.
+    """
+    from engine.resource_restore import restore
+
+    GUID = "{AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE}"
+    target = _job()
+    donor = _donor({"A1000": (80, 40, 40), "A1010": (60, 0, 60)})
+    donor.resources[0].guid = GUID
+
+    restore(target, donor=donor)
+    got = [r for r in (target.resources or []) if r.id == donor.resources[0].id]
+    assert got, "the donor's resource never reached the target"
+    assert got[0].guid == GUID, "the donor's guid was dropped on the way across"

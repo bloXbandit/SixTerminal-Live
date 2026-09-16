@@ -356,7 +356,14 @@ def restore(target: Project,
                 target.resources.append(Resource(
                     uid=r.uid, id=r.id, name=r.name, type=r.type,
                     calendar_uid=None, unit_of_measure=r.unit_of_measure,
-                    max_units=r.max_units, rate=r.rate, is_active=r.is_active))
+                    max_units=r.max_units, rate=r.rate, is_active=r.is_active,
+                    # The donor's GUID comes too. It is how P6 recognises the
+                    # resource on import as one it already has: without it the
+                    # export presents a resource P6 has never seen and tries to
+                    # CREATE it in the enterprise-global pool, which a login
+                    # without that privilege cannot do — and the whole import
+                    # is refused rather than just the resource.
+                    guid=getattr(r, "guid", None)))
                 have_ids.add(r.id)
                 res_by_uid[r.uid] = target.resources[-1]
 
