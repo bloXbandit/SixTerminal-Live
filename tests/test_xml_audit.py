@@ -104,6 +104,67 @@ def test_a_schedule_with_resources_holds_together():
     _ok(p)
 
 
+def test_assigning_a_resource_p6_already_holds_is_not_a_broken_reference():
+    """
+    The mode a login without create-privilege on Resource has to use: write
+    the assignments pointed at a resource already in the target pool, and no
+    <Resource> block at all.
+
+    Every assignment then names an ObjectId this file will never declare —
+    which is the whole point, and which the audit read as one broken pointer
+    per assignment. On the real job that was 1,276 of them on a file that was
+    correct. An audit that cries wolf on a supported mode is one nobody reads.
+    """
+    p = _job()
+    p.resources = [Resource(uid="4521", id="MDC-ELEC", name="MDC Electrician",
+                            type="Labor", max_units=8, rate=72.5)]
+    p.resource_assignments = [
+        ResourceAssignment(uid="ra1", activity_uid="a1", resource_uid="4521",
+                           planned_units=320)]
+    p.build_lookups()
+    _ok(p, include_resources="4147")
+
+
+def test_only_the_resource_that_was_asked_for_is_excused():
+    """
+    The exemption is (field, value), not the field. Exporting against 4147
+    makes THAT pointer deliberate; it does not make a different dangling
+    ResourceObjectId acceptable, and a blanket field exemption would hide
+    exactly the bug this module exists to catch.
+    """
+    xml = ("<Root><ResourceAssignment><ObjectId>1</ObjectId>"
+           "<ResourceObjectId>4147</ResourceObjectId></ResourceAssignment>"
+           "<ResourceAssignment><ObjectId>2</ObjectId>"
+           "<ResourceObjectId>9999</ResourceObjectId></ResourceAssignment>"
+           "</Root>")
+    probs = reference_problems(xml, external={("ResourceObjectId", "4147")})
+    assert [(p["field"], p["value"]) for p in probs] == [("ResourceObjectId", "9999")]
+
+
+def test_an_external_reference_does_not_carry_into_the_next_export():
+    """
+    What the writer aimed outside the file is per-write. A plain export after
+    an assignments-only one must not inherit its exemption, or the audit goes
+    quiet on a real dangling resource for the rest of the process.
+    """
+    import tempfile
+
+    from engine.xml_writer import write_p6_xml
+    p = _job()
+    p.resources = [Resource(uid="4521", id="MDC-ELEC", name="MDC Electrician",
+                            type="Labor", max_units=8, rate=72.5)]
+    p.resource_assignments = [
+        ResourceAssignment(uid="ra1", activity_uid="a1", resource_uid="4521",
+                           planned_units=320)]
+    p.build_lookups()
+
+    with tempfile.NamedTemporaryFile(suffix=".xml") as tmp:
+        write_p6_xml(p, tmp.name, include_resources="4147")
+        assert write_p6_xml.last_external_refs == {("ResourceObjectId", "4147")}
+        write_p6_xml(p, tmp.name)
+        assert write_p6_xml.last_external_refs == set()
+
+
 def test_a_schedule_with_no_calendars_holds_together():
     """An app-built one, relying on the fixed set."""
     p = _job()

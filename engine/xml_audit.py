@@ -34,6 +34,13 @@ from typing import Any, Dict, List, Optional
 # References that are MEANT to point outside the file. These name things that
 # must already exist in the target P6 database, which is why they are settable
 # per environment through write_p6_xml's target_profile.
+#
+# An entry is either a field name — that field always points outside — or a
+# (field, ObjectId) pair, which excuses that one value and no other. The pair
+# form is the one to reach for: exporting against an existing resource makes
+# ResourceObjectId = 4147 deliberate, but it does not make a DIFFERENT
+# dangling ResourceObjectId acceptable, and a blanket field exemption would
+# hide exactly the bug this module exists to catch.
 EXTERNAL_REFS = {
     "ParentEPSObjectId",     # the EPS node the project is imported under
 }
@@ -89,8 +96,11 @@ def reference_problems(xml: str,
     Returns one entry per distinct (reference kind, value), each carrying how
     many times it occurs — a single bad calendar id repeated on two thousand
     activities is one problem, not two thousand.
+
+    `external` holds the references that point outside the file on purpose,
+    as field names or (field, ObjectId) pairs — see EXTERNAL_REFS.
     """
-    external = EXTERNAL_REFS if external is None else external
+    external = EXTERNAL_REFS if external is None else set(external)
     known = set()
     for _, _, declared, _ in _walk(xml):
         if declared is not None:
@@ -99,7 +109,7 @@ def reference_problems(xml: str,
     counts: Dict[tuple, int] = collections.Counter()
     for _, _, _, refs in _walk(xml):
         for tag, val in refs:
-            if tag in external:
+            if tag in external or (tag, val) in external:
                 continue
             if val not in known:
                 counts[(tag, val)] += 1
@@ -130,9 +140,9 @@ def duplicate_ids(xml: str) -> List[Dict[str, Any]]:
             for (parent, tag), c in seen.items() for oid, n in c.items() if n > 1]
 
 
-def audit(xml: str) -> Dict[str, Any]:
+def audit(xml: str, external: Optional[set] = None) -> Dict[str, Any]:
     """Everything this module can check, in one pass."""
-    refs = reference_problems(xml)
+    refs = reference_problems(xml, external=external)
     dups = duplicate_ids(xml)
     return {
         "ok": not refs and not dups,
@@ -164,7 +174,15 @@ def describe(result: Dict[str, Any], limit: int = 10) -> str:
 
 
 def audit_project(project, **write_kw) -> Dict[str, Any]:
-    """Write the project as it would be exported, and audit that."""
+    """
+    Write the project as it would be exported, and audit that.
+
+    The writer says which references it aimed outside the file on purpose —
+    exporting against a resource P6 already holds points every assignment at
+    an ObjectId this file will never declare. Those are read back here, so the
+    audit reports that mode as intended rather than as one broken pointer per
+    assignment.
+    """
     import os
     import tempfile
     from .xml_writer import write_p6_xml
@@ -172,8 +190,10 @@ def audit_project(project, **write_kw) -> Dict[str, Any]:
     tmp.close()
     try:
         write_p6_xml(project, tmp.name, **write_kw)
+        deliberate = EXTERNAL_REFS | set(
+            getattr(write_p6_xml, "last_external_refs", None) or ())
         with open(tmp.name, encoding="utf-8") as fh:
-            return audit(fh.read())
+            return audit(fh.read(), external=deliberate)
     finally:
         try:
             os.unlink(tmp.name)

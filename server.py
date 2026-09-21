@@ -3622,6 +3622,28 @@ def create_new_project():
         return jsonify({"error": f"Project creation failed: {str(e)}", "trace": traceback.format_exc()}), 500
 
 
+def _resources_arg():
+    """
+    How the caller wants resources written: True, False, or a P6 ObjectId.
+
+    Read from the request in one place so the export CHECK audits the same
+    file the download button produces. They used to parse it separately, and
+    a pre-flight that passes on a file nobody is going to download is worse
+    than no pre-flight at all.
+    """
+    _res = request.args.get("resources", "1")
+    if _res.lower() in ("0", "false", "no"):
+        return False
+    if _res.lower() in ("1", "true", "yes", ""):
+        return True
+    # A P6 ObjectId: write the ASSIGNMENTS pointed at a resource that already
+    # exists in the target database, and no <Resource> block at all. This is
+    # what a login that cannot create resources needs — and it mirrors what
+    # the user does by hand, which is to pick the resource already in the pool
+    # rather than make one.
+    return _res.strip()
+
+
 @app.route("/api/download", methods=["GET"])
 def download():
     sess = _get_session()
@@ -3644,18 +3666,7 @@ def download():
     # refused — "You do not have create privileges on object Resource". The
     # schedule is fine and the privilege has to come from someone else, so
     # this writes the same file with no resource section and no assignments.
-    _res = request.args.get("resources", "1")
-    if _res.lower() in ("0", "false", "no"):
-        include_resources = False
-    elif _res.lower() in ("1", "true", "yes", ""):
-        include_resources = True
-    else:
-        # A P6 ObjectId: write the ASSIGNMENTS pointed at a resource that
-        # already exists in the target database, and no <Resource> block at
-        # all. This is what a login that cannot create resources needs — and
-        # it mirrors what the user does by hand, which is to pick the resource
-        # already in the pool rather than make one.
-        include_resources = _res.strip()
+    include_resources = _resources_arg()
     tmp = tempfile.NamedTemporaryFile(suffix=".xml", delete=False)
     tmp.close()
     try:
@@ -3744,7 +3755,10 @@ def export_check():
     refs = []
     if request.args.get("references") in ("1", "true", "yes"):
         from engine.xml_audit import audit_project
-        a = audit_project(sess["project"])
+        # Same resource mode the download would use, so what is checked is
+        # what gets shipped.
+        a = audit_project(sess["project"],
+                          include_resources=_resources_arg())
         refs = a["dangling_references"] + a["duplicate_object_ids"]
         if refs:
             _append_chat(
