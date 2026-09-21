@@ -394,3 +394,58 @@ def test_a_resource_keeps_a_calendar_the_file_really_carries(tmp_path):
     block = re.search(r"<Resource>.*?</Resource>", open(out).read(), re.S).group(0)
     got = re.search(r"<CalendarObjectId[^>]*>([^<]*)</CalendarObjectId>", block)
     assert got and got.group(1).strip(), "a real calendar was thrown away"
+
+
+def test_assignments_can_point_at_a_resource_p6_already_has(tmp_path):
+    """
+    The middle ground between shipping a resource and dropping the labour.
+
+    A login that cannot create resources still has the resource — the user
+    picks it by hand in P6 and sets its units. Their workflow never creates
+    one. So the file should not carry a <Resource> block at all: with nothing
+    to create and nothing to update, P6 checks no privilege, and the
+    assignments resolve against what is already there.
+    """
+    import re
+
+    from engine.xml_writer import write_p6_xml
+
+    out = str(tmp_path / "r.xml")
+    write_p6_xml(_res_job(), out, include_resources="7788")
+    raw = open(out).read()
+    assert not re.search(r"<Resource>", raw), "it still ships a resource to create"
+    assert re.search(r"<ResourceAssignment>", raw), "the labour was dropped"
+    assert set(re.findall(r"<ResourceObjectId>([^<]+)</ResourceObjectId>", raw)) \
+        == {"7788"}
+
+
+def test_the_three_export_modes_are_distinct(tmp_path):
+    import re
+
+    from engine.xml_writer import write_p6_xml
+
+    def shape(flag):
+        out = str(tmp_path / f"{flag}.xml")
+        write_p6_xml(_res_job(), out, include_resources=flag)
+        raw = open(out).read()
+        return (len(re.findall(r"<Resource>", raw)),
+                len(re.findall(r"<ResourceAssignment>", raw)))
+
+    assert shape(True) == (1, 1), "default should carry both"
+    assert shape(False) == (0, 0), "omit should carry neither"
+    assert shape("7788") == (0, 1), "existing should carry assignments only"
+
+
+def test_the_endpoint_takes_an_object_id():
+    import re
+
+    import server
+    server._projects.clear()
+    server._projects["J"] = server._make_session("J", "t.xml")
+    server._projects["J"]["project"] = _res_job()
+    server._active_id[0] = "J"
+    c = server.app.test_client()
+    raw = c.get("/api/download?resources=7788").data.decode("utf-8", "replace")
+    assert "<Resource>" not in raw
+    assert set(re.findall(r"<ResourceObjectId>([^<]+)</ResourceObjectId>", raw)) \
+        == {"7788"}

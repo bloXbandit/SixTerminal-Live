@@ -2116,7 +2116,24 @@ def _write_p6_xml_impl(project: Project, output_path: str,
     # the file does not carry is a dangling reference, and P6 does not fail on
     # one — it logs it and leaves the field empty, which is the silent version
     # of the same problem.
-    if not include_resources:
+    # THREE modes, not two.
+    #
+    #   True                 write the resource and its assignments
+    #   False                write neither
+    #   "<P6 ObjectId>"      write the ASSIGNMENTS ONLY, pointed at a resource
+    #                        that already exists in the target database
+    #
+    # The third is what a user whose P6 login cannot create resources actually
+    # needs. Their manual workflow never creates one either: they pick the
+    # resource already in the pool and set its units. So the file should not
+    # carry a <Resource> block at all — with nothing to create and nothing to
+    # update, P6 has no privilege to check, and the assignments resolve against
+    # the resource that is already there.
+    existing_res_oid = None
+    if isinstance(include_resources, str) and include_resources.strip():
+        existing_res_oid = include_resources.strip()
+        include_resources = False
+    elif not include_resources:
         assignments = []
     res_oid_map: Dict[str, str] = {}
     if include_resources and getattr(project, "resources", None):
@@ -2252,6 +2269,12 @@ def _write_p6_xml_impl(project: Project, output_path: str,
     # If not, no orphan Resource/ResourceRate blocks are written above.
     res_type_by_uid = {_key(r.uid): (r.type if r.type in _RES_TYPES else "Labor")
                        for r in (getattr(project, "resources", None) or [])}
+    if existing_res_oid:
+        # Every assignment names the resource P6 already holds. Labor, because
+        # that is what a crew is and what the units mean.
+        res_oid_map = {_key(r.uid): existing_res_oid
+                       for r in (getattr(project, "resources", None) or [])}
+        res_type_by_uid = {k: "Labor" for k in res_oid_map}
     for idx, assignment in enumerate(assignments):
         _write_resource_assignment(
             proj_el,

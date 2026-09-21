@@ -3627,8 +3627,18 @@ def download():
     # refused — "You do not have create privileges on object Resource". The
     # schedule is fine and the privilege has to come from someone else, so
     # this writes the same file with no resource section and no assignments.
-    include_resources = request.args.get("resources", "1").lower() not in (
-        "0", "false", "no")
+    _res = request.args.get("resources", "1")
+    if _res.lower() in ("0", "false", "no"):
+        include_resources = False
+    elif _res.lower() in ("1", "true", "yes", ""):
+        include_resources = True
+    else:
+        # A P6 ObjectId: write the ASSIGNMENTS pointed at a resource that
+        # already exists in the target database, and no <Resource> block at
+        # all. This is what a login that cannot create resources needs — and
+        # it mirrors what the user does by hand, which is to pick the resource
+        # already in the pool rather than make one.
+        include_resources = _res.strip()
     tmp = tempfile.NamedTemporaryFile(suffix=".xml", delete=False)
     tmp.close()
     try:
