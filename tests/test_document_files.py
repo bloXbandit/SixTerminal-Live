@@ -264,3 +264,61 @@ def test_a_document_kept_before_the_name_was_recorded_still_downloads(app):
     r = app.get(f"/api/documents/{doc['id']}/file")
     assert r.status_code == 200
     assert "old" in r.headers["Content-Disposition"]
+
+
+# ── the schedule you loaded is a document too ────────────────────────────────
+
+def test_the_uploaded_schedule_is_archived_and_downloadable(tmp_path):
+    """
+    The app holds a MODEL of the schedule, not the schedule. A re-export is
+    this app's rendering of it, and anything the model does not carry is gone
+    from that rendering forever. The original is the only copy of what P6
+    actually sent — and "can I get back the XER I loaded in September" had no
+    other answer.
+    """
+    import server
+
+    server._projects.clear()
+    server._brains.clear()
+    c = server.app.test_client()
+
+    blob = (b'<?xml version="1.0"?><APIBusinessObjects>'
+            b"<Project><Id>J</Id><Name>J</Name><ObjectId>1</ObjectId></Project>"
+            b"</APIBusinessObjects>")
+    r = c.post("/api/upload",
+               data={"file": (io.BytesIO(blob), "sept-baseline.xml")},
+               content_type="multipart/form-data")
+    assert r.status_code == 200, r.get_data(as_text=True)[:200]
+
+    docs = c.get("/api/documents").get_json().get("documents", [])
+    mine = [d for d in docs if d["name"] == "sept-baseline.xml"]
+    assert mine, f"the upload was not archived: {[d['name'] for d in docs]}"
+    assert mine[0]["has_file"], "archived without the file"
+
+    back = c.get(f"/api/documents/{mine[0]['id']}/file")
+    assert back.status_code == 200
+    assert back.data == blob, "what came back is not what was uploaded"
+
+
+def test_a_failed_archive_never_costs_the_upload():
+    """Filing a copy is a convenience. Losing the schedule over it is not."""
+    import server
+
+    server._projects.clear()
+    server._brains.clear()
+    real = server._keep_document_file
+
+    def boom(*a, **k):
+        raise RuntimeError("no room at the inn")
+
+    server._keep_document_file = boom
+    try:
+        blob = (b'<?xml version="1.0"?><APIBusinessObjects>'
+                b"<Project><Id>J</Id><Name>J</Name><ObjectId>1</ObjectId></Project>"
+                b"</APIBusinessObjects>")
+        r = server.app.test_client().post(
+            "/api/upload", data={"file": (io.BytesIO(blob), "x.xml")},
+            content_type="multipart/form-data")
+        assert r.status_code == 200, "the upload failed because the archive did"
+    finally:
+        server._keep_document_file = real
