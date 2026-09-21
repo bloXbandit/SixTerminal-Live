@@ -603,3 +603,27 @@ def test_an_existing_resource_is_a_better_default_than_ours():
     server._active_id[0] = "J"
     got = server.app.test_client().get("/api/resources/audit").get_json()["audit"]
     assert got["resource_id"] == "MDC-1-DIR"
+
+
+def test_the_audit_hands_back_the_p6_object_id():
+    """
+    An assignment names a resource by ObjectId, not by code. An XER's RSRC
+    table keys on rsrc_id, which IS the ObjectId — so a schedule exported from
+    the user's own P6 already carries the number, and there is nothing for them
+    to go and look up.
+    """
+    import server
+
+    from engine.schedule_model import Resource
+
+    p = _job()
+    p.resources = [Resource(uid="6900", id="MDC-1-DIR",
+                            name="MDC-1-Direct Labor")]
+    server._projects.clear()
+    server._brains.clear()
+    server._projects["J"] = server._make_session("J", "t.xml")
+    server._projects["J"]["project"] = p
+    server._active_id[0] = "J"
+    got = server.app.test_client().get("/api/resources/audit").get_json()["audit"]
+    assert got["resource_object_ids"] == [
+        {"object_id": "6900", "id": "MDC-1-DIR", "name": "MDC-1-Direct Labor"}]

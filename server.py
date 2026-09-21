@@ -861,6 +861,23 @@ def upload_file():
         # histories is what made loading a second schedule a way to run the
         # host out of memory and lose the session.
         _shed_idle_history(pid)
+        # Keep the file exactly as it arrived, in this job's documents. The app
+        # holds a MODEL of the schedule, not the schedule: a re-export is this
+        # app's rendering of it, and anything it does not model is gone from
+        # that rendering forever. The original is the only copy of what P6
+        # actually sent, and "can I get back the XER I loaded in September" is
+        # a question with no other answer.
+        try:
+            from engine import doc_library as _dl
+            _blob = Path(tmp.name).read_bytes()
+            _doc = _brain_for(project).docs().add_text(
+                filename, _dl.SPREADSHEET if ext == ".xer" else _dl.PDF,
+                {"lines": [], "pages": 0, "sheets": [], "line_count": 0})
+            _doc.kind = "schedule"
+            _keep_document_file(pid, _doc, _blob, filename,
+                                _mimetype_of(filename))
+        except Exception:
+            pass                      # an archive that fails must not cost the upload
         _mark_dirty(pid)
 
         # A re-export of a job already known here keeps what was taught about
@@ -4360,6 +4377,14 @@ def resources_audit():
                 got["resource_id"] = r.id
                 got["resource_name"] = r.name or ""
                 break
+    # The P6 ObjectId of whatever resources this file carries. An XER's RSRC
+    # table keys on rsrc_id, which IS the ObjectId, so a schedule exported from
+    # the user's own P6 already tells us the number an assignment has to name —
+    # there is nothing for them to go and look up.
+    got["resource_object_ids"] = [
+        {"object_id": r.uid, "id": r.id, "name": r.name}
+        for r in (getattr(sess["project"], "resources", None) or [])
+        if r.uid]
     return jsonify({"success": True, "audit": got})
 
 
