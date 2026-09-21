@@ -2292,6 +2292,16 @@
              title="Leave out resources and their assignments. Use this if P6 refuses the import with &quot;You do not have create privileges on object Resource&quot; or &quot;outside of your resource access hierarchy&quot;. Dates, logic and the WBS are unaffected.">
         <input type="checkbox" id="omit-resources"> omit resources &amp; assignments
       </label>
+      <!-- The middle ground: P6 already HAS the resource, the login just may
+           not create one. Sending the assignments pointed at its ObjectId
+           means nothing is created or updated, so no privilege is checked. -->
+      <label style="display:flex;align-items:center;gap:6px;font-size:10.5px;
+                    color:var(--text3);margin:2px 0 4px;"
+             title="If P6 already has the resource, put its ObjectId here. The export then carries the assignments and man-hours pointed at it, with no Resource block — nothing to create, so no create privilege needed.">
+        <span style="white-space:nowrap;">use existing resource</span>
+        <input id="existing-res-oid" placeholder="P6 ObjectId"
+               style="width:90px;font-size:10.5px;padding:2px 4px;" />
+      </label>
       <button class="btn btn-ghost btn-full" id="cloud-save-btn" onclick="saveToCloud()"
               style="display:none;" title="Save all loaded schedules to Cloudflare R2">
         ☁ Save to cloud <span class="undo-badge" id="cloud-badge" style="display:none"></span>
@@ -4945,7 +4955,11 @@ function downloadUrl(){
   const box = document.getElementById('omit-udfs');
   if(box && box.checked) u += '&udfs=0';
   const res = document.getElementById('omit-resources');
-  if(res && res.checked) u += '&resources=0';
+  const oid = (document.getElementById('existing-res-oid')?.value || '').trim();
+  // An ObjectId wins: it is the more specific instruction, and ticking the box
+  // as well is a contradiction rather than a stronger version of the same ask.
+  if(oid) u += '&resources=' + encodeURIComponent(oid);
+  else if(res && res.checked) u += '&resources=0';
   return u;
 }
 
