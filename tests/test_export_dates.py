@@ -366,10 +366,36 @@ def test_a_resource_does_not_point_at_a_calendar_we_invented(tmp_path):
     out = str(tmp_path / "r.xml")
     write_p6_xml(_res_job(), out)
     block = re.search(r"<Resource>.*?</Resource>", open(out).read(), re.S).group(0)
-    for tag in ("CalendarObjectId", "CurrencyObjectId"):
-        got = re.search(rf"<{tag}[^>]*>([^<]*)</{tag}>", block)
-        assert got is None or not got.group(1).strip(), \
-            f"{tag} still names something: {got.group(0)}"
+    got = re.search(r"<CalendarObjectId[^>]*>([^<]*)</CalendarObjectId>", block)
+    assert got is None or not got.group(1).strip(), \
+        f"CalendarObjectId still names something: {got.group(0)}"
+
+
+def test_a_resource_always_carries_a_currency(tmp_path):
+    """
+    CurrencyObjectId is MANDATORY on a resource. Writing it empty is a hard
+    failure, not a warning:
+
+      SEVERE: Field CurrencyObjectId may not be set to null.
+      InvalidValueException: Field CurrencyObjectId may not be set to null.
+
+    It was briefly nil-ed on a misreading of an earlier log, where
+    "Unresolved reference null on Resource.  CurrencyObjectId = 1" looked like
+    a complaint about the 1. The same import reported "Currency 'USD' (1)
+    matched by 1 from xml" — so 1 resolves, and the earlier line was context,
+    not the error.
+    """
+    import re
+
+    from engine.xml_writer import write_p6_xml
+
+    out = str(tmp_path / "r.xml")
+    write_p6_xml(_res_job(), out)
+    block = re.search(r"<Resource>.*?</Resource>", open(out).read(), re.S).group(0)
+    got = re.search(r"<CurrencyObjectId[^>]*>([^<]*)</CurrencyObjectId>", block)
+    assert got and got.group(1).strip(), \
+        "CurrencyObjectId is empty — P6 refuses the import outright"
+    assert "nil" not in re.search(r"<CurrencyObjectId[^>]*>", block).group(0)
 
 
 def test_a_resource_keeps_a_calendar_the_file_really_carries(tmp_path):
