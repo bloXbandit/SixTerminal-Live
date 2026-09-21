@@ -1358,10 +1358,18 @@ def _section_real_resources(root: ET.Element, project: Project,
             _sub(el, "CalendarObjectId", _cal)
         else:
             _nil(el, "CalendarObjectId")
-        # Same: currency 1 is a guess at "USD in their database", and their log
-        # reports it as an unresolved reference. This app models no currency,
-        # so saying nothing is the honest thing to write.
-        _nil(el, "CurrencyObjectId")
+        # MANDATORY. Writing it empty is a hard failure, not a warning:
+        #
+        #   SEVERE: Field CurrencyObjectId may not be set to null.
+        #   InvalidValueException: Field CurrencyObjectId may not be set to null.
+        #
+        # It was briefly nil-ed here on a misreading of an earlier log, where
+        #   "Unresolved reference null on Resource.  CurrencyObjectId = 1"
+        # looked like a complaint about the 1. It was not — the same import
+        # reported "Currency 'USD' (1) matched by 1 from xml", so 1 resolves.
+        # USD is ObjectId 1 in a default P6 install, and this app models no
+        # currency of its own, so 1 is both the right guess and a required one.
+        _sub(el, "CurrencyObjectId",       _CUR_OID)
         _sub(el, "DefaultUnitsPerTime",    _num(r.max_units, 1))
         _nil(el, "EmailAddress")
         _nil(el, "EmployeeId")
