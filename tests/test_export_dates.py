@@ -345,45 +345,26 @@ def test_a_resource_this_app_invented_still_gets_a_guid(tmp_path):
     assert got and len(got.group(1)) > 30
 
 
-def test_a_resource_does_not_point_at_a_calendar_we_invented(tmp_path):
+def test_a_resource_never_writes_an_empty_mandatory_reference(tmp_path):
     """
-    From the user's own P6 import log:
+    CalendarObjectId and CurrencyObjectId are both MANDATORY on a Resource.
+    Emptying them does not soften a warning, it fails the import outright, one
+    field at a time:
 
-      Referenced business object Calendar with object id 6590 was not imported,
-      ignoring field CalendarObjectId on business object Resource 'ELEC' (6900)
-      Unresolved reference null on Resource. CurrencyObjectId = 1
+      SEVERE: Field CurrencyObjectId may not be set to null.   (element 1336)
+      SEVERE: Field CalendarObjectId may not be set to null.   (element 1336)
 
-    Every resource was pointed at a global calendar id and a currency id of our
-    own invention, neither of which exists in their database. P6 tolerates it —
-    logs it and moves on — but a resource CREATE carrying unresolvable
-    references is a worse create than one without, and it is noise in a log
-    someone has to read to find the real failure.
-    """
-    import re
+    They were nil-ed on a misreading of
 
-    from engine.xml_writer import write_p6_xml
+      Unresolved reference null on Resource.
+          CurrencyObjectId = 1
 
-    out = str(tmp_path / "r.xml")
-    write_p6_xml(_res_job(), out)
-    block = re.search(r"<Resource>.*?</Resource>", open(out).read(), re.S).group(0)
-    got = re.search(r"<CalendarObjectId[^>]*>([^<]*)</CalendarObjectId>", block)
-    assert got is None or not got.group(1).strip(), \
-        f"CalendarObjectId still names something: {got.group(0)}"
+    as a complaint about the values. It is not. The same import reports
+    "Currency 'USD' (1) matched by 1 from xml", and the calendar only ever
+    draws a WARNING — "Calendar 'G5-DAY NO HOLIDAY' (6590) is not created as
+    security privilege is not assigned" — which P6 logs and carries on from.
 
-
-def test_a_resource_always_carries_a_currency(tmp_path):
-    """
-    CurrencyObjectId is MANDATORY on a resource. Writing it empty is a hard
-    failure, not a warning:
-
-      SEVERE: Field CurrencyObjectId may not be set to null.
-      InvalidValueException: Field CurrencyObjectId may not be set to null.
-
-    It was briefly nil-ed on a misreading of an earlier log, where
-    "Unresolved reference null on Resource.  CurrencyObjectId = 1" looked like
-    a complaint about the 1. The same import reported "Currency 'USD' (1)
-    matched by 1 from xml" — so 1 resolves, and the earlier line was context,
-    not the error.
+    A pointer P6 ignores is survivable. An empty one is not.
     """
     import re
 
@@ -392,10 +373,12 @@ def test_a_resource_always_carries_a_currency(tmp_path):
     out = str(tmp_path / "r.xml")
     write_p6_xml(_res_job(), out)
     block = re.search(r"<Resource>.*?</Resource>", open(out).read(), re.S).group(0)
-    got = re.search(r"<CurrencyObjectId[^>]*>([^<]*)</CurrencyObjectId>", block)
-    assert got and got.group(1).strip(), \
-        "CurrencyObjectId is empty — P6 refuses the import outright"
-    assert "nil" not in re.search(r"<CurrencyObjectId[^>]*>", block).group(0)
+    for tag in ("CalendarObjectId", "CurrencyObjectId"):
+        opening = re.search(rf"<{tag}[^>]*>", block)
+        assert opening and "nil" not in opening.group(0), \
+            f"{tag} is nil — P6 refuses the whole import"
+        got = re.search(rf"<{tag}[^>]*>([^<]*)</{tag}>", block)
+        assert got and got.group(1).strip(), f"{tag} is empty"
 
 
 def test_a_resource_keeps_a_calendar_the_file_really_carries(tmp_path):

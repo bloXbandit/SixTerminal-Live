@@ -1342,34 +1342,27 @@ def _section_real_resources(root: ET.Element, project: Project,
         el = _sub(root, "Resource")
         _sub(el, "AutoComputeActuals",     "1")
         _sub(el, "CalculateCostFromUnits", "1")
-        # Left EMPTY unless this resource actually names a calendar we are
-        # writing. Pointing every resource at a global calendar id of our own
-        # invention produced, in the user's own import log:
+        # BOTH of these are MANDATORY on a Resource. Emptying them does not
+        # soften a warning, it fails the import outright — one field at a time:
         #
-        #   Referenced business object Calendar with object id 6590 was not
-        #   imported, ignoring field CalendarObjectId on Resource 'ELEC'
+        #   SEVERE: Field CurrencyObjectId may not be set to null.   (element 1336)
+        #   SEVERE: Field CalendarObjectId may not be set to null.   (element 1336)
         #
-        # P6 tolerates that — logs it and moves on — but it is a reference to
-        # something that does not exist in their database, and a resource
-        # CREATE carrying unresolvable references is a worse create than one
-        # without. Empty means "not specified", and P6 applies its own default.
-        _cal = (cal_oid_map or {}).get(_key(r.calendar_uid)) if r.calendar_uid else None
-        if _cal:
-            _sub(el, "CalendarObjectId", _cal)
-        else:
-            _nil(el, "CalendarObjectId")
-        # MANDATORY. Writing it empty is a hard failure, not a warning:
-        #
-        #   SEVERE: Field CurrencyObjectId may not be set to null.
-        #   InvalidValueException: Field CurrencyObjectId may not be set to null.
-        #
-        # It was briefly nil-ed here on a misreading of an earlier log, where
+        # They were nil-ed on a misreading of
         #   "Unresolved reference null on Resource.  CurrencyObjectId = 1"
-        # looked like a complaint about the 1. It was not — the same import
-        # reported "Currency 'USD' (1) matched by 1 from xml", so 1 resolves.
-        # USD is ObjectId 1 in a default P6 install, and this app models no
-        # currency of its own, so 1 is both the right guess and a required one.
-        _sub(el, "CurrencyObjectId",       _CUR_OID)
+        # as a complaint about the values. It is not: the same import reports
+        # "Currency 'USD' (1) matched by 1 from xml", and the calendar line is
+        # only ever a WARNING —
+        #   "Calendar 'G5-DAY NO HOLIDAY' (6590) is not created as security
+        #    privilege is not assigned"
+        # — which P6 logs and carries on from, leaving the field at its own
+        # default. A pointer P6 ignores is survivable; an empty one is not.
+        #
+        # So: the resource's real calendar when this file carries one, the
+        # global default otherwise, and never nothing.
+        _cal = (cal_oid_map or {}).get(_key(r.calendar_uid)) if r.calendar_uid else None
+        _sub(el, "CalendarObjectId",        _cal or _GCAL_OID)
+        _sub(el, "CurrencyObjectId",        _CUR_OID)
         _sub(el, "DefaultUnitsPerTime",    _num(r.max_units, 1))
         _nil(el, "EmailAddress")
         _nil(el, "EmployeeId")
