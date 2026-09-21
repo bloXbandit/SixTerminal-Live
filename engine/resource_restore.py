@@ -95,6 +95,47 @@ def _crew_of(act: Activity, field: Optional[str]) -> Optional[float]:
     return _as_num((getattr(act, "udfs", None) or {}).get(field))
 
 
+def assignable_resource(project: Project) -> Optional[Resource]:
+    """
+    The resource an assignment should actually name.
+
+    P6's resource library is a TREE and only its leaves are crews — the nodes
+    above them are containers. That matters on import, because a reference to
+    a container makes P6 walk up to the root to check access, which is what
+    produces "outside of your resource access hierarchy" on a login that holds
+    the leaf perfectly happily.
+
+    Picked from what the schedule itself says, strongest evidence first: the
+    resource the most assignments already point at, then a resource nothing
+    else parents, then the first one there is. Taking the first in the list is
+    what this used to do, and on a three-level library it picked JER — the
+    root of the tree, a person nobody books hours to — and put a third of the
+    job's labour on it.
+    """
+    resources = list(getattr(project, "resources", None) or [])
+    if not resources:
+        return None
+    by_uid = {str(r.uid): r for r in resources if r.uid}
+
+    # What the assignments vote for. A resource carrying real rows is the one
+    # this job books to, whatever the library looks like.
+    votes: Dict[str, int] = {}
+    for a in (getattr(project, "resource_assignments", None) or []):
+        k = str(getattr(a, "resource_uid", "") or "")
+        if k in by_uid:
+            votes[k] = votes.get(k, 0) + 1
+    if votes:
+        return by_uid[max(votes, key=lambda k: (votes[k], k))]
+
+    # No assignments to learn from: take a leaf, since a container is the one
+    # thing we know P6 will refuse.
+    parents = {str(r.parent_uid) for r in resources if r.parent_uid}
+    for r in resources:
+        if r.uid and str(r.uid) not in parents:
+            return r
+    return resources[0]
+
+
 def _has_labour(act: Activity, assigned: bool) -> bool:
     """Whether this activity already carries labour worth keeping."""
     return assigned or any((getattr(act, f, 0) or 0) > 0 for f in
@@ -109,14 +150,18 @@ def _split(units: float, act: Activity) -> Tuple[float, float]:
     This is what P6 does with Auto Compute Actuals on: the split follows the
     activity's progress rather than being typed. Complete means all of it is
     behind the data date, not started means all of it is in front, and in
-    progress is cut at the percentage. Percent complete is a FRACTION here,
-    not 0..100 — multiplying by a whole number would put a hundred times the
-    hours on the wrong side of the data date.
+    progress is cut at the percentage.
+
+    percent_complete is 0..100 in this model — what edit_engine and actualize
+    both write, and what the reader scales P6's fraction into. This clamped it
+    to 1.0 instead, so every activity at 1% or more booked ALL of its hours as
+    spent: a 50%-done pull showed nothing left to do and the usage profile put
+    the whole crew behind the data date.
     """
     if act.status == _DONE:
         return units, 0.0
     if act.status == _WIP:
-        pct = min(max(float(act.percent_complete or 0), 0.0), 1.0)
+        pct = min(max(float(act.percent_complete or 0) / 100.0, 0.0), 1.0)
         spent = round(units * pct, 2)
         return spent, round(units - spent, 2)
     return 0.0, units

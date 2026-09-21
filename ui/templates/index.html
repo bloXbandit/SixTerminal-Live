@@ -4950,6 +4950,35 @@ function setP6Version(v){
   if (s) s.value = v;
   flashSched(`Exports will target P6 ${v}`);
 }
+/**
+ * Fill the "use existing resource" box from the schedule, if it is empty.
+ *
+ * A schedule that came out of the user's own P6 carries P6's own resources,
+ * ObjectIds and all. Exporting it as-is writes them as things to CREATE
+ * against the enterprise-global pool — and because the library is a tree,
+ * P6 checks access at its ROOT, which an ordinary login does not hold. The
+ * import is refused whole, and the only clue is a log naming an ObjectId.
+ *
+ * The number that fixes it is one the app already knows. Leaving it to be
+ * typed from memory meant three imports in a row came back failed, so it is
+ * filled in here, visibly, where it can be read and cleared. Never over the
+ * top of a value already there, and never when "omit resources" is ticked —
+ * both are explicit instructions and this is only a default.
+ */
+async function primeResourceOid(){
+  const box = document.getElementById('existing-res-oid');
+  const omit = document.getElementById('omit-resources');
+  if (!box || box.value.trim() || (omit && omit.checked)) return;
+  try {
+    const a = (await fetch('/api/resources/audit').then(_readJson)).audit;
+    if (!a || !a.assignable_object_id) return;
+    box.value = a.assignable_object_id;
+    const who = a.resource_id ? `${a.resource_id} (${a.assignable_object_id})`
+                              : a.assignable_object_id;
+    flashSched(`Assignments will name the resource P6 already has — ${who}`);
+  } catch(_) { /* a default that cannot be worked out is just no default */ }
+}
+
 function downloadUrl(){
   let u = '/api/download?p6_version=' + encodeURIComponent(p6Version());
   const box = document.getElementById('omit-udfs');
@@ -5071,6 +5100,10 @@ async function startDownload() {
              btn.disabled = true; btn.textContent = '⏳ Checking…'; }
   const done = () => { if (btn) { delete btn.dataset.busy;
                                   btn.disabled = false; btn.textContent = label; } };
+  // Before any URL is built: a schedule carrying P6's own resources exports,
+  // by default, into an import P6 refuses outright. Every download path runs
+  // through here, so this is the one place that catches all of them.
+  try { await primeResourceOid(); } catch(e) { /* non-fatal */ }
   try {
     if(!(await checkExportDates())) { done(); return; }
   } catch(e) { done(); }

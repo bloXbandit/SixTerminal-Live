@@ -4374,8 +4374,9 @@ def resources_audit():
     sess = _get_session()
     if sess is None or sess["project"] is None:
         return jsonify({"error": "No schedule loaded"}), 400
-    from engine.resource_restore import audit
+    from engine.resource_restore import assignable_resource, audit
     got = audit(sess["project"], request.args.get("crew_field") or None)
+    pick = assignable_resource(sess["project"])
     # What this job calls its crew in P6, if it has been told. Returned with
     # the audit so the form opens with it already filled rather than making
     # the user find it again — and a code typed once is a code that stays
@@ -4384,13 +4385,13 @@ def resources_audit():
     got["resource_id"] = getattr(brain, "resource_id", None) or ""
     got["resource_name"] = getattr(brain, "resource_name", None) or ""
     # Failing that, what the schedule already carries — an existing resource is
-    # better evidence of the job's convention than any default of ours.
-    if not got["resource_id"]:
-        for r in (getattr(sess["project"], "resources", None) or []):
-            if r.id:
-                got["resource_id"] = r.id
-                got["resource_name"] = r.name or ""
-                break
+    # better evidence of the job's convention than any default of ours. The
+    # one the ASSIGNMENTS point at, not the first in the list: on a P6 library
+    # that is a tree, the first is the root, and picking it put 863 rows on a
+    # node nobody books hours to.
+    if not got["resource_id"] and pick is not None:
+        got["resource_id"] = pick.id or ""
+        got["resource_name"] = pick.name or ""
     # The P6 ObjectId of whatever resources this file carries. An XER's RSRC
     # table keys on rsrc_id, which IS the ObjectId, so a schedule exported from
     # the user's own P6 already tells us the number an assignment has to name —
@@ -4399,6 +4400,13 @@ def resources_audit():
         {"object_id": r.uid, "id": r.id, "name": r.name}
         for r in (getattr(sess["project"], "resources", None) or [])
         if r.uid]
+    # The one the export box should open with. Exporting a schedule that
+    # carries P6's own resources writes them as things to CREATE against the
+    # enterprise pool, starting at the root of the tree — which is refused,
+    # and which the user then has to diagnose from a log naming an ObjectId.
+    # The app already knows the number; making someone go and look it up in
+    # P6, every time, is how three imports in a row came back failed.
+    got["assignable_object_id"] = (pick.uid if pick is not None else "") or ""
     return jsonify({"success": True, "audit": got})
 
 
