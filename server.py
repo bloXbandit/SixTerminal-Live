@@ -3622,6 +3622,48 @@ def create_new_project():
         return jsonify({"error": f"Project creation failed: {str(e)}", "trace": traceback.format_exc()}), 500
 
 
+def _resources_arg(project=None):
+    """
+    How the caller wants resources written: True, False, or a P6 ObjectId.
+
+    Read from the request in one place so the export CHECK audits the same
+    file the download button produces. They used to parse it separately, and
+    a pre-flight that passes on a file nobody is going to download is worse
+    than no pre-flight at all.
+
+    With no `resources` in the query at all, this picks the safe answer rather
+    than the destructive one. A schedule read out of the user's own P6 carries
+    P6's own resources, ObjectIds and hierarchy; writing them back asks P6 to
+    CREATE and RE-PARENT rows in the enterprise-global pool, which an ordinary
+    login is refused outright — and the refusal takes the whole import, not
+    just the resource. Assigning to what P6 already has changes nothing and
+    needs no privilege. Shipping resources for creation is still available by
+    asking for it by name (`resources=1`); it is just no longer what you get
+    by saying nothing.
+    """
+    _res = request.args.get("resources")
+    if _res is None and project is not None:
+        from engine.resource_restore import assignable_resource
+        pick = assignable_resource(project)
+        # Only when the ObjectId is P6's. A resource this app derived has a
+        # uid of its own making, and pointing assignments at that would name
+        # a row no database has.
+        if pick is not None and str(pick.uid).isdigit():
+            return str(pick.uid)
+        return True
+    _res = _res if _res is not None else "1"
+    if _res.lower() in ("0", "false", "no"):
+        return False
+    if _res.lower() in ("1", "true", "yes", ""):
+        return True
+    # A P6 ObjectId: write the ASSIGNMENTS pointed at a resource that already
+    # exists in the target database, and no <Resource> block at all. This is
+    # what a login that cannot create resources needs — and it mirrors what
+    # the user does by hand, which is to pick the resource already in the pool
+    # rather than make one.
+    return _res.strip()
+
+
 @app.route("/api/download", methods=["GET"])
 def download():
     sess = _get_session()
@@ -3644,18 +3686,7 @@ def download():
     # refused — "You do not have create privileges on object Resource". The
     # schedule is fine and the privilege has to come from someone else, so
     # this writes the same file with no resource section and no assignments.
-    _res = request.args.get("resources", "1")
-    if _res.lower() in ("0", "false", "no"):
-        include_resources = False
-    elif _res.lower() in ("1", "true", "yes", ""):
-        include_resources = True
-    else:
-        # A P6 ObjectId: write the ASSIGNMENTS pointed at a resource that
-        # already exists in the target database, and no <Resource> block at
-        # all. This is what a login that cannot create resources needs — and
-        # it mirrors what the user does by hand, which is to pick the resource
-        # already in the pool rather than make one.
-        include_resources = _res.strip()
+    include_resources = _resources_arg(project)
     tmp = tempfile.NamedTemporaryFile(suffix=".xml", delete=False)
     tmp.close()
     try:
@@ -3744,7 +3775,10 @@ def export_check():
     refs = []
     if request.args.get("references") in ("1", "true", "yes"):
         from engine.xml_audit import audit_project
-        a = audit_project(sess["project"])
+        # Same resource mode the download would use, so what is checked is
+        # what gets shipped.
+        a = audit_project(sess["project"],
+                          include_resources=_resources_arg(sess["project"]))
         refs = a["dangling_references"] + a["duplicate_object_ids"]
         if refs:
             _append_chat(
@@ -4360,8 +4394,9 @@ def resources_audit():
     sess = _get_session()
     if sess is None or sess["project"] is None:
         return jsonify({"error": "No schedule loaded"}), 400
-    from engine.resource_restore import audit
+    from engine.resource_restore import assignable_resource, audit
     got = audit(sess["project"], request.args.get("crew_field") or None)
+    pick = assignable_resource(sess["project"])
     # What this job calls its crew in P6, if it has been told. Returned with
     # the audit so the form opens with it already filled rather than making
     # the user find it again — and a code typed once is a code that stays
@@ -4370,13 +4405,13 @@ def resources_audit():
     got["resource_id"] = getattr(brain, "resource_id", None) or ""
     got["resource_name"] = getattr(brain, "resource_name", None) or ""
     # Failing that, what the schedule already carries — an existing resource is
-    # better evidence of the job's convention than any default of ours.
-    if not got["resource_id"]:
-        for r in (getattr(sess["project"], "resources", None) or []):
-            if r.id:
-                got["resource_id"] = r.id
-                got["resource_name"] = r.name or ""
-                break
+    # better evidence of the job's convention than any default of ours. The
+    # one the ASSIGNMENTS point at, not the first in the list: on a P6 library
+    # that is a tree, the first is the root, and picking it put 863 rows on a
+    # node nobody books hours to.
+    if not got["resource_id"] and pick is not None:
+        got["resource_id"] = pick.id or ""
+        got["resource_name"] = pick.name or ""
     # The P6 ObjectId of whatever resources this file carries. An XER's RSRC
     # table keys on rsrc_id, which IS the ObjectId, so a schedule exported from
     # the user's own P6 already tells us the number an assignment has to name —
@@ -4385,6 +4420,13 @@ def resources_audit():
         {"object_id": r.uid, "id": r.id, "name": r.name}
         for r in (getattr(sess["project"], "resources", None) or [])
         if r.uid]
+    # The one the export box should open with. Exporting a schedule that
+    # carries P6's own resources writes them as things to CREATE against the
+    # enterprise pool, starting at the root of the tree — which is refused,
+    # and which the user then has to diagnose from a log naming an ObjectId.
+    # The app already knows the number; making someone go and look it up in
+    # P6, every time, is how three imports in a row came back failed.
+    got["assignable_object_id"] = (pick.uid if pick is not None else "") or ""
     return jsonify({"success": True, "audit": got})
 
 

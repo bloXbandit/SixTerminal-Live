@@ -164,20 +164,37 @@ def test_completed_work_is_all_spent():
 
 def test_work_in_progress_is_cut_at_its_percentage():
     p = _job(crews=(3, None, None), statuses=["In Progress", "Not Started", "Not Started"])
-    p.activities[0].percent_complete = 0.25
+    p.activities[0].percent_complete = 25.0
     restore(p)
     assert _units(p, "A10") == (120, 30, 90)
 
 
-def test_percent_complete_is_read_as_a_fraction():
-    """It is 0..1 here, not 0..100. Read as a whole number it would put a
-    hundred times the hours on the wrong side of the data date."""
+def test_percent_complete_is_read_as_a_whole_number():
+    """
+    0..100, not 0..1 — what edit_engine and actualize write, and what the
+    reader scales P6's fraction into.
+
+    Read as a fraction it was clamped to 1.0, so anything at 1% or more booked
+    ALL its hours as spent. On the real job a 50%-complete wire pull showed
+    zero remaining and the whole crew sat behind the data date.
+    """
     p = _job(crews=(1, None, None), dur=8,
              statuses=["In Progress", "Not Started", "Not Started"])
-    p.activities[0].percent_complete = 0.5
+    p.activities[0].percent_complete = 50.0
     assert _units(p, "A10")[0] == 0
     restore(p)
     assert _units(p, "A10") == (8, 4, 4)
+
+
+def test_a_part_done_activity_keeps_hours_in_front_of_the_data_date():
+    """The regression guard: half done is half spent, not all of it."""
+    p = _job(crews=(2, None, None), dur=8,
+             statuses=["In Progress", "Not Started", "Not Started"])
+    p.activities[0].percent_complete = 50.0
+    restore(p)
+    planned, actual, remaining = _units(p, "A10")
+    assert remaining > 0, "a part-done activity cannot have nothing left to do"
+    assert (actual, remaining) == (planned / 2, planned / 2)
 
 
 def test_an_assignment_is_written_not_just_the_activity_total():
@@ -627,3 +644,117 @@ def test_the_audit_hands_back_the_p6_object_id():
     got = server.app.test_client().get("/api/resources/audit").get_json()["audit"]
     assert got["resource_object_ids"] == [
         {"object_id": "6900", "id": "MDC-1-DIR", "name": "MDC-1-Direct Labor"}]
+
+
+# ── which resource an assignment should name ─────────────────────────────────
+
+def _library():
+    """
+    The three-level library off the user's real P6, root first.
+
+      1336  JER        Richards            ← root of the hierarchy
+      4143  MDC-1      MDC-1               ← child
+      4147  MDC-1-DIR  MDC-1-Direct Labor  ← leaf, the crew that books hours
+    """
+    p = _job(crews=(None, None, None))
+    p.resources = [
+        Resource(uid="1336", id="JER", name="Richards", type="Labor"),
+        Resource(uid="4143", id="MDC-1", name="MDC-1", type="Labor",
+                 parent_uid="1336"),
+        Resource(uid="4147", id="MDC-1-DIR", name="MDC-1-Direct Labor",
+                 type="Labor", parent_uid="4143"),
+    ]
+    p.build_lookups()
+    return p
+
+
+def test_the_resource_the_assignments_point_at_is_the_one_picked():
+    """
+    Strongest evidence there is: whatever this job already books hours to.
+    """
+    from engine.resource_restore import assignable_resource
+    p = _library()
+    p.resource_assignments = [
+        ResourceAssignment(uid=f"ra{i}", activity_uid="u1",
+                           resource_uid="4147", planned_units=8)
+        for i in range(5)]
+    p.build_lookups()
+    assert assignable_resource(p).uid == "4147"
+
+
+def test_the_root_of_the_hierarchy_is_not_picked():
+    """
+    The bug this exists for. Taking the first resource in the list picked JER
+    — the top of the tree, a node nobody books hours to — and a third of the
+    job's labour ended up on it. Worse, exporting against a container makes P6
+    check access at the ROOT, which is the "outside of your resource access
+    hierarchy" refusal on a login that holds the leaf quite happily.
+    """
+    from engine.resource_restore import assignable_resource
+    p = _library()
+    got = assignable_resource(p)
+    assert got.uid != "1336", "picked the hierarchy root"
+    assert got.uid == "4147", "a leaf is the only thing P6 will let us assign"
+
+
+def test_a_flat_library_still_answers():
+    from engine.resource_restore import assignable_resource
+    p = _job(crews=(None, None, None))
+    p.resources = [Resource(uid="r1", id="ELEC", name="Electrician")]
+    p.build_lookups()
+    assert assignable_resource(p).uid == "r1"
+
+
+def test_no_resources_means_no_answer_rather_than_a_guess():
+    from engine.resource_restore import assignable_resource
+    p = _job(crews=(None, None, None))
+    p.resources = []
+    p.build_lookups()
+    assert assignable_resource(p) is None
+
+
+def test_assignments_outvote_the_shape_of_the_tree():
+    """
+    If the job really does book to a mid-level node, that is the job's answer
+    and not ours to correct. Evidence beats the heuristic.
+    """
+    from engine.resource_restore import assignable_resource
+    p = _library()
+    p.resource_assignments = [
+        ResourceAssignment(uid=f"ra{i}", activity_uid="u1",
+                           resource_uid="4143", planned_units=8)
+        for i in range(3)]
+    p.build_lookups()
+    assert assignable_resource(p).uid == "4143"
+
+
+# ── the library is a tree, and P6 builds it as it reads ──────────────────────
+
+def test_a_donor_crew_keeps_its_place_in_the_hierarchy():
+    """
+    P6's resource library IS a hierarchy. Copying a crew without its parent
+    flattens it, and the export then asks P6 to MOVE that resource to the root
+    of the enterprise pool — a structural change to shared data, refused as
+    "resources came in out of order".
+
+    Dropping the parent looked harmless because nothing in this app reads it.
+    The whole point is that P6 does.
+    """
+    d = _job(crews=(None, None, None))
+    d.resources = [
+        Resource(uid="1336", id="JER", name="Richards"),
+        Resource(uid="4143", id="MDC-1", name="MDC-1", parent_uid="1336"),
+        Resource(uid="4147", id="MDC-1-DIR", name="MDC-1-Direct Labor",
+                 parent_uid="4143"),
+    ]
+    d.resource_assignments = [
+        ResourceAssignment(uid="ra1", activity_uid=d.activities[0].uid,
+                           resource_uid="4147", planned_units=40)]
+    d.build_lookups()
+
+    t = _job(crews=(None, None, None))
+    restore(t, d)
+    got = {r.id: r.parent_uid for r in t.resources}
+    assert got.get("MDC-1-DIR") == "4143", "the leaf lost its parent"
+    assert got.get("MDC-1") == "1336", "the branch lost its parent"
+    assert got.get("JER") is None, "the root should have no parent"

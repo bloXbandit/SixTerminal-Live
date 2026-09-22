@@ -1337,7 +1337,28 @@ def _section_real_resources(root: ET.Element, project: Project,
     """
     res_oid = _keep_or_mint([r.uid for r in project.resources],
                             _RESOURCE_OID_START)
-    for i, r in enumerate(project.resources):
+    # Parents first. P6's resource library is a tree and it builds one as it
+    # reads, so a child that arrives before its parent is a SEVERE and the
+    # import stops — the library cannot be half-built. Document order was
+    # whatever order the reader happened to produce, which is fine until a
+    # donor or a restore appends a leaf whose parent is further down.
+    ordered, placed, pending = [], set(), list(project.resources)
+    while pending:
+        progressed = False
+        for r in list(pending):
+            par = _key(r.parent_uid) if r.parent_uid else None
+            if not par or par not in res_oid or par in placed:
+                ordered.append(r)
+                placed.add(_key(r.uid))
+                pending.remove(r)
+                progressed = True
+        if not progressed:
+            # A cycle, which P6's library cannot contain and we will not
+            # invent an order for. Write the rest as they came rather than
+            # dropping them.
+            ordered.extend(pending)
+            break
+    for i, r in enumerate(ordered):
         oid = res_oid[_key(r.uid)]
         el = _sub(root, "Resource")
         _sub(el, "AutoComputeActuals",     "1")
@@ -1399,7 +1420,7 @@ def _section_real_resources(root: ET.Element, project: Project,
         _sub(el, "UseTimesheets",          "0")
         _nil(el, "UserObjectId")
 
-    for i, r in enumerate(project.resources):
+    for i, r in enumerate(ordered):
         rr = _sub(root, "ResourceRate")
         _sub(rr, "EffectiveDate",    "2024-01-01T00:00:00")
         _sub(rr, "MaxUnitsPerTime",  _num(r.max_units, 1))
@@ -2022,6 +2043,12 @@ def _write_p6_xml_impl(project: Project, output_path: str,
     """
     proj_uid = _safe_project_object_id(getattr(project, "uid", None))
 
+    # (field, ObjectId) pairs this export points at ON PURPOSE, outside the
+    # file. Read back by the reference audit so a deliberate external pointer
+    # is not reported broken. Local, not module state: a raise partway through
+    # a write must not leave a stale entry behind for the next one.
+    external_refs: set = set()
+
     # Build original-id lookup sets using source/app ids.
     all_wbs_nodes = list(project.wbs_nodes or [])
     all_wbs_uids = {_key(w.uid) for w in all_wbs_nodes}
@@ -2275,6 +2302,11 @@ def _write_p6_xml_impl(project: Project, output_path: str,
         res_oid_map = {_key(r.uid): existing_res_oid
                        for r in (getattr(project, "resources", None) or [])}
         res_type_by_uid = {k: "Labor" for k in res_oid_map}
+        # Deliberately outside this file: it names a resource in the TARGET
+        # database. Recorded so the reference audit reports it as intended
+        # rather than as 1,276 broken pointers — an audit that cries wolf on
+        # a supported mode is one nobody reads.
+        external_refs.add(("ResourceObjectId", existing_res_oid))
     for idx, assignment in enumerate(assignments):
         _write_resource_assignment(
             proj_el,
@@ -2300,6 +2332,7 @@ def _write_p6_xml_impl(project: Project, output_path: str,
     # ET.indent produces the same two-space layout; the only difference is
     # that it does not emit a declaration, which is written by hand below
     # exactly as it was before.
+    write_p6_xml.last_external_refs = external_refs
     ET.indent(root, space="  ")
     body = ET.tostring(root, encoding="unicode", xml_declaration=False)
     output = '<?xml version="1.0" encoding="utf-8"?>\n' + body
@@ -2356,6 +2389,10 @@ def write_p6_xml(
     else:
         write_p6_xml.last_warnings = []
 
+    # Cleared here, not only set on the way out, so a write that raises cannot
+    # leave the previous export's external references readable as this one's.
+    write_p6_xml.last_external_refs = set()
+
     with _TargetProfileContext(profile):
         return _write_p6_xml_impl(project, output_path, p6_version=p6_version,
                                   include_udfs=include_udfs,
@@ -2363,3 +2400,4 @@ def write_p6_xml(
 
 
 write_p6_xml.last_warnings = []
+write_p6_xml.last_external_refs = set()
