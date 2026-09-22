@@ -297,9 +297,25 @@ def load_xml(path: str) -> Project:
     root = tree.getroot()
 
     # P6 XML uses a default namespace, so a raw .find('Project') will miss it.
-    proj_el = next(iter(_descendants(root, "Project")), None)
-    if proj_el is None:
+    #
+    # And there is usually more than one <Project> in the file. A P6 export
+    # opens with a <ProjectList> header holding a STUB — Id, Name, TemplateId
+    # and nothing else — before the real project further down. Taking the
+    # first one read the stub: a 23 MB file carrying 2,421 activities and
+    # 4,188 resource assignments loaded as a schedule with no activities at
+    # all, no error, no warning. The name and id even looked right, which is
+    # what made it convincing.
+    #
+    # So: the project that actually carries a schedule, and the first one only
+    # if none of them do.
+    candidates = list(_descendants(root, "Project"))
+    if not candidates:
         raise ValueError("No <Project> element found in P6 XML file.")
+    proj_el = next(
+        (p for p in candidates
+         if next(iter(_descendants(p, "Activity")), None) is not None
+         or next(iter(_descendants(p, "WBS")), None) is not None),
+        candidates[0])
 
     proj_uid = _text(proj_el, "ObjectId") or _text(proj_el, "Id") or "1"
 
@@ -553,14 +569,33 @@ def load_xml(path: str) -> Project:
         ))
 
     known_res = {r.uid for r in project.resources}
+    # A resource named by the assignments but not declared in this file lives
+    # in the TARGET database — which is not a fault, it is the supported shape.
+    # P6 exports a project this way, and so do we: assignments pointed at a
+    # resource the enterprise pool already holds, with no <Resource> block, so
+    # that a login without create-privilege can import at all.
+    #
+    # Dropping those assignments meant a 23 MB file carrying 4,188 of them
+    # loaded with none, and meant this app could not read back its OWN export:
+    # save, re-upload, and every hour was gone. A resource we cannot see is
+    # stood up as a placeholder carrying the ObjectId, so the assignment keeps
+    # its hours and the export can point at the same resource again.
+    referenced = {_text(ra, "ResourceObjectId")
+                  for ra in _descendants(proj_el, "ResourceAssignment")}
+    for oid in sorted(x for x in referenced if x and x not in known_res):
+        project.resources.append(Resource(
+            uid=oid, id=f"RSRC-{oid}", name=f"Resource {oid} (in P6, not in this file)",
+            type="Labor", is_active=True))
+        known_res.add(oid)
+
     for ra in _descendants(proj_el, "ResourceAssignment"):
         act_uid = _text(ra, "ActivityObjectId")
         res_uid = _text(ra, "ResourceObjectId")
-        # An assignment naming an activity or resource this file does not have
-        # is skipped for the same reason a relation is: it loads and then fails
-        # to schedule. Role-only assignments (no resource) are skipped too —
-        # this app does not model roles, and inventing a resource for one would
-        # put something in P6 that was never there.
+        # An assignment naming an activity this file does not have is skipped
+        # for the same reason a relation is: it loads and then fails to
+        # schedule. Role-only assignments (no resource) are skipped too — this
+        # app does not model roles, and inventing a resource for one would put
+        # something in P6 that was never there.
         if act_uid not in activity_ids or res_uid not in known_res:
             continue
         project.resource_assignments.append(ResourceAssignment(
