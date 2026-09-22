@@ -726,3 +726,35 @@ def test_assignments_outvote_the_shape_of_the_tree():
         for i in range(3)]
     p.build_lookups()
     assert assignable_resource(p).uid == "4143"
+
+
+# ── the library is a tree, and P6 builds it as it reads ──────────────────────
+
+def test_a_donor_crew_keeps_its_place_in_the_hierarchy():
+    """
+    P6's resource library IS a hierarchy. Copying a crew without its parent
+    flattens it, and the export then asks P6 to MOVE that resource to the root
+    of the enterprise pool — a structural change to shared data, refused as
+    "resources came in out of order".
+
+    Dropping the parent looked harmless because nothing in this app reads it.
+    The whole point is that P6 does.
+    """
+    d = _job(crews=(None, None, None))
+    d.resources = [
+        Resource(uid="1336", id="JER", name="Richards"),
+        Resource(uid="4143", id="MDC-1", name="MDC-1", parent_uid="1336"),
+        Resource(uid="4147", id="MDC-1-DIR", name="MDC-1-Direct Labor",
+                 parent_uid="4143"),
+    ]
+    d.resource_assignments = [
+        ResourceAssignment(uid="ra1", activity_uid=d.activities[0].uid,
+                           resource_uid="4147", planned_units=40)]
+    d.build_lookups()
+
+    t = _job(crews=(None, None, None))
+    restore(t, d)
+    got = {r.id: r.parent_uid for r in t.resources}
+    assert got.get("MDC-1-DIR") == "4143", "the leaf lost its parent"
+    assert got.get("MDC-1") == "1336", "the branch lost its parent"
+    assert got.get("JER") is None, "the root should have no parent"

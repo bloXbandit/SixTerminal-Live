@@ -408,7 +408,15 @@ def restore(target: Project,
                     # CREATE it in the enterprise-global pool, which a login
                     # without that privilege cannot do — and the whole import
                     # is refused rather than just the resource.
-                    guid=getattr(r, "guid", None)))
+                    guid=getattr(r, "guid", None),
+                    # And its place in the tree. P6's library IS a hierarchy;
+                    # copying a crew without its parent flattens it, and the
+                    # export then asks P6 to MOVE that resource to the root of
+                    # the enterprise pool — a structural change to shared data,
+                    # refused as "resources came in out of order". Dropping the
+                    # parent looked harmless because nothing in this app reads
+                    # it; the whole point is that P6 does.
+                    parent_uid=getattr(r, "parent_uid", None)))
                 have_ids.add(r.id)
                 res_by_uid[r.uid] = target.resources[-1]
 

@@ -3622,7 +3622,7 @@ def create_new_project():
         return jsonify({"error": f"Project creation failed: {str(e)}", "trace": traceback.format_exc()}), 500
 
 
-def _resources_arg():
+def _resources_arg(project=None):
     """
     How the caller wants resources written: True, False, or a P6 ObjectId.
 
@@ -3630,8 +3630,28 @@ def _resources_arg():
     file the download button produces. They used to parse it separately, and
     a pre-flight that passes on a file nobody is going to download is worse
     than no pre-flight at all.
+
+    With no `resources` in the query at all, this picks the safe answer rather
+    than the destructive one. A schedule read out of the user's own P6 carries
+    P6's own resources, ObjectIds and hierarchy; writing them back asks P6 to
+    CREATE and RE-PARENT rows in the enterprise-global pool, which an ordinary
+    login is refused outright — and the refusal takes the whole import, not
+    just the resource. Assigning to what P6 already has changes nothing and
+    needs no privilege. Shipping resources for creation is still available by
+    asking for it by name (`resources=1`); it is just no longer what you get
+    by saying nothing.
     """
-    _res = request.args.get("resources", "1")
+    _res = request.args.get("resources")
+    if _res is None and project is not None:
+        from engine.resource_restore import assignable_resource
+        pick = assignable_resource(project)
+        # Only when the ObjectId is P6's. A resource this app derived has a
+        # uid of its own making, and pointing assignments at that would name
+        # a row no database has.
+        if pick is not None and str(pick.uid).isdigit():
+            return str(pick.uid)
+        return True
+    _res = _res if _res is not None else "1"
     if _res.lower() in ("0", "false", "no"):
         return False
     if _res.lower() in ("1", "true", "yes", ""):
@@ -3666,7 +3686,7 @@ def download():
     # refused — "You do not have create privileges on object Resource". The
     # schedule is fine and the privilege has to come from someone else, so
     # this writes the same file with no resource section and no assignments.
-    include_resources = _resources_arg()
+    include_resources = _resources_arg(project)
     tmp = tempfile.NamedTemporaryFile(suffix=".xml", delete=False)
     tmp.close()
     try:
@@ -3758,7 +3778,7 @@ def export_check():
         # Same resource mode the download would use, so what is checked is
         # what gets shipped.
         a = audit_project(sess["project"],
-                          include_resources=_resources_arg())
+                          include_resources=_resources_arg(sess["project"]))
         refs = a["dangling_references"] + a["duplicate_object_ids"]
         if refs:
             _append_chat(

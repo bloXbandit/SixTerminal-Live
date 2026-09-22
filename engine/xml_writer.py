@@ -1337,7 +1337,28 @@ def _section_real_resources(root: ET.Element, project: Project,
     """
     res_oid = _keep_or_mint([r.uid for r in project.resources],
                             _RESOURCE_OID_START)
-    for i, r in enumerate(project.resources):
+    # Parents first. P6's resource library is a tree and it builds one as it
+    # reads, so a child that arrives before its parent is a SEVERE and the
+    # import stops — the library cannot be half-built. Document order was
+    # whatever order the reader happened to produce, which is fine until a
+    # donor or a restore appends a leaf whose parent is further down.
+    ordered, placed, pending = [], set(), list(project.resources)
+    while pending:
+        progressed = False
+        for r in list(pending):
+            par = _key(r.parent_uid) if r.parent_uid else None
+            if not par or par not in res_oid or par in placed:
+                ordered.append(r)
+                placed.add(_key(r.uid))
+                pending.remove(r)
+                progressed = True
+        if not progressed:
+            # A cycle, which P6's library cannot contain and we will not
+            # invent an order for. Write the rest as they came rather than
+            # dropping them.
+            ordered.extend(pending)
+            break
+    for i, r in enumerate(ordered):
         oid = res_oid[_key(r.uid)]
         el = _sub(root, "Resource")
         _sub(el, "AutoComputeActuals",     "1")
@@ -1399,7 +1420,7 @@ def _section_real_resources(root: ET.Element, project: Project,
         _sub(el, "UseTimesheets",          "0")
         _nil(el, "UserObjectId")
 
-    for i, r in enumerate(project.resources):
+    for i, r in enumerate(ordered):
         rr = _sub(root, "ResourceRate")
         _sub(rr, "EffectiveDate",    "2024-01-01T00:00:00")
         _sub(rr, "MaxUnitsPerTime",  _num(r.max_units, 1))

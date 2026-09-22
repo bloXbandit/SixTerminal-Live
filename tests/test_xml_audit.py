@@ -297,3 +297,63 @@ def test_the_export_button_does_not_pay_for_the_audit():
         assert calls, "asking for references did not run the audit"
     finally:
         _xa.audit_project = real
+
+
+def test_resources_are_written_parents_before_children():
+    """
+    P6 builds the library as it reads, so a child arriving before its parent
+    is a SEVERE and the import stops — a half-built tree is not a thing it
+    can hold. Document order used to be whatever the reader produced, which
+    is fine until a donor or a restore appends a leaf ahead of its parent.
+    """
+    import re
+    import tempfile
+
+    from engine.xml_writer import write_p6_xml
+    p = _job()
+    # Deliberately worst case: leaf first, root last.
+    p.resources = [
+        Resource(uid="4147", id="MDC-1-DIR", name="MDC-1-Direct Labor",
+                 type="Labor", parent_uid="4143"),
+        Resource(uid="4143", id="MDC-1", name="MDC-1", type="Labor",
+                 parent_uid="1336"),
+        Resource(uid="1336", id="JER", name="Richards", type="Labor"),
+    ]
+    p.build_lookups()
+    with tempfile.NamedTemporaryFile(suffix=".xml") as tmp:
+        write_p6_xml(p, tmp.name)
+        xml = open(tmp.name, encoding="utf-8").read()
+
+    seen = []
+    for m in re.finditer(r"<Resource>(.*?)</Resource>", xml, re.S):
+        seg = m.group(1)
+        oid = re.search(r"<ObjectId>(\d+)</ObjectId>", seg)
+        par = re.search(r"<ParentObjectId>(\d+)</ParentObjectId>", seg)
+        seen.append((oid.group(1) if oid else None,
+                     par.group(1) if par else None))
+    order = [o for o, _ in seen]
+    assert order == ["1336", "4143", "4147"], f"written out of order: {order}"
+    declared = set()
+    for oid, par in seen:
+        assert par is None or par in declared, f"{oid} precedes its parent {par}"
+        declared.add(oid)
+
+
+def test_the_hierarchy_survives_the_write():
+    """A flat library asks P6 to re-parent three rows in the shared pool."""
+    import re
+    import tempfile
+
+    from engine.xml_writer import write_p6_xml
+    p = _job()
+    p.resources = [
+        Resource(uid="1336", id="JER", name="Richards", type="Labor"),
+        Resource(uid="4143", id="MDC-1", name="MDC-1", type="Labor",
+                 parent_uid="1336"),
+    ]
+    p.build_lookups()
+    with tempfile.NamedTemporaryFile(suffix=".xml") as tmp:
+        write_p6_xml(p, tmp.name)
+        xml = open(tmp.name, encoding="utf-8").read()
+    assert "<ParentObjectId>1336</ParentObjectId>" in xml, \
+        "the child was written with no parent — P6 would move it to the root"
