@@ -395,3 +395,49 @@ def test_the_keep_reports_its_reason_rather_than_swallowing_it(tmp_path):
     doc = Document(id="d1", name="x.pdf", kind="pdf", added_at="2026-01-01")
     why = server._keep_document_file("no-such-project", doc, b"bytes", "x.pdf")
     assert why, "a keep against a project that does not exist reported success"
+
+
+def test_revising_onto_a_newer_file_keeps_that_one_too(tmp_path):
+    """
+    Revise is the door every rev after the first comes in through, so it is
+    where most of the archive should accumulate — and it kept nothing. A job
+    revised weekly for a year held only the file it started with, which is the
+    one rev nobody ever needs back.
+    """
+    import io
+
+    from engine.xml_writer import write_p6_xml
+    import server
+
+    def build(name, n):
+        p = Project(uid="1", name="Rev", id="REV-ARCH",
+                    data_date="2026-01-05", planned_start="2026-01-05")
+        p.calendars = [Calendar(uid="1", name="Standard")]
+        p.wbs_nodes = [WBSNode(uid="w", name="Area", code="A")]
+        p.activities = [
+            Activity(uid=f"u{i}", activity_id=f"A{i}0", name=f"Task {i}",
+                     wbs_uid="w", calendar_uid="1", planned_duration=40,
+                     remaining_duration=40, planned_start="2026-02-02",
+                     planned_finish="2026-02-06")
+            for i in range(n)]
+        p.relations = []
+        p.build_lookups()
+        path = str(tmp_path / name)
+        write_p6_xml(p, path)
+        with open(path, "rb") as fh:
+            return fh.read()
+
+    one, two = build("r1.xml", 2), build("r2.xml", 5)
+    c = server.app.test_client()
+    assert c.post("/api/upload", data={"file": (io.BytesIO(one), "job-rev1.xml")},
+                  content_type="multipart/form-data").status_code == 200
+    assert c.post("/api/revise", data={"file": (io.BytesIO(two), "job-rev2.xml")},
+                  content_type="multipart/form-data").status_code == 200
+
+    docs = {d["name"]: d for d in c.get("/api/documents").get_json()["documents"]}
+    assert "job-rev1.xml" in docs, "the file the job started with was dropped"
+    assert "job-rev2.xml" in docs, "the revised-onto file was never kept"
+    for name, blob in (("job-rev1.xml", one), ("job-rev2.xml", two)):
+        got = c.get(f"/api/documents/{docs[name]['id']}/file")
+        assert got.status_code == 200
+        assert got.data == blob, f"{name} did not come back byte for byte"
