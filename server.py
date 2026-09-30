@@ -2536,7 +2536,6 @@ def document_upload():
     if "file" not in request.files:
         return jsonify({"error": "No document attached"}), 400
     f = request.files["file"]
-    blob = f.read()
     name = f.filename or "document"
     low = name.lower()
 
@@ -2552,12 +2551,35 @@ def document_upload():
         return jsonify({"error": "Send a PDF, .xlsx or .csv. An image goes "
                                  "through the paperclip instead."}), 400
 
+    # Spooled to disk rather than read into a bytes object. `f.read()` holds
+    # the whole upload in memory, and pdfplumber then wraps those bytes in a
+    # BytesIO — two copies of a 40 MB drawing set before a single page is
+    # parsed, on a host with 512 MB. Given a PATH it maps the file instead.
+    spool = tempfile.NamedTemporaryFile(suffix=Path(name).suffix[:10],
+                                        delete=False)
     try:
-        read = _sr.read_any(blob, name)
-    except RuntimeError as e:
-        return jsonify({"error": str(e)}), 400
-    except Exception as e:
-        return jsonify({"error": f"Could not read that document: {e}"}), 500
+        f.save(spool)
+        spool.close()
+        size = os.path.getsize(spool.name)
+        if size > _MAX_DOC_BYTES:
+            return jsonify({
+                "error": f"That file is {size / 1e6:.0f} MB and the limit here "
+                         f"is {_MAX_DOC_BYTES / 1e6:.0f} MB. Split it, or send "
+                         f"the pages that matter — the reader only looks at "
+                         f"the first {_sr.DEFAULT_MAX_PAGES} pages anyway."}), 413
+        try:
+            read = _sr.read_any(spool.name, name)
+        except RuntimeError as e:
+            return jsonify({"error": str(e)}), 400
+        except Exception as e:
+            return jsonify({"error": f"Could not read that document: {e}"}), 500
+        with open(spool.name, "rb") as fh:
+            blob = fh.read()
+    finally:
+        try:
+            os.unlink(spool.name)
+        except OSError:
+            pass
 
     brain = _brain_for(sess["project"])
     doc = brain.docs().add_text(name, kind, read)
@@ -2569,11 +2591,22 @@ def document_upload():
 
     where = (f"{len(doc.sheets)} sheets: {', '.join(doc.sheets[:8])}"
              if doc.sheets else f"{doc.pages} pages")
+    # Say when only part of it was read. A document that stopped at the page
+    # or time limit still files, still searches, and still hands back the
+    # original — but a reader who thinks all 400 pages were indexed will trust
+    # a search that came up empty, and that is worse than not filing it.
+    cut = read.get("stopped_at")
+    if cut:
+        where += (f" — stopped at the {'page' if cut == 'pages' else 'time'} "
+                  f"limit, so the rest is not searchable")
     _append_chat("user", f"[uploaded document: {name}]")
     _append_chat("assistant",
                  f"Filed {name} — {doc.line_count} lines, {where}",
                  context=(f"Document filed for this job: {doc.label()}. "
-                          f"Read with: read_document, document=\"{doc.name}\", "
+                          + (f"ONLY THE FIRST {doc.pages} PAGES were read "
+                             f"({cut} limit); a search that finds nothing may "
+                             f"simply be past that point. " if cut else "")
+                          + f"Read with: read_document, document=\"{doc.name}\", "
                           f"query=\"<what you are looking for>\". "
                           f"Nothing in the schedule changed."))
     return jsonify({"success": True, "document": {
@@ -2593,6 +2626,34 @@ def document_upload():
 # better than the previous behaviour of keeping nothing anywhere.
 
 _DOC_DIR = Path(os.environ.get("DOC_DIR") or (Path(tempfile.gettempdir()) / "sixterm_docs"))
+
+# The largest document this will take. Not a guess: the reader holds about
+# 60 MB steady however long the file is, but the WEB SERVER in front of it
+# buffers the whole upload before handing it over, and the host this runs on
+# has 512 MB for everything — the loaded schedules included. A file that
+# cannot be read is a message; a file that takes the process down with it
+# loses every session on the host, which is what was happening.
+#
+# Flask is told the same number, so an oversized upload is refused at the
+# door with a 413 rather than being buffered to death first.
+_MAX_DOC_BYTES = int(os.environ.get("MAX_DOC_MB", "40")) * 1024 * 1024
+app.config["MAX_CONTENT_LENGTH"] = max(
+    _MAX_DOC_BYTES, 220 * 1024 * 1024)      # schedules are bigger than docs
+
+
+@app.errorhandler(413)
+def _too_large(_e):
+    """
+    Werkzeug's own 413 is an HTML page, and the UI reads JSON.
+
+    Without this the browser showed "unexpected token < in JSON" for a file
+    that was simply too big — an error about the error, which is how a clear
+    limit came across as the app being broken.
+    """
+    limit = app.config.get("MAX_CONTENT_LENGTH") or 0
+    return jsonify({"error": f"That upload is larger than this server accepts "
+                             f"({limit / 1e6:.0f} MB). Split the file, or send "
+                             f"the pages that matter."}), 413
 
 
 def _local_doc_path(pid: str, doc_id: str, ext: str = "") -> Path:

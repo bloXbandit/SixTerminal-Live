@@ -441,3 +441,160 @@ def test_revising_onto_a_newer_file_keeps_that_one_too(tmp_path):
         got = c.get(f"/api/documents/{docs[name]['id']}/file")
         assert got.status_code == 200
         assert got.data == blob, f"{name} did not come back byte for byte"
+
+
+# ── a big document must not take the host down with it ───────────────────────
+
+def _ruled_pdf(pages=30, rows=40):
+    """A text-heavy, ruled PDF — the shape that costs the most to read."""
+    import zlib
+
+    def stream(pno):
+        ops = []
+        for i in range(rows + 1):
+            y = 760 - i * 13
+            ops.append(f"0.5 w 40 {y} m 560 {y} l S")
+        for x in (40, 200, 380, 560):
+            ops.append(f"0.5 w {x} 760 m {x} {760 - rows * 13} l S")
+        for i in range(rows):
+            y = 760 - i * 13 - 9
+            ops.append(f"BT /F1 8 Tf 44 {y} Td "
+                       f"(MDC1.PH1.GEN.{1000 + i * 10} page {pno}) Tj ET")
+            ops.append(f"BT /F1 8 Tf 204 {y} Td (Install Hangers Gen {300 + i}) Tj ET")
+        return zlib.compress("\n".join(ops).encode())
+
+    out, offs = bytearray(b"%PDF-1.4\n"), []
+
+    def add(body):
+        offs.append(len(out))
+        out.extend(b"%d 0 obj\n" % len(offs) + body + b"\nendobj\n")
+
+    kids = " ".join(f"{4 + i} 0 R" for i in range(pages))
+    add(b"<< /Type /Catalog /Pages 2 0 R >>")
+    add(f"<< /Type /Pages /Kids [{kids}] /Count {pages} >>".encode())
+    add(b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>")
+    for i in range(pages):
+        add(f"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources "
+            f"<< /Font << /F1 3 0 R >> >> /Contents {4 + pages + i} 0 R >>".encode())
+    for i in range(pages):
+        s = stream(i + 1)
+        add(b"<< /Filter /FlateDecode /Length %d >>\nstream\n" % len(s)
+            + s + b"\nendstream")
+    x = len(out)
+    out += b"xref\n0 %d\n0000000000 65535 f \n" % (len(offs) + 1)
+    for o in offs:
+        out += b"%010d 00000 n \n" % o
+    out += (b"trailer\n<< /Size %d /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF\n"
+            % (len(offs) + 1, x))
+    return bytes(out)
+
+
+def _rss_mb():
+    with open("/proc/self/statm") as fh:
+        return int(fh.read().split()[1]) * 4096 / 1e6
+
+
+def test_reading_a_long_document_does_not_grow_without_bound():
+    """
+    The bug that took the host down. pdfplumber keeps every character, line
+    and rect it has parsed on the page object, and holds the page for as long
+    as the document is open — so a read cost memory in proportion to the
+    document's LENGTH, not the page being read.
+
+    Measured over 120 pages before the fix: 50 MB at page 1, 259 at page 20,
+    701 at page 60, 1,365 at page 120, on a host that has 512 MB for
+    everything including the loaded schedules.
+    """
+    import gc
+
+    from engine.scope_reader import read_scope
+    short, long_ = _ruled_pdf(pages=6), _ruled_pdf(pages=60)
+
+    gc.collect()
+    before = _rss_mb()
+    read_scope(short)
+    gc.collect()
+    after_short = _rss_mb() - before
+
+    gc.collect()
+    before = _rss_mb()
+    read_scope(long_)
+    gc.collect()
+    after_long = _rss_mb() - before
+
+    # Ten times the pages must not mean anything like ten times the memory.
+    assert after_long < max(60.0, after_short * 4 + 30), (
+        f"6 pages cost {after_short:.0f} MB, 60 pages cost {after_long:.0f} MB "
+        f"— that is growth with length, not with page size")
+
+
+def test_a_read_stops_on_the_page_limit_and_says_so():
+    """
+    A document that stopped still files, still searches and still hands back
+    the original. But a reader who thinks all 400 pages were indexed will
+    trust a search that came up empty.
+    """
+    from engine.scope_reader import DEFAULT_MAX_PAGES, read_scope
+    r = read_scope(_ruled_pdf(pages=DEFAULT_MAX_PAGES + 10), max_pages=5)
+    assert r["pages"] == 5
+    assert r["stopped_at"] == "pages"
+
+
+def test_a_read_that_fits_reports_no_truncation():
+    from engine.scope_reader import read_scope
+    r = read_scope(_ruled_pdf(pages=3), max_pages=60)
+    assert r["pages"] == 3
+    assert r["stopped_at"] is None
+
+
+def test_the_time_limit_bounds_the_request():
+    """
+    A page budget alone does not bound it. Sixty pages of a ruled schedule
+    print takes twelve seconds; sixty pages of a dense drawing set takes far
+    longer, and the host in front of this gives up at thirty — at which point
+    the caller sees a gateway error and cannot tell a slow document from a
+    broken one.
+    """
+    from engine.scope_reader import read_scope
+    r = read_scope(_ruled_pdf(pages=40), max_pages=40, max_seconds=0.001)
+    assert r["stopped_at"] == "time"
+    assert r["pages"] < 40
+    assert r["line_count"] > 0, "gave up without returning what it had read"
+
+
+def test_an_oversized_document_is_refused_as_json_not_html():
+    """
+    Werkzeug's own 413 is an HTML page and the UI reads JSON, so a file that
+    was simply too big came across as "unexpected token < in JSON" — an error
+    about the error, which reads as the app being broken.
+    """
+    import io
+
+    import server
+    p = Project(uid="1", name="P", id="P-CAP", data_date="2026-01-05",
+                planned_start="2026-01-05")
+    p.calendars = [Calendar(uid="1", name="Std")]
+    p.wbs_nodes = [WBSNode(uid="w", name="A", code="A")]
+    p.activities = [Activity(uid="u1", activity_id="A10", name="x", wbs_uid="w",
+                             calendar_uid="1", planned_duration=8,
+                             remaining_duration=8)]
+    p.relations = []
+    p.build_lookups()
+    sess = server._make_session("P-CAP", "p.xml")
+    sess["project"] = p
+    server._projects["P-CAP"] = sess
+    server._active_id[0] = "P-CAP"
+
+    blob = _ruled_pdf(pages=10)
+    was = server._MAX_DOC_BYTES
+    server._MAX_DOC_BYTES = 1024          # refuse anything real
+    try:
+        c = server.app.test_client()
+        r = c.post("/api/documents",
+                   data={"file": (io.BytesIO(blob), "big.pdf")},
+                   content_type="multipart/form-data")
+    finally:
+        server._MAX_DOC_BYTES = was
+    assert r.status_code == 413
+    assert r.headers["Content-Type"].startswith("application/json")
+    assert "error" in r.get_json()
