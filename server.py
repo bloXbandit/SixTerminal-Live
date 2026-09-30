@@ -874,10 +874,24 @@ def upload_file():
                 filename, _dl.SPREADSHEET if ext == ".xer" else _dl.PDF,
                 {"lines": [], "pages": 0, "sheets": [], "line_count": 0})
             _doc.kind = "schedule"
-            _keep_document_file(pid, _doc, _blob, filename,
-                                _mimetype_of(filename))
-        except Exception:
-            pass                      # an archive that fails must not cost the upload
+            _why = _keep_document_file(pid, _doc, _blob, filename,
+                                       _mimetype_of(filename))
+        except Exception as _e:
+            _why = f"{type(_e).__name__}: {_e}"
+        if _why:
+            # An archive that fails, or that lands somewhere it will not
+            # survive, must not cost the upload — but it must not be invisible
+            # either. Silently dropping it is how "the file I loaded is not in
+            # Documents" became a question with no answer.
+            _append_chat(
+                "system_result",
+                f"The original {filename} was not filed durably",
+                context=(f"The schedule loaded fine — this is only about "
+                         f"keeping a copy of the file you sent, which is the "
+                         f"one thing a re-export cannot reproduce.\n\n"
+                         f"  {_why}\n\n"
+                         f"Set R2_BUCKET and its credentials to keep originals "
+                         f"for good."))
         _mark_dirty(pid)
 
         # A re-export of a job already known here keeps what was taught about
@@ -2624,19 +2638,42 @@ def _mimetype_of(filename: str) -> str:
 
 
 def _keep_document_file(pid, doc, blob, filename, content_type=""):
-    """Store the original. Never raises — a failed keep must not lose the read."""
+    """
+    Store the original. Never raises — a failed keep must not lose the read.
+
+    Returns "" when the file was kept, or why it was not.
+
+    It used to return nothing and swallow the reason, which is how "the file I
+    uploaded is not in Documents" became unanswerable: the keep is best-effort
+    by design, so a full disk, a read-only mount or a refused bucket all came
+    out as silence, and the only way to tell a working archive from a broken
+    one was to go and look. Reporting the reason does not make the upload fail
+    — it just stops the failure being invisible.
+    """
     ext = Path(filename or "").suffix[:10]
     try:
-        ok = False
+        ok, why = False, ""
         if cloud_store.is_configured():
-            ok, _ = cloud_store.save_document(pid, doc.id, blob, filename, content_type)
+            ok, why = cloud_store.save_document(pid, doc.id, blob, filename,
+                                                content_type)
+        note = ""
         if not ok:
             _local_doc_path(pid, doc.id, ext).write_bytes(blob)
+            # Kept, but only on this machine. On a hosted container that disk
+            # goes with the next restart or deploy, so the document goes on
+            # being listed with nothing behind it — which looks exactly like
+            # an archive that never happened, a day later.
+            note = ("kept on this machine's disk only, which is wiped when "
+                    "the host restarts"
+                    + (f" — {why}" if why else
+                       " — cloud storage is not configured"))
         lib = getattr(_brain_for(_projects[pid]["project"]), "library", None)
-        if lib is not None:
-            lib.mark_file(doc.id, ext, len(blob), filename or "")
-    except Exception:
-        pass
+        if lib is None:
+            return "this job has no document library to record it in"
+        lib.mark_file(doc.id, ext, len(blob), filename or "")
+        return note
+    except Exception as e:
+        return f"{type(e).__name__}: {e}"
 
 
 def _fetch_document_file(pid, doc):

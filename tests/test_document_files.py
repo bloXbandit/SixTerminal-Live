@@ -322,3 +322,76 @@ def test_a_failed_archive_never_costs_the_upload():
         assert r.status_code == 200, "the upload failed because the archive did"
     finally:
         server._keep_document_file = real
+
+
+# ── the keep has to say when it did not really keep ──────────────────────────
+
+def _upload_a_schedule(tmp_path):
+    """Put a real schedule through /api/upload and return (client, response)."""
+    from engine.schedule_model import Relation
+    from engine.xml_writer import write_p6_xml
+    import server
+
+    p = Project(uid="1", name="Probe", id="PROBE-KEEP",
+                data_date="2026-01-05", planned_start="2026-01-05")
+    p.calendars = [Calendar(uid="1", name="Standard")]
+    p.wbs_nodes = [WBSNode(uid="w", name="Area", code="A")]
+    p.activities = [Activity(uid="u1", activity_id="A10", name="Pull wire",
+                             wbs_uid="w", calendar_uid="1",
+                             planned_duration=40, remaining_duration=40,
+                             planned_start="2026-02-02",
+                             planned_finish="2026-02-06")]
+    p.relations = []
+    p.build_lookups()
+    src = str(tmp_path / "probe.xml")
+    write_p6_xml(p, src)
+
+    c = server.app.test_client()
+    with open(src, "rb") as fh:
+        r = c.post("/api/upload",
+                   data={"file": (io.BytesIO(fh.read()), "probe.xml")},
+                   content_type="multipart/form-data")
+    return server, c, r
+
+
+def test_uploading_a_schedule_files_the_original(tmp_path):
+    """
+    The app holds a MODEL of the schedule, not the schedule. A re-export is
+    this app's rendering of it, and anything it does not model is gone from
+    that rendering forever — so the file as it arrived is the only copy of
+    what P6 actually sent.
+    """
+    _, c, r = _upload_a_schedule(tmp_path)
+    assert r.status_code == 200
+    docs = c.get("/api/documents").get_json()["documents"]
+    mine = [d for d in docs if d["name"] == "probe.xml"]
+    assert mine, "the uploaded schedule was not filed at all"
+    assert mine[0]["has_file"], "filed with nothing behind it"
+    assert mine[0]["kind"] == "schedule"
+
+
+def test_an_archive_that_will_not_survive_says_so(tmp_path):
+    """
+    The bug this exists for. The keep is best-effort by design, so a full
+    disk, a read-only mount or an unconfigured bucket all came out as silence
+    — and a copy written to a hosted container's local disk is gone on the
+    next restart. The document goes on being listed with nothing behind it,
+    which a day later looks exactly like an archive that never happened.
+
+    Being unable to keep it durably is acceptable. Not saying so is not.
+    """
+    server, c, _ = _upload_a_schedule(tmp_path)
+    if server.cloud_store.is_configured():
+        pytest.skip("cloud storage is configured here, so the keep is durable")
+    said = [m for m in (server._get_session()["chat_history"] or [])
+            if "not filed durably" in str(m.get("text", ""))]
+    assert said, "kept it somewhere temporary and never mentioned it"
+    assert "wiped when the host restarts" in str(said[0].get("context", ""))
+
+
+def test_the_keep_reports_its_reason_rather_than_swallowing_it(tmp_path):
+    """_keep_document_file returns '' only when the file is durably kept."""
+    import server
+    doc = Document(id="d1", name="x.pdf", kind="pdf", added_at="2026-01-01")
+    why = server._keep_document_file("no-such-project", doc, b"bytes", "x.pdf")
+    assert why, "a keep against a project that does not exist reported success"
