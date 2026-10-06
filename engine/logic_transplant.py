@@ -98,17 +98,33 @@ def _step(text) -> str:
     return out or _norm(text)
 
 
-def _work_days(a: _dt.date, b: _dt.date) -> int:
-    """Working days from a to b, a counting as zero. Negative if b precedes a."""
+def _work_days(a: _dt.date, b: _dt.date,
+               holidays: frozenset = frozenset()) -> int:
+    """
+    Working days from a to b, a counting as zero. Negative if b precedes a.
+
+    The holidays are the successor calendar's, and they matter: a lag measured
+    straight through a holiday is short by a day once the scheduler stops for
+    it, which is how twelve Precast turnovers came out one to five days early
+    against a print built on the GC's calendar.
+    """
     if b == a:
         return 0
     step = 1 if b > a else -1
     n, day = 0, a
     while day != b:
         day += _dt.timedelta(days=step)
-        if day.weekday() < 5:
+        if day.weekday() < 5 and day.isoformat() not in holidays:
             n += step
     return n
+
+
+def _holidays_by_activity(project) -> Dict[str, frozenset]:
+    """Each activity's own calendar's holidays, for measuring gaps on it."""
+    cals = {c.uid: frozenset(getattr(c, "holidays", None) or ())
+            for c in (getattr(project, "calendars", None) or [])}
+    return {a.uid: cals.get(getattr(a, "calendar_uid", None), frozenset())
+            for a in project.activities}
 
 
 def _folders(project) -> Dict[str, str]:
@@ -193,6 +209,7 @@ def from_dates(project, adjacent: int = ADJACENT_DAYS) -> List[Dict]:
     two already share a predecessor-shaped relationship through the folder.
     """
     folder = _folders(project)
+    hols = _holidays_by_activity(project)
     groups: Dict[Any, List] = collections.defaultdict(list)
     for a in project.activities:
         s, f = _d(getattr(a, "planned_start", None)), _d(getattr(a, "planned_finish", None))
@@ -206,10 +223,13 @@ def from_dates(project, adjacent: int = ADJACENT_DAYS) -> List[Dict]:
         acts.sort(key=lambda z: (z[0], z[1], str(getattr(z[2], "activity_id", ""))))
         for i, (start, _f, act) in enumerate(acts):
             best, best_gap = None, None
+            # Measured on the successor's calendar, which is the one the
+            # forward pass will use when it places this activity.
+            hol = hols.get(act.uid, frozenset())
             for (s2, f2, other) in acts:
                 if other is act or f2 > start:
                     continue
-                gap = _work_days(f2, start)
+                gap = _work_days(f2, start, hol)
                 if 0 <= gap <= adjacent and (best_gap is None or gap < best_gap
                                              or (gap == best_gap and f2 > _d(best.planned_finish))):
                     best, best_gap = other, gap
@@ -225,7 +245,8 @@ def from_dates(project, adjacent: int = ADJACENT_DAYS) -> List[Dict]:
     return found
 
 
-def _implied_lag(pred, succ, kind: str) -> Optional[float]:
+def _implied_lag(pred, succ, kind: str,
+                 holidays: frozenset = frozenset()) -> Optional[float]:
     """
     The lag this schedule's own dates give a tie of this kind, in working days.
 
@@ -246,16 +267,16 @@ def _implied_lag(pred, succ, kind: str) -> Optional[float]:
         # lag that reproduces a printed gap of g is g - 1. Clamping it at zero
         # cost a day on every tie whose successor started the day its
         # predecessor finished, and those are the common case.
-        gap = _work_days(pf, ss)
+        gap = _work_days(pf, ss, holidays)
         return float(gap - 1) * HOURS_PER_DAY if gap >= 0 else None
     if kind == SS and ps and ss:
-        gap = _work_days(ps, ss)
+        gap = _work_days(ps, ss, holidays)
         return float(gap) * HOURS_PER_DAY if gap >= 0 else None
     if kind == FF and pf and sf:
-        gap = _work_days(pf, sf)
+        gap = _work_days(pf, sf, holidays)
         return float(gap) * HOURS_PER_DAY if gap >= 0 else None
     if kind == SF and ps and sf:
-        gap = _work_days(ps, sf)
+        gap = _work_days(ps, sf, holidays)
         return float(gap) * HOURS_PER_DAY if gap >= 0 else None
     return None
 
@@ -274,6 +295,7 @@ def from_patterns(project, learned: Dict[Tuple[str, str], Dict],
     source's own lag is used and the dates will shift.
     """
     folder = _folders(project)
+    hols = _holidays_by_activity(project)
     by_folder: Dict[Any, Dict[str, List]] = collections.defaultdict(
         lambda: collections.defaultdict(list))
     for a in project.activities:
@@ -292,7 +314,8 @@ def from_patterns(project, learned: Dict[Tuple[str, str], Dict],
             for p, s in zip(ps, ss):
                 lag = how["lag"]
                 if keep_dates:
-                    lag = _implied_lag(p, s, how["type"])
+                    lag = _implied_lag(p, s, how["type"],
+                                       hols.get(s.uid, frozenset()))
                     if lag is None:
                         contradicted += 1
                         continue
@@ -370,6 +393,75 @@ def apply(project, source, **kw) -> Dict[str, Any]:
             successor_uid=tie["succ"], type=tie["type"], lag=tie["lag"]))
     project.build_lookups()
     return result
+
+
+def retime_lags(project, only=None, uids=None, retype: bool = False) -> Dict[str, Any]:
+    """
+    Re-measure existing lags against the dates, on each successor's calendar.
+
+    Giving a schedule the calendar it was really built on does not move a
+    stored date, but it changes what a lag spans: the same number of hours now
+    steps over a holiday the scheduler stops for. Lags measured on a plain
+    Mon-Fri week are then all slightly short, and the next forward pass walks
+    the successors forward past the dates the print asserts.
+
+    So this re-measures the gap the dates already show and writes it back. It
+    changes the lag on a relationship and never the relationship -- nothing is
+    added, removed, or re-pointed, and a tie whose dates contradict its kind is
+    left exactly as it was rather than bent to fit.
+
+    `only` limits it to relations whose successor's activity_id starts with one
+    of the given prefixes; `uids` to an explicit set of successor uids. Both
+    left out, every relation is re-measured.
+
+    `retype` additionally lets a tie the dates flatly contradict keep its
+    dependency in the kind the dates do support — a successor that starts
+    while its predecessor is still running is Start-to-Start here, whatever it
+    is on the sister job. It is off by default because changing the kind of a
+    relationship is a bigger claim than adjusting its gap, and it should be an
+    explicit decision about logic one is entitled to change.
+    """
+    hols = _holidays_by_activity(project)
+    by_uid = {a.uid: a for a in project.activities}
+    changed, retyped, kept, skipped = [], [], 0, 0
+    for r in project.relations:
+        succ, pred = by_uid.get(r.successor_uid), by_uid.get(r.predecessor_uid)
+        if succ is None or pred is None:
+            skipped += 1
+            continue
+        sid = getattr(succ, "activity_id", "") or ""
+        if only and not any(sid.startswith(x) for x in only):
+            continue
+        if uids is not None and succ.uid not in uids:
+            continue
+        lag = _implied_lag(pred, succ, r.type, hols.get(succ.uid, frozenset()))
+        if lag is None and retype:
+            # The dependency stands; only the kind was wrong for this job.
+            for kind in (SS, FF, FS):
+                if kind == r.type:
+                    continue
+                alt = _implied_lag(pred, succ, kind, hols.get(succ.uid, frozenset()))
+                if alt is not None:
+                    retyped.append({"activity_id": sid,
+                                    "pred": getattr(pred, "activity_id", ""),
+                                    "was": r.type, "now": kind,
+                                    "lag": alt / HOURS_PER_DAY})
+                    r.type, r.lag, lag = kind, alt, alt
+                    break
+        if lag is None:          # the dates do not support this kind; leave it
+            skipped += 1
+            continue
+        if lag != r.lag:
+            changed.append({"activity_id": sid, "pred": getattr(pred, "activity_id", ""),
+                            "type": r.type, "was": r.lag / HOURS_PER_DAY,
+                            "now": lag / HOURS_PER_DAY})
+            r.lag = lag
+        else:
+            kept += 1
+    project.build_lookups()
+    return {"changed": changed, "retyped": retyped,
+            "counts": {"changed": len(changed), "retyped": len(retyped),
+                       "kept": kept, "left_alone": skipped}}
 
 
 def verify(project, weekdays=frozenset({0, 1, 2, 3, 4})) -> Dict[str, Any]:

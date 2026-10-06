@@ -225,3 +225,109 @@ def test_the_report_counts_every_tie_it_proposes():
     c = r["counts"]
     assert c["from_dates"] + c["from_patterns"] == c["adding"] == len(r["ties"])
     assert c["after"] == c["before"] + c["adding"]
+
+
+# ── the calendar the gap is measured on ──────────────────────────────────────
+
+def test_a_gap_is_measured_on_the_calendar_the_scheduler_will_use():
+    """
+    A lag measured straight through a holiday is short by a day once the
+    scheduler stops for it. Twelve Precast turnovers came out one to five days
+    early against a print built on the GC's calendar for exactly this reason.
+    """
+    a, b = dt.date(2026, 11, 25), dt.date(2026, 11, 30)
+    assert lt._work_days(a, b) == 3
+    assert lt._work_days(a, b, frozenset({"2026-11-26", "2026-11-27"})) == 1
+
+
+def test_the_holidays_come_from_each_activitys_own_calendar():
+    p = _job([("A.10", "One", "Room", "2026-11-25", "2026-11-25"),
+              ("A.20", "Two", "Room", "2026-11-30", "2026-11-30")])
+    p.calendars[0].holidays = frozenset({"2026-11-26", "2026-11-27"})
+    p.build_lookups()
+    hols = lt._holidays_by_activity(p)
+    assert hols[p.activities[0].uid] == frozenset({"2026-11-26", "2026-11-27"})
+
+
+def test_an_activity_on_a_calendar_the_project_lacks_gets_no_holidays():
+    """Looked up rather than assumed, so a missing calendar is empty not a crash."""
+    p = _job([("A.10", "One", "Room", "2026-02-02", "2026-02-06")])
+    p.activities[0].calendar_uid = "nope"
+    p.build_lookups()
+    assert lt._holidays_by_activity(p)[p.activities[0].uid] == frozenset()
+
+
+# ── re-timing lags when the calendar changes ─────────────────────────────────
+
+def test_giving_the_schedule_its_holidays_back_re_times_the_lags():
+    """
+    The stored dates do not move when a calendar gains a holiday, but what a
+    lag spans does: the same hours now step over a day the scheduler stops for.
+    Re-measuring against the dates is what keeps the printed schedule.
+    """
+    rows = [("A.10", "One", "Room", "2026-11-23", "2026-11-25"),
+            ("A.20", "Two", "Room", "2026-11-30", "2026-12-02")]
+    p = _job(rows, relations=[Relation(uid="r", predecessor_uid="u1",
+                                       successor_uid="u2", type=lt.FS, lag=16.0)])
+    p.calendars[0].holidays = frozenset({"2026-11-26", "2026-11-27"})
+    p.build_lookups()
+    out = lt.retime_lags(p)
+    assert out["counts"]["changed"] == 1
+    assert p.relations[0].lag == 0.0, "the two are adjacent on the real calendar"
+
+
+def test_re_timing_changes_the_lag_and_never_the_relationship():
+    rows = [("A.10", "One", "Room", "2026-02-02", "2026-02-06"),
+            ("A.20", "Two", "Room", "2026-03-02", "2026-03-06")]
+    mine = Relation(uid="MINE", predecessor_uid="u1", successor_uid="u2",
+                    type=lt.FS, lag=0.0)
+    p = _job(rows, relations=[mine])
+    lt.retime_lags(p)
+    assert len(p.relations) == 1
+    r = p.relations[0]
+    assert r.uid == "MINE" and r.predecessor_uid == "u1" and r.successor_uid == "u2"
+    assert r.type == lt.FS
+
+
+def test_only_the_named_successors_are_re_timed():
+    rows = [("A.10", "One", "Room", "2026-02-02", "2026-02-06"),
+            ("A.20", "Two", "Room", "2026-03-02", "2026-03-06"),
+            ("B.10", "Three", "Room", "2026-04-01", "2026-04-03")]
+    p = _job(rows, relations=[
+        Relation(uid="r1", predecessor_uid="u1", successor_uid="u2",
+                 type=lt.FS, lag=0.0),
+        Relation(uid="r2", predecessor_uid="u2", successor_uid="u3",
+                 type=lt.FS, lag=0.0)])
+    before = p.relations[1].lag
+    out = lt.retime_lags(p, only=("A.",))
+    assert out["counts"]["changed"] == 1
+    assert p.relations[1].lag == before, "a successor outside the prefix was touched"
+
+
+def test_a_tie_the_dates_contradict_is_left_alone_by_default():
+    """Changing the kind of a relationship is a bigger claim than its gap."""
+    rows = [("A.10", "One", "Room", "2026-03-02", "2026-03-20"),
+            ("A.20", "Two", "Room", "2026-03-05", "2026-03-09")]
+    p = _job(rows, relations=[Relation(uid="r", predecessor_uid="u1",
+                                       successor_uid="u2", type=lt.FS, lag=0.0)])
+    out = lt.retime_lags(p)
+    assert out["counts"]["left_alone"] == 1
+    assert out["counts"]["retyped"] == 0
+    assert p.relations[0].type == lt.FS
+
+
+def test_asked_to_retype_it_keeps_the_dependency_in_the_kind_that_fits():
+    """
+    A successor starting while its predecessor still runs is Start-to-Start
+    here, whatever it is on the sister job. The dependency is real; only the
+    kind was wrong, so the tie is kept rather than dropped.
+    """
+    rows = [("A.10", "One", "Room", "2026-03-02", "2026-03-20"),
+            ("A.20", "Two", "Room", "2026-03-05", "2026-03-09")]
+    p = _job(rows, relations=[Relation(uid="r", predecessor_uid="u1",
+                                       successor_uid="u2", type=lt.FS, lag=0.0)])
+    out = lt.retime_lags(p, retype=True)
+    assert out["counts"]["retyped"] == 1
+    assert len(p.relations) == 1, "a relationship was dropped"
+    assert p.relations[0].type == lt.SS
+    assert p.relations[0].lag == 3 * lt.HOURS_PER_DAY

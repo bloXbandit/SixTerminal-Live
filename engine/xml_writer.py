@@ -790,6 +790,30 @@ def _project_uses_6day(project) -> bool:
     return False
 
 
+def _global_target_from_name(name: str, six: bool) -> str:
+    """
+    Which of the GLOBAL calendars written above a name refers to.
+
+    The project-calendar twin of this is below. Both are needed because an
+    activity may sit on either kind, and a calendar that is not in the map at
+    all falls through to the default — which is how a schedule put on the
+    holiday calendar came back out on a 5-day week that works Christmas.
+
+    Only ids the global section actually emits are returned: the 6-day
+    calendar is written on demand, so pointing at it when it was not written
+    gives P6 "Referenced business object Calendar ... cannot be found,
+    ignoring field CalendarObjectId" and the activity loses its calendar.
+    """
+    lname = (name or "").lower()
+    if ("6" in lname or "six" in lname) and six:
+        return _GCAL_6_HOL
+    if "7" in lname or "seven" in lname:
+        return _GCAL_7_NOHOL
+    if "standard hol" in lname or ("hol" in lname and "no hol" not in lname):
+        return _GCAL_5_HOL
+    return _GCAL_5_NOHOL
+
+
 def _calendar_target_from_name(name: str) -> str:
     lname = (name or "").lower()
     if "6" in lname or "six" in lname:
@@ -891,6 +915,19 @@ def _build_calendar_oid_map(project: Project) -> Dict[str, str]:
         # fixed calendars are no longer emitted gives P6 "Referenced business
         # object Calendar ... cannot be found, ignoring field
         # CalendarObjectId" — and an activity with no calendar at all.
+        # The project's GLOBAL calendars are written too, in the global section
+        # from fixed ids, so an activity sitting on one has somewhere to point.
+        # Without this they were absent from the map entirely and every such
+        # activity fell through to the default: a schedule moved onto
+        # "G5-DAY STANDARD HOL '25-'30" came back out on a 5-day week that
+        # works straight through every holiday, finishing days early.
+        six = _project_uses_6day(project)
+        own_uids = {_key(c.uid) for c in own}
+        for cal in (getattr(project, "calendars", None) or []):
+            key = _key(getattr(cal, "uid", None))
+            if key in own_uids or key in mapping:
+                continue
+            mapping[key] = _global_target_from_name(getattr(cal, "name", ""), six)
         mapping[_DEFAULT_KEY] = mapping[_key(own[0].uid)]
         mapping.setdefault("", mapping[_DEFAULT_KEY])
         return mapping

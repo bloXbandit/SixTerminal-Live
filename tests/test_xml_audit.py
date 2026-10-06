@@ -23,6 +23,7 @@ but it is the class of error a schema would pass anyway.
 
 import os
 import sys
+import tempfile
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -91,6 +92,50 @@ def test_a_project_calendar_carrying_a_global_id_is_not_declared_twice():
     p.build_lookups()
     r = _ok(p)
     assert r["counts"]["Calendar"] >= 1
+
+
+def test_an_activity_on_a_global_calendar_points_at_the_one_that_was_written():
+    """
+    A schedule's global calendars are written in the global block from fixed
+    ids, but they were missing from the id map, so every activity sitting on
+    one fell through to the default. A schedule moved onto the GC's holiday
+    calendar came back out on a 5-day week that works straight through
+    Christmas -- and twelve Precast turnovers with it, finishing days early.
+    """
+    import xml.etree.ElementTree as ET
+
+    from engine.xml_writer import write_p6_xml
+
+    p = _job()
+    p.calendars = [Calendar(uid="1", name="Standard", type="Project"),
+                   Calendar(uid="6592", name="G5-DAY STANDARD HOL '25-'30",
+                            type="Global",
+                            holidays=frozenset({"2026-12-25", "2027-01-01"}))]
+    for a in p.activities:
+        a.calendar_uid = "6592"
+    p.build_lookups()
+    _ok(p)
+
+    with tempfile.TemporaryDirectory() as d:
+        out = os.path.join(d, "cal.xml")
+        write_p6_xml(p, out)
+        root = ET.parse(out).getroot()
+
+    def tag(el):
+        return el.tag.rsplit("}", 1)[-1]
+
+    declared = {c.findtext("{*}ObjectId") for c in root
+                if tag(c) == "Calendar"}
+    pointed = {a.findtext("{*}CalendarObjectId")
+               for a in root.iter() if tag(a) == "Activity"}
+    assert pointed, "no activities were written"
+    assert pointed <= declared, (
+        f"activities point at {pointed - declared}, which this export "
+        f"never wrote; P6 drops the field and leaves them with no calendar")
+    # and it is the holiday one, not the 5-day-no-holiday default
+    hol = [c.findtext("{*}ObjectId") for c in root if tag(c) == "Calendar"
+           and (c.findtext("{*}Name") or "").upper().find("STANDARD HOL") >= 0]
+    assert pointed == set(hol), f"landed on {pointed}, not the holiday calendar {hol}"
 
 
 def test_a_schedule_with_resources_holds_together():
