@@ -180,3 +180,70 @@ def test_a_gantt_print_yields_no_logic_and_does_not_pretend_otherwise():
     assert "no logic" in gp.describe({"rows": [], "levels": {},
                                       "counts": {"rows": 0, "activities": 0,
                                                  "folders": 0}})
+
+
+# ── the columns are not in the same place on every print ─────────────────────
+
+def _header_page(shift=0.0, name_at=130.2):
+    """A fake page object exposing just what _columns needs."""
+    class W(dict):
+        pass
+
+    def word(text, x0):
+        return {"text": text, "x0": x0, "top": 10.0}
+
+    row = [word("Activity", 37.9 + shift), word("ID", 55.0 + shift),
+           word("Activity", name_at + shift), word("Name", name_at + 17 + shift),
+           word("At", 333.4 + shift), word("Completion", 339.6 + shift),
+           word("Start", 368.8 + shift), word("Finish", 406.7 + shift)]
+
+    class Page:
+        def extract_words(self, **kw):
+            return row
+
+        def flush_cache(self):
+            pass
+
+    return Page()
+
+
+def test_the_columns_are_read_off_the_prints_own_header():
+    """
+    A P6 print lays out to fixed columns but not the same ones twice. The same
+    report for two buildings on one site came out with its table shifted 38
+    points and its name column 22 points wider; hardcoded bounds read one
+    perfectly and gave the other zero durations and folder names with numbers
+    stuck on the end.
+    """
+    cols = gp._columns(_header_page())
+    assert cols is not None
+    assert cols["name"][0] < 130.2
+    assert cols["start"][0] < 368.8 < cols["start"][1]
+    assert cols["finish"][0] < 406.7 < cols["finish"][1]
+
+
+def test_a_shifted_print_gets_shifted_columns():
+    """The regression: this is the print that read as zero durations."""
+    normal = gp._columns(_header_page())
+    shifted = gp._columns(_header_page(shift=-38.0))
+    assert shifted is not None
+    assert shifted["start"][0] < normal["start"][0] - 30
+    assert shifted["finish"][0] < normal["finish"][0] - 30
+
+
+def test_a_page_with_no_header_yields_nothing_so_the_caller_keeps_the_last():
+    class Bare:
+        def extract_words(self, **kw):
+            return [{"text": "MDC3.PMT.1130", "x0": 53.9, "top": 10.0}]
+
+        def flush_cache(self):
+            pass
+
+    assert gp._columns(Bare()) is None
+
+
+def test_the_fallback_has_every_column_the_reader_asks_for():
+    for key in ("name", "duration", "start", "finish", "bar"):
+        assert key in gp.FALLBACK_COLUMNS
+        lo, hi = gp.FALLBACK_COLUMNS[key]
+        assert lo < hi

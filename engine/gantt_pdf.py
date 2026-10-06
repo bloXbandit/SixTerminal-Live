@@ -29,15 +29,25 @@ import datetime as _dt
 import re
 from typing import Any, Dict, List, Optional, Tuple
 
-# Where each column sits on the page, in points. A P6 print is laid out to
-# fixed positions, so reading by x is exact where reading the flattened text
-# is guesswork: an activity called "Pour 2 Level 1" has numbers in its name,
-# and no amount of pattern matching reliably tells those from the duration.
-COL_NAME = (120.0, 330.0)
-COL_DURATION = (330.0, 367.0)
-COL_START = (367.0, 402.0)
-COL_FINISH = (402.0, 440.0)
-BAR_FROM = 440.0          # the bar's own label, which repeats the name
+# Reading by x is exact where reading the flattened text is guesswork: an
+# activity called "Pour 2 Level 1" has numbers in its name, and no amount of
+# pattern matching reliably tells those from the duration.
+#
+# The positions themselves are NOT fixed, which is what these used to assume. A
+# P6 print lays out to fixed columns but not the same ones twice: the same
+# report for two buildings on one site came out with its table shifted 38 points
+# and its name column 22 points wider. Hardcoded bounds read one perfectly and
+# gave the other zero durations and folder names with numbers stuck on the end
+# — which looks like a parsing bug rather than a layout difference, and sent me
+# looking in the wrong place. `_columns` reads them off each print's own header
+# instead; these remain only as the shape of what it returns.
+FALLBACK_COLUMNS = {
+    "name": (120.0, 330.0),
+    "duration": (330.0, 367.0),
+    "start": (367.0, 402.0),
+    "finish": (402.0, 440.0),
+    "bar": (440.0, 1e9),
+}
 
 # Rows that are the page, not the schedule.
 FURNITURE = re.compile(
@@ -90,6 +100,53 @@ def undouble(text: str) -> str:
     return " ".join(out)
 
 
+def _columns(page) -> Optional[Dict[str, Tuple[float, float]]]:
+    """
+    Where this print puts its columns, read off its own header row.
+
+    P6 lays a print out to fixed positions, but not the SAME positions: the
+    same report for two buildings came out with its table shifted 38 points and
+    its name column 22 points wider. Hardcoded bounds read one of them
+    perfectly and gave the other zero durations and folder names with numbers
+    stuck on the end, which looks like a parsing bug rather than a layout
+    difference.
+
+    So the header is found once and the boundaries derived from it. Returns None
+    when this page has no header, which is every page after the first on some
+    prints — the caller keeps the last layout it found.
+    """
+    want = ("activity id", "activity name", "start", "finish")
+    for words in _rows(page):
+        flat = " ".join(w["text"] for w in words).lower()
+        if not all(k in flat for k in ("activity", "name", "start", "finish")):
+            continue
+        at: Dict[str, float] = {}
+        i = 0
+        while i < len(words):
+            two = f"{words[i]['text']} {words[i+1]['text']}".lower() \
+                if i + 1 < len(words) else ""
+            one = words[i]["text"].lower()
+            if two in want:
+                at[two] = words[i]["x0"]
+                i += 2
+                continue
+            if one in ("start", "finish"):
+                at[one] = words[i]["x0"]
+            if one == "at":                      # "At Completion [Duration]"
+                at["duration"] = words[i]["x0"]
+            i += 1
+        if not all(k in at for k in ("activity name", "start", "finish")):
+            continue
+        name_from = at["activity name"] - 10.0
+        dur_from = at.get("duration", at["start"] - 40.0) - 12.0
+        return {"name": (name_from, dur_from),
+                "duration": (dur_from, at["start"] - 4.0),
+                "start": (at["start"] - 4.0, at["finish"] - 4.0),
+                "finish": (at["finish"] - 4.0, at["finish"] + 34.0),
+                "bar": (at["finish"] + 34.0, 1e9)}
+    return None
+
+
 def _in(word, span: Tuple[float, float]) -> bool:
     return span[0] <= word["x0"] < span[1]
 
@@ -134,10 +191,14 @@ def read(path: str, id_prefix: Optional[str] = None,
     prefix = re.compile(rf"^{id_prefix}\.", re.I) if id_prefix else \
         re.compile(r"^[A-Z][A-Z0-9]{1,9}[.-]")
 
+    cols = None
     with pdfplumber.open(path) as pdf:
         for pno, page in enumerate(pdf.pages, 1):
             if max_pages and pno > max_pages:
                 break
+            cols = _columns(page) or cols or FALLBACK_COLUMNS
+            C_NAME, C_DUR = cols["name"], cols["duration"]
+            C_START, C_FINISH, B_FROM = cols["start"], cols["finish"], cols["bar"][0]
             for words in _rows(page):
                 if not words:
                     continue
@@ -145,9 +206,9 @@ def read(path: str, id_prefix: Optional[str] = None,
                 if FURNITURE.search(flat):
                     continue
 
-                dur = [w for w in words if _in(w, COL_DURATION)]
-                start = [w for w in words if _in(w, COL_START)]
-                finish = [w for w in words if _in(w, COL_FINISH)]
+                dur = [w for w in words if _in(w, C_DUR)]
+                start = [w for w in words if _in(w, C_START)]
+                finish = [w for w in words if _in(w, C_FINISH)]
                 # A milestone has no duration, so P6 prints ONE date for it —
                 # a start milestone's start, a finish milestone's finish, in
                 # its own column and nothing in the other. Requiring both
@@ -160,8 +221,8 @@ def read(path: str, id_prefix: Optional[str] = None,
                 head = words[0]
                 is_act = bool(prefix.match(head["text"]))
                 name_words = [w for w in words
-                              if _in(w, COL_NAME) or
-                              (not is_act and w["x0"] < COL_NAME[0])]
+                              if _in(w, C_NAME) or
+                              (not is_act and w["x0"] < C_NAME[0])]
                 name = " ".join(w["text"] for w in name_words)
                 if not is_act:
                     name = undouble(name)
@@ -169,7 +230,7 @@ def read(path: str, id_prefix: Optional[str] = None,
                     # at all — only the bar's label carries it.
                     if not name.strip():
                         name = undouble(" ".join(
-                            w["text"] for w in words if w["x0"] >= BAR_FROM))
+                            w["text"] for w in words if w["x0"] >= B_FROM))
 
                 indent = round(head["x0"], 1)
                 # A few folder rows print no name in the left column at all —
@@ -178,7 +239,7 @@ def read(path: str, id_prefix: Optional[str] = None,
                 # here and given a depth from its neighbours below, because
                 # taken at face value they came out as siblings of the project
                 # root with the whole branch beneath them hanging off nothing.
-                unknown_indent = head["x0"] >= COL_NAME[1]
+                unknown_indent = head["x0"] >= C_NAME[1]
                 if not unknown_indent:
                     indents.append(indent)
                 s_txt = next((_date(w["text"]) for w in start
