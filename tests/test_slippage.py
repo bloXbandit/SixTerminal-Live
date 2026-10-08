@@ -210,3 +210,86 @@ def test_nothing_in_common_is_reported_rather_than_divided_by_zero():
     assert res["rows"] == []
     assert res["scope"]["common"] == 0
     assert "0 activities common" in sl.describe(res)
+
+
+# ── the other half: what each issue actually says ───────────────────────────
+
+def test_as_issued_counts_every_activity_the_issue_carries():
+    base = _snap("Contract", [("G.10", "Gen 315", "2026-02-02", "2026-02-20")])
+    upd = _snap("June", [("G.10", "Gen 315", "2026-02-02", "2026-02-20"),
+                         ("G.20", "Gen 316", "2027-01-04", "2027-06-30")])
+    res = sl.as_issued([base, upd])
+    row = next(r for r in res["rows"] if r["group"] == "Generator Rooms")
+    assert row["Contract"]["activities"] == 1
+    assert row["June"]["activities"] == 2
+
+
+def test_as_issued_shows_the_growth_that_like_for_like_holds_out():
+    """
+    The pair is the point: the same two issues read one way show no movement
+    and read the other show five months, and the difference is scope.
+    """
+    base = _snap("Contract", [("G.10", "Gen 315", "2026-02-02", "2026-02-20")])
+    upd = _snap("June", [("G.10", "Gen 315", "2026-02-02", "2026-02-20"),
+                         ("G.20", "Gen 316", "2027-01-04", "2027-06-30")])
+    like = sl.compare(base, [upd])
+    issued = sl.as_issued([base, upd])
+    assert next(r for r in like["rows"]
+                if r["group"] == "Generator Rooms")["June"]["slip_days"] == 0
+    row = next(r for r in issued["rows"] if r["group"] == "Generator Rooms")
+    assert row["June"]["slip_days"] > 400
+    assert row["June"]["added"] == 1
+
+
+def test_a_group_only_a_later_issue_has_is_still_listed():
+    base = _snap("Contract", [("G.10", "Gen 315", "2026-02-02", "2026-02-20")])
+    upd = _snap("June", [("G.10", "Gen 315", "2026-02-02", "2026-02-20"),
+                         ("R.10", "Roof membrane", "2027-01-04", "2027-06-30")])
+    res = sl.as_issued([base, upd])
+    roof = next(r for r in res["rows"] if r["group"] == "Roof")
+    assert roof["Contract"]["activities"] == 0
+    assert roof["June"]["activities"] == 1
+    assert roof["June"]["slip_days"] is None, "nothing to measure it against"
+
+
+# ── a GC who renumbers every re-issue ───────────────────────────────────────
+
+def test_each_update_is_measured_on_its_own_overlap_with_the_contract():
+    """
+    Held to one common set, an activity that only two of three issues carry
+    drops out of all of them. On MDC-3 that took the basis from 1,142 and 974
+    down to 968 and left most groups with a row or two. Pairwise keeps each
+    column on everything it actually shares with the contract.
+    """
+    base = _snap("Contract", [("G.10", "Gen 315", "2026-02-02", "2026-02-20"),
+                              ("G.20", "Gen 316", "2026-02-02", "2026-02-20")])
+    jun = _snap("June", [("G.10", "Gen 315", "2026-03-02", "2026-03-20")])
+    sep = _snap("Sept", [("G.20", "Gen 316", "2026-04-01", "2026-04-20")])
+
+    strict = sl.compare(base, [jun, sep])
+    assert strict["rows"] == [], "nothing is common to all three"
+
+    loose = sl.compare_pairwise(base, [jun, sep])
+    row = next(r for r in loose["rows"] if r["group"] == "Generator Rooms")
+    assert row["June"]["activities"] == 1
+    assert row["Sept"]["activities"] == 1
+    assert row["June"]["slip_days"] == 28
+    assert row["Sept"]["slip_days"] == 59
+
+
+def test_pairwise_still_refuses_to_count_added_work_as_slip():
+    base = _snap("Contract", [("G.10", "Gen 315", "2026-02-02", "2026-02-20")])
+    jun = _snap("June", [("G.10", "Gen 315", "2026-02-02", "2026-02-20"),
+                         ("G.90", "Gen 390 added", "2027-01-04", "2027-06-30")])
+    res = sl.compare_pairwise(base, [jun])
+    row = next(r for r in res["rows"] if r["group"] == "Generator Rooms")
+    assert row["June"]["slip_days"] == 0
+    assert res["scope"]["June"]["not_in_baseline"] == 1
+
+
+def test_pairwise_reports_what_each_column_rests_on():
+    base = _snap("Contract", [("G.10", "Gen 315", "2026-02-02", "2026-02-20")])
+    jun = _snap("June", [("G.10", "Gen 315", "2026-03-02", "2026-03-20")])
+    res = sl.compare_pairwise(base, [jun])
+    assert res["scope"]["June"]["shared_with_baseline"] == 1
+    assert res["scope"]["Contract"]["total"] == 1

@@ -248,6 +248,94 @@ def compare(baseline: Snapshot, updates: Sequence[Snapshot],
             "baseline": baseline.label}
 
 
+def compare_pairwise(baseline: Snapshot, updates: Sequence[Snapshot],
+                     include_other: bool = True) -> Dict[str, Any]:
+    """
+    Each update measured against the baseline on ITS OWN common set.
+
+    `compare` holds every issue to one common set, which is right when the
+    activity ids are stable and punishing when they are not. This GC renumbers
+    at every re-issue: of MDC-3's 1,957 contract activities 1,142 survive into
+    June and 974 into September, but only 968 into both -- and intersecting all
+    four sources at once leaves most groups with one or two rows, which is not
+    a basis for a number anybody should quote.
+
+    So each column is intersected with the baseline on its own. Every column is
+    still like-for-like against the contract; they simply rest on different
+    subsets, and each carries the count it was measured on so the reader can
+    see which ones are thin.
+    """
+    merged: Dict[Tuple[str, str], Dict[str, Any]] = {}
+    for upd in updates:
+        one = compare(baseline, [upd], include_other=include_other)
+        for row in one["rows"]:
+            key = (row["group"], row["phase"])
+            slot = merged.setdefault(key, {"group": row["group"],
+                                           "phase": row["phase"]})
+            slot[baseline.label] = row[baseline.label]
+            cell = dict(row[upd.label])
+            cell["activities"] = row["activities"]
+            slot[upd.label] = cell
+
+    order = {g: i for i, (g, _, _) in enumerate(GROUPS)}
+    order[_OTHER] = len(order)
+    rows = [merged[k] for k in sorted(merged,
+                                      key=lambda k: (order.get(k[0], 99), k[1]))]
+    scope = {"common": None}
+    for snap in [baseline] + list(updates):
+        scope[snap.label] = {"total": len(snap.rows)}
+    for upd in updates:
+        shared = set(baseline.rows) & set(upd.rows)
+        scope[upd.label]["shared_with_baseline"] = len(shared)
+        scope[upd.label]["not_in_baseline"] = len(set(upd.rows) - shared)
+    return {"rows": rows, "scope": scope, "baseline": baseline.label,
+            "labels": [baseline.label] + [u.label for u in updates]}
+
+
+def as_issued(snapshots: Sequence[Snapshot],
+              include_other: bool = True) -> Dict[str, Any]:
+    """
+    Each group's window in each issue, on whatever that issue contains.
+
+    The companion to `compare`, and the honest other half of the picture: the
+    like-for-like number is what can be argued as movement, and this is what
+    the schedule now actually says, scope growth and all. Read on its own it
+    overstates slip; read next to the other it shows where the growth is.
+    """
+    groups: Dict[Tuple[str, str], Dict[str, Any]] = {}
+    for snap in snapshots:
+        for aid, row in snap.rows.items():
+            g, ph = categorize(aid, row["name"])
+            if g == _OTHER and not include_other:
+                continue
+            cell = groups.setdefault((g, ph), {}).setdefault(
+                snap.label, {"start": None, "finish": None, "activities": 0})
+            cell["activities"] += 1
+            if row["start"] and (cell["start"] is None or row["start"] < cell["start"]):
+                cell["start"] = row["start"]
+            if row["finish"] and (cell["finish"] is None or row["finish"] > cell["finish"]):
+                cell["finish"] = row["finish"]
+
+    order = {g: i for i, (g, _, _) in enumerate(GROUPS)}
+    order[_OTHER] = len(order)
+    base = snapshots[0].label
+    rows: List[Dict[str, Any]] = []
+    for (g, ph), cells in sorted(groups.items(),
+                                 key=lambda kv: (order.get(kv[0][0], 99), kv[0][1])):
+        row: Dict[str, Any] = {"group": g, "phase": ph}
+        for snap in snapshots:
+            cell = dict(cells.get(snap.label)
+                        or {"start": None, "finish": None, "activities": 0})
+            if snap.label != base:
+                cell["slip_days"] = _days(cell["finish"],
+                                          (cells.get(base) or {}).get("finish"))
+                cell["added"] = cell["activities"] - (
+                    (cells.get(base) or {}).get("activities", 0))
+            row[snap.label] = cell
+        rows.append(row)
+    return {"rows": rows, "labels": [s.label for s in snapshots], "baseline": base}
+
+
 def worst(result: Dict[str, Any], label: str, limit: int = 10) -> List[Dict[str, Any]]:
     """The groups that moved furthest in one update, latest first."""
     got = [r for r in result["rows"] if (r.get(label) or {}).get("slip_days") is not None]
@@ -257,13 +345,22 @@ def worst(result: Dict[str, Any], label: str, limit: int = 10) -> List[Dict[str,
 
 def describe(result: Dict[str, Any]) -> str:
     """A few lines for the terminal, and for a header row in the workbook."""
-    out = [f"baseline: {result['baseline']}",
-           f"compared on {result['scope']['common']} activities common to all "
-           f"{len(result['labels'])} issues"]
+    common = result["scope"].get("common")
+    out = [f"baseline: {result['baseline']}"]
+    out.append(f"compared on {common} activities common to all "
+               f"{len(result['labels'])} issues" if common is not None else
+               "each issue compared on its own overlap with the baseline")
     for lab in result["labels"]:
         sc = result["scope"][lab]
-        out.append(f"  {lab}: {sc['total']} activities, "
-                   f"{sc['not_in_common']} not in the common set")
+        if "not_in_common" in sc:
+            out.append(f"  {lab}: {sc['total']} activities, "
+                       f"{sc['not_in_common']} not in the common set")
+        elif "shared_with_baseline" in sc:
+            out.append(f"  {lab}: {sc['total']} activities, "
+                       f"{sc['shared_with_baseline']} shared with the baseline, "
+                       f"{sc['not_in_baseline']} new")
+        else:
+            out.append(f"  {lab}: {sc['total']} activities (the baseline)")
     for lab in result["labels"][1:]:
         moved = [r for r in result["rows"]
                  if (r.get(lab) or {}).get("slip_days")]
