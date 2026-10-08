@@ -42,30 +42,65 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 # the specific-before-general one, and commissioning is tested before the room
 # it happens in.
 
-GROUPS: List[Tuple[str, Tuple[str, ...], Optional[str]]] = [
-    ("Completion Milestones", ("MIL",),
-     r"substantial completion|temporary certificate|certificate of occupan|"
-     r"complete construction|notice to proceed|building finals|close.?out"),
-    ("Commissioning & Energization", ("CX",),
+GROUPS: List[Tuple[str, str, Optional[str]]] = [
+    # Pre-construction, which comes first and is not site work.
+    ("Design", r"DSG", r"^design |design kickoff|\bspecs\b"),
+    ("Funding & Pre-Construction", r"FDG",
+     r"funding|\bGMP\b|market pricing|\bBSU\b|\bOAA\b|buyout"),
+    ("Submittals", r"SUB|REM", r"submittal|shop drawing|load calculation"),
+    ("Procurement", r"PRO", r"^procurement|procurement[ :/]|fabrication:"),
+    ("Permits", r"PMT", r"\bpermit\b|site plan review|service authority|\bDEQ\b"),
+    ("VDC Coordination", r"VDC", r"\bVDC\b|coordination drawing"),
+
+    # The contract dates themselves, before the rooms they happen in.
+    ("Completion Milestones", r"MIL",
+     r"substantial completion|temporary certificate|final certificate|"
+     r"certificate of occupan|complete construction|notice to proceed|"
+     r"building finals|close.?out"),
+    ("Commissioning & Startup", r"CO|CX",
      r"level [1-5]\s*(cx|comm)|commissioning|ready to energize|energi[sz]|"
-     r"start.?up|burn.?in|functional test|testing and inspection"),
-    ("Precast", ("PC",), r"precast|erection|turnover"),
-    ("Concrete & Pours", ("FDG", "SOD", "SOG", "UDG"),
-     r"\bpour\b|slab|footing|foundation|mat\b|caisson|pile\b|grade beam"),
-    ("Structural Steel", ("STR", "ST", "SHF"),
-     r"high steel|steel|joist|decking|shear"),
-    ("Generator Rooms", ("GEN",), r"\bgen(erator)?\s*\d|\bgen\b"),
-    ("MV Rooms", ("MV",), r"\bmv\b|medium voltage"),
-    ("HV Rooms", ("HV",), r"\bhv\b|high voltage"),
-    ("Electrical Rooms", ("ER",), r"\ber\s*\d|electrical room"),
-    ("Galleries", ("GL", "GAL"), r"galler|\bgl\s*\d"),
-    ("CUP", ("CUP",), r"\bcup\b|central utility"),
-    ("Long Lead Equipment", ("LLE",), r"long lead"),
-    ("Roof", ("ROOF",), r"\broof"),
-    ("Underground & Utilities", ("UG", "U"), r"underground|utilit|duct bank"),
-    ("Substation & Transformers", ("SUB", "XFMR"),
-     r"substation|transformer|\bxfmr\b"),
-    ("Skids", ("SK", "SKID"), r"\bskid"),
+     r"start.?up|burn.?in|functional test|integrated systems|"
+     r"pre.?functional|piping (testing|flush)"),
+    # CUP is an area, and most of its work is commissioning its own
+    # equipment. Commissioning keeps priority so that a "Ready to Energize"
+    # stays with the other energization dates; everything else CUP lands here
+    # rather than being taken by the lineups its ids run under.
+    ("CUP", r"CUP", r"\bcup[- ]?\d*\b|central utility"),
+    ("Equipment Lineups", r"L|UP", r"lineup|line up"),
+    ("Inspections & Tags", r"",
+     r"(red|orange|yellow|green) tag|\bQA/QC\b|county.*inspection|"
+     r"in.?wall inspection|contractor verification"),
+
+    # Structure, bottom up.
+    ("Precast", r"PC", r"precast|area \d+ (erection|turnover)"),
+    ("Foundations & Underground", r"STR|UDG|SHF",
+     r"deep foundation|footer|footing|caisson|pile\b|grade beam|"
+     r"excavat|mep underground"),
+    ("Slabs & Pours", r"S|U|UG|SOD|SOG|L1|L2|L3|L4|L5",
+     r"\bpour\b|pour slab|form & tie|form and tie|slab on|concrete sealer|"
+     r"saw cut"),
+    ("Structural Steel", r"", r"high steel|steel erection|joist|decking|"
+     r"shear stud|fabrication: steel"),
+
+    # The rooms.
+    ("Generator Rooms", r"GEN", r"\bgen(erator)?\s*\d{2,3}\b|generator room|"
+     r"day tank|to engine\b"),
+    ("MV Rooms", r"MV", r"\bmv\s*\d{2,3}\b|medium voltage"),
+    ("HV Rooms", r"HV", r"\bhv\s*\d{2,3}\b|high voltage"),
+    ("Electrical Rooms", r"ER|ERR\d*|POE\d*", r"\ber{1,2}\s*\d{2,3}\b|"
+     r"electrical room|\bPOE\s*\d"),
+    ("Data Halls", r"DA|DH", r"data hall|\bdh\s*\d{2,3}\b"),
+    ("Galleries", r"GL|GAL|GL\d+|GL\d+[EW]", r"galler|\bgl\s*\d{3}\b"),
+    ("Admin Build-Out", r"ADM", r"^office |admin build"),
+    ("Misc Rooms", r"ROOM", r"vestibule|corridor|restroom"),
+
+    # Equipment and the envelope.
+    ("Long Lead Equipment", r"LLE|XFMR", r"long lead|transformer|\bxfmr\b|"
+     r"\bMVS\b|switchgear"),
+    ("Skids", r"SK|SKID", r"\bskid"),
+    ("Roof", r"ROOF|MEP", r"\broof|lightning protection|roof coping"),
+    ("Site & Exterior Utilities", r"EXT|SUT",
+     r"mobilize|site telecom|wet utilit|dry utilit|duct bank|building pad"),
 ]
 
 PHASES: Dict[str, str] = {"PH1": "Phase 1", "PH2": "Phase 2", "PH3": "Phase 3",
@@ -76,7 +111,16 @@ _NO_PHASE = "All phases"
 
 
 def _compiled():
-    return [(g, toks, _re.compile(pat, _re.I) if pat else None)
+    """
+    Each group's id-token test and name test, pre-compiled.
+
+    The token test is a whole-segment match rather than a substring one. "L" is
+    an equipment lineup and "L1" is the first floor; "ER" is an electrical room
+    and "REM" is not. Matching loosely put floor slabs in with the lineups.
+    """
+    return [(g,
+             _re.compile(rf"^(?:{toks})$", _re.I) if toks else None,
+             _re.compile(pat, _re.I) if pat else None)
             for g, toks, pat in GROUPS]
 
 
@@ -88,14 +132,18 @@ def categorize(activity_id: str, name: str = "") -> Tuple[str, str]:
     The group and phase an activity belongs to.
 
     The id is checked a segment at a time rather than by position, since the
-    coding differs between buildings; the name carries the rest.
+    coding differs between buildings; the name carries the rest. The first
+    group that matches wins, so the order of the table is what decides the
+    ambiguous cases -- procurement before the generator rooms, so that
+    GEN.PRO "Procurement / Fabrication: Precast" is procurement; commissioning
+    before the room it happens in.
     """
-    segs = [s.upper() for s in (activity_id or "").split(".")]
-    phase = next((PHASES[s] for s in segs if s in PHASES), _NO_PHASE)
-    tokens = set(segs)
+    segs = [s for s in (activity_id or "").split(".") if s]
+    phase = next((PHASES[s.upper()] for s in segs if s.upper() in PHASES),
+                 _NO_PHASE)
     text = name or ""
     for group, toks, pat in _MATCHERS:
-        if tokens & set(toks):
+        if toks is not None and any(toks.match(s) for s in segs):
             return group, phase
         if pat is not None and pat.search(text):
             return group, phase

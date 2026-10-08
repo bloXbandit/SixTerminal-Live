@@ -39,17 +39,33 @@ def test_the_group_comes_off_the_id_wherever_the_segment_sits():
 def test_the_name_carries_a_row_whose_id_says_nothing():
     """A printed Gantt gives a name and an id and nothing else to go on."""
     assert sl.categorize("X.1000", "Install High Steel")[0] == "Structural Steel"
-    assert sl.categorize("X.1000", "Pour 2 Level 1")[0] == "Concrete & Pours"
+    assert sl.categorize("X.1000", "Pour 2 Level 1")[0] == "Slabs & Pours"
 
 
-def test_commissioning_is_decided_before_the_room_it_happens_in():
+def test_contract_commissioning_beats_the_room_it_happens_in():
     """
-    Testing in an electrical room is commissioning, not electrical-room work.
-    The order of the table is what settles it, so this pins the order.
+    Level 3 Cx is a contract date that happens to sit on a room's id, and it
+    belongs with the commissioning it is reported against. The order of the
+    table is what settles that, so this pins the order.
+    """
+    g, _ = sl.categorize("MDC3.PH3.CO.CL.4350",
+                         "Level 3 Cx: Pre-Functional Testing")
+    assert g == "Commissioning & Startup"
+    g, _ = sl.categorize("MDC3.PH1.ER.209.1500", "Level 4 Cx: Functional Testing")
+    assert g == "Commissioning & Startup"
+
+
+def test_a_rooms_own_testing_step_stays_with_the_room():
+    """
+    The other side of that line, and the one worth being deliberate about.
+    "Testing and Inspections" as the last step of an electrical room is part of
+    building the room, not the contractual Cx -- pulling it out left the room
+    group missing its own completion and inflated commissioning with 300 rows
+    of room work.
     """
     g, _ = sl.categorize("MDC3.PH3.ER.104.4160",
                          "Testing and Inspections - ER 104 - Data Center C")
-    assert g == "Commissioning & Energization"
+    assert g == "Electrical Rooms"
 
 
 def test_the_phase_is_read_off_the_id():
@@ -293,3 +309,61 @@ def test_pairwise_reports_what_each_column_rests_on():
     res = sl.compare_pairwise(base, [jun])
     assert res["scope"]["June"]["shared_with_baseline"] == 1
     assert res["scope"]["Contract"]["total"] == 1
+
+
+# ── the id tokens mean what this job means by them ──────────────────────────
+
+def test_the_tokens_that_were_guessed_wrong_the_first_time():
+    """
+    Each of these was mislabelled by a table written from the token alone, and
+    each was corrected against the five prints. FDG is funding, not
+    foundations. SUB is a submittal, not a substation. U and UG are the slab
+    pour sequence -- plumbing, electrical, form and tie rebar, pour -- and not
+    underground utilities, which is what made a group read +285 days on three
+    activities that had kept their numbers.
+    """
+    cases = [
+        ("MDC1.FDG.1220", "Initial Funding Review and Apporval",
+         "Funding & Pre-Construction"),
+        ("MDC1.LLE.SUB.3230", "Long Lead Equipment Submittal Development",
+         "Submittals"),
+        ("MDC1.S.UG.L2.A1.3020", "Form & Tie Rebar", "Slabs & Pours"),
+        ("MDC1.S.U.L2.A13.8020", "Pour Slab", "Slabs & Pours"),
+        ("MDC1.SOD.L3.A11.4020", "Form & Tie Rebar", "Slabs & Pours"),
+        ("MDC1.STR.UDG.2230", "Deep Foundations (Grid Line 18)",
+         "Foundations & Underground"),
+        ("MDC1.PH1.L.UP9.2140", "Chiller Lineup 1 - Set Equipment",
+         "Equipment Lineups"),
+        ("MDC3.GEN.PRO.1640", "Procurement / Fabrication: Precast",
+         "Procurement"),
+        ("MDC3.GEN.315.1000", "Overhead Fire Protection - GEN 315",
+         "Generator Rooms"),
+        ("MDC1.PH1.XFMR.1000", "Transformer C01 (2500KVA)",
+         "Long Lead Equipment"),
+        ("MDC3.EXT.SUT.1690", "Mobilize", "Site & Exterior Utilities"),
+    ]
+    for aid, name, want in cases:
+        got, _ = sl.categorize(aid, name)
+        assert got == want, f"{aid} {name!r} -> {got}, wanted {want}"
+
+
+def test_a_lineup_and_a_floor_level_are_not_the_same_token():
+    """
+    Matched as a substring, "L" caught L1, L2 and L3 and swept every floor
+    slab into the equipment lineups. The segment is matched whole.
+    """
+    assert sl.categorize("MDC1.PH1.L.UP9.2140", "Chiller Lineup 1")[0] \
+        == "Equipment Lineups"
+    assert sl.categorize("MDC3.ST.L1.A5.5000", "Pour Slab")[0] == "Slabs & Pours"
+
+
+def test_generator_room_work_is_not_general_procurement():
+    """
+    GEN is both: GEN.PRO is general procurement and GEN.315 is a generator
+    room. 13 of 472 were procurement, and they finish early, so they could not
+    drive a group's last finish -- but they were still being counted in it.
+    """
+    assert sl.categorize("MDC1.GEN.PRO.1630", "Procurement: Deep Foundations")[0] \
+        == "Procurement"
+    assert sl.categorize("MDC3.GEN.327.1040", "Day Tank Piping")[0] \
+        == "Generator Rooms"
