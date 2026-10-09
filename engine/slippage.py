@@ -191,6 +191,16 @@ class Snapshot:
         if prev:
             s = min(x for x in (s, prev["start"]) if x) if (s or prev["start"]) else None
             f = max(x for x in (f, prev["finish"]) if x) if (f or prev["finish"]) else None
+        # A row carrying one date is a point in time -- which is how a
+        # zero-duration milestone is reported, and the two halves of a contract
+        # date do not even agree on which column it lands in: the September
+        # workbook puts Substantial Completion's date in Start on one row and in
+        # Finish on another, both 28-May-27. Mirrored, so a milestone compares
+        # against a milestone instead of reading blank.
+        if s and not f:
+            f = s
+        elif f and not s:
+            s = f
         self.rows[aid] = {"name": name or (prev or {}).get("name") or "",
                           "start": s, "finish": f,
                           "start_actual": bool(start_actual) or (prev or {}).get("start_actual", False),

@@ -367,3 +367,42 @@ def test_generator_room_work_is_not_general_procurement():
         == "Procurement"
     assert sl.categorize("MDC3.GEN.327.1040", "Day Tank Piping")[0] \
         == "Generator Rooms"
+
+
+# ── a milestone is a point in time, not a span ──────────────────────────────
+
+def test_a_single_dated_row_is_a_point_in_time():
+    """
+    A zero-duration milestone is reported with one date, and the sources do not
+    agree on which column it lands in: MDC-1's September workbook puts
+    Substantial Completion (PH1) in Start on MDC1.PH1.C.OUT.4410 and in Finish
+    on MDC1.MIL.PH1.1060, both 28-May-27. Compared on finish alone, the
+    contract date read blank against a contract date that was right there.
+    """
+    snap = sl.Snapshot.from_rows(
+        [{"activity_id": "A.10", "name": "Substantial Completion (PH1)",
+          "start": "2027-05-28", "finish": None},
+         {"activity_id": "B.10", "name": "Temporary Certificate of Occupancy",
+          "start": None, "finish": "2027-05-28"}], "GC")
+    assert snap.rows["A.10"]["finish"] == "2027-05-28"
+    assert snap.rows["B.10"]["start"] == "2027-05-28"
+
+
+def test_a_milestone_slip_is_measured_even_from_the_other_column():
+    base = sl.Snapshot.from_rows(
+        [{"activity_id": "M.10", "name": "Substantial Completion (PH1)",
+          "start": "2027-03-15", "finish": "2027-03-15"}], "Contract")
+    upd = sl.Snapshot.from_rows(
+        [{"activity_id": "M.10", "name": "Substantial Completion (PH1)",
+          "start": "2027-05-28", "finish": None}], "GC September")
+    res = sl.compare(base, [upd])
+    row = next(r for r in res["rows"] if r["group"] == "Completion Milestones")
+    assert row["GC September"]["slip_days"] == 74
+
+
+def test_a_span_is_not_turned_into_a_point():
+    snap = sl.Snapshot.from_rows(
+        [{"activity_id": "A.10", "name": "Pull wire", "start": "2026-02-02",
+          "finish": "2026-02-20"}], "X")
+    assert snap.rows["A.10"]["start"] == "2026-02-02"
+    assert snap.rows["A.10"]["finish"] == "2026-02-20"

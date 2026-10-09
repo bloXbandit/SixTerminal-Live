@@ -56,14 +56,21 @@ FURNITURE = re.compile(
     r"^\d{4}(\s+\d{4})+$|Actual Level|Remaining Level|Critical Remaining|"
     r"^Milestone$|^summary$", re.I)
 
-DATE = re.compile(r"^(\d{2})-([A-Za-z]{3})-(\d{2})$")
+DATE = re.compile(r"^(\d{1,2})-([A-Za-z]{3})-(\d{2})\*?$")
 MONTHS = {m: i for i, m in enumerate(
     ("jan", "feb", "mar", "apr", "may", "jun",
      "jul", "aug", "sep", "oct", "nov", "dec"), start=1)}
 
 
 def _date(token: str) -> Optional[str]:
-    """'28-Jan-26' -> '2026-01-28'. P6 prints two-digit years."""
+    """
+    '28-Jan-26' -> '2026-01-28'. P6 prints two-digit years.
+
+    A trailing asterisk is P6 marking the date as constrained, and it is still
+    the date: rejecting it dropped "26-Apr-27*" and left MDC-1's Phase 2
+    Substantial Completion -- a contract date -- reading blank in the print it
+    was printed in.
+    """
     m = DATE.match(token.strip())
     if not m:
         return None

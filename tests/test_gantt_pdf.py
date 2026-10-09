@@ -247,3 +247,25 @@ def test_the_fallback_has_every_column_the_reader_asks_for():
         assert key in gp.FALLBACK_COLUMNS
         lo, hi = gp.FALLBACK_COLUMNS[key]
         assert lo < hi
+
+
+def test_a_constrained_date_is_still_a_date():
+    """
+    P6 marks a date carrying a constraint with a trailing asterisk. Rejecting
+    the token dropped "26-Apr-27*" and left MDC-1's Phase 2 Substantial
+    Completion -- a contract date, printed right there on page 22 -- reading
+    blank, which then read as "not in this issue" in the comparison.
+    """
+    assert gp._date("26-Apr-27*") == "2027-04-26"
+    assert gp._date("15-Mar-27") == "2027-03-15"
+
+
+def test_a_single_digit_day_is_read():
+    """P6 does not zero-pad the day on every layout."""
+    assert gp._date("3-Sep-24") == "2024-09-03"
+
+
+def test_the_asterisk_does_not_make_anything_a_date():
+    assert gp._date("26-Apr-27**") is None
+    assert gp._date("*") is None
+    assert gp._date("32-Jan-26*") is None
