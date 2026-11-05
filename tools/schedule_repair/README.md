@@ -44,6 +44,20 @@ absent from the file. Importing as a new project is the way to drop logic.
 **`Start On or After` is the constraint for holding a date.** `Mandatory
 Start` overrides logic in both directions and hides sequence problems.
 
+**A UDF text value may not exceed 255 characters.** P6's XML importer rejects
+the whole file with `Field "Text" in UDFValue may not contain more than 255
+characters`, after it has already created activities, so a failed import
+leaves a half-built project behind. The value is written as `<TextValue>`
+inside `<UDF>`, and P6 counts the decoded characters. Activity `Name` is
+capped at 120 and `Id` at 40. Check all three before writing a file, and
+remember that appending a second note to an activity that already has one is
+what pushes a comment over.
+
+**When a note has to be shortened, keep the sentences that carry a flag.**
+Trimming from the front dropped exactly the notes worth reading: the marker
+on 194 tag activities saying the sign-off is the contractor's own, and the
+warning on 3 of the 5 activities where the field update contradicts the GC.
+
 **Float is computed from logic**, so an open end reads as unlimited float (no
 successor) or collapses to the data date (no predecessor) rather than showing
 real slack. Fix the open end before reading float.
