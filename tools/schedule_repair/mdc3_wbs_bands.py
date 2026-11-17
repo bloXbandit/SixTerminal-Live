@@ -29,6 +29,17 @@ FILL_DY_MIN = 140             # the fill must span ID+Name, not be a tick
 ROW_MIN, ROW_MAX = 2.5, 9.0   # one printed row, in the x direction
 
 doc = pymupdf.open(SRC)
+# Parts of this Exhibit S have been re-saved by different tools, and they do
+# not agree on page rotation: part 1 carries /Rotate 0, part 2 carries
+# /Rotate 90 (macOS Quartz re-save). get_drawings() reports unrotated
+# coordinates either way, so a clip built from them lands in the wrong place
+# on a rotated page -- the date columns still render and the name column
+# falls outside the crop, which looks like missing data rather than a bug.
+# Clearing the rotation makes every part behave like part 1.
+for pno in range(doc.page_count):
+    if doc[pno].rotation:
+        doc[pno].set_rotation(0)
+
 bands = []
 for pno in range(doc.page_count):
     seen = []
