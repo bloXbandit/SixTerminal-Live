@@ -58,6 +58,27 @@ def titleblock(ws, title, sub, widths):
     ws.freeze_panes = "A7"
 
 
+ALERTFILL = PatternFill("solid", fgColor="C00000")
+
+
+def alert(ws, text, span=8):
+    """A banner on row 5, between the title block and the data.
+
+    The 50,604 h gap is the kind of finding that gets lost in a note at the
+    bottom of an audit tab. Working on the instruction that the 533,400 did
+    NOT include the galleries, it says JER's own projection may be short --
+    which is against JER's interest to leave quiet, so it goes where nobody
+    can scroll past it.
+    """
+    ws.merge_cells(start_row=5, start_column=1, end_row=5, end_column=span)
+    c = ws.cell(row=5, column=1, value=text)
+    c.font = Font(name=F, size=10, bold=True, color="FFFFFF")
+    c.fill = ALERTFILL
+    c.alignment = Alignment(horizontal="left", vertical="center",
+                            wrap_text=True)
+    ws.row_dimensions[5].height = 30
+
+
 def header(ws, row, cells):
     for i, t in enumerate(cells, start=1):
         c = ws.cell(row=row, column=i, value=t)
@@ -305,6 +326,7 @@ titleblock(ws, "Labour Curve - baseline (02/04) vs projected (10/07)",
            "labour report.  BASELINE 533,400 h planned at contract.  "
            "PROJECTED 605,707 h per JER as of 08-Nov-26.",
            [13, 13, 14, 13, 14, 13, 15, 15])
+alert(ws, 'ALERT - PROJECTION MAY BE SHORT BY 50,604 h.  The 10/07 carries 122,911 h of scope with no counterpart in the 02/04 (galleries + HV/HVR). JER has booked only 72,307 h of growth. Assumed here that the 533,400 baseline did NOT include this scope - CONFIRM WITH FIELD.', span=8)
 header(ws, 6, ["Week Ending", "Baseline Labor", "Baseline Hours",
                "Proposed Labor", "Proposed Hours", "Actual Hours",
                "Cum Baseline", "Cum Proposed"])
@@ -392,6 +414,7 @@ titleblock(ws, "Scope Crosswalk - how hours were placed in each contract",
            "THIS IS THE AUDIT TAB. Every hour in both curves comes from a "
            "row here. Check the mapping before trusting the curves.",
            [28, 12, 9, 13, 13, 38, 13, 13, 14])
+alert(ws, 'ALERT - PROJECTION MAY BE SHORT BY 50,604 h.  The 10/07 carries 122,911 h of scope with no counterpart in the 02/04 (galleries + HV/HVR). JER has booked only 72,307 h of growth. Assumed here that the 533,400 baseline did NOT include this scope - CONFIRM WITH FIELD.', span=9)
 header(ws, 6, ["Scope bucket", "Hours", "Acts", "02/04 start",
                "02/04 finish", "10/07 band it maps to", "10/07 start",
                "10/07 finish", "In 02/04?"])
@@ -444,9 +467,10 @@ for line, fnt in [
     ("", BODY),
     ("Scope found in the 10/07 with no 02/04 counterpart: 122,911 h "
      "(galleries + HV/HVR).", BODY),
-    ("That is 50,604 h MORE than the growth booked. Either part of that "
-     "scope was already inside the 533,400, or the projection has not "
-     "absorbed all of it. See Field Questions.", BOLD),
+    ("That is 50,604 h MORE than the growth booked.", BOLD),
+    ("WORKING ASSUMPTION: the 533,400 baseline did NOT include this scope. "
+     "On that basis the 605,707 projection is short by 50,604 h. Confirm "
+     "with the field before the final issue.", BOLD),
     ("", BODY),
     ("Within a bucket, hours keep their relative position from our P6 and "
      "are mapped onto the target window, so the internal ramp survives. "
@@ -462,6 +486,7 @@ ws = wb.create_sheet("Field Questions")
 titleblock(ws, "Open questions - answer these before the final issue",
            "Each one moves a number in this workbook. Nothing here is "
            "rhetorical.", [6, 62, 16, 46])
+alert(ws, 'ALERT - PROJECTION MAY BE SHORT BY 50,604 h.  The 10/07 carries 122,911 h of scope with no counterpart in the 02/04 (galleries + HV/HVR). JER has booked only 72,307 h of growth. Assumed here that the 533,400 baseline did NOT include this scope - CONFIRM WITH FIELD.', span=4)
 header(ws, 6, ["#", "Question", "Hours at stake", "Why it matters"])
 Q = [
     ("Does the 605,707 projection fully absorb the galleries and HV rooms?",
