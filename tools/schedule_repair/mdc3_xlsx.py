@@ -300,9 +300,10 @@ put(ws, rr, 1, "Each of these has a duration matching a six-day week to "
 
 # ===================================================== 4. LABOR CURVE
 ws = wb.create_sheet("Labor Curve")
-titleblock(ws, "Labour Curve - baseline (02/04) vs proposed (10/07)",
-           "Weekly, week ending Sunday. Hours = crew x 50, matching the "
-           "JER labour report. Basis 533,400 h.",
+titleblock(ws, "Labour Curve - baseline (02/04) vs projected (10/07)",
+           "Weekly, week ending Sunday. Hours = crew x 50, matching the JER "
+           "labour report.  BASELINE 533,400 h planned at contract.  "
+           "PROJECTED 605,707 h per JER as of 08-Nov-26.",
            [13, 13, 14, 13, 14, 13, 15, 15])
 header(ws, 6, ["Week Ending", "Baseline Labor", "Baseline Hours",
                "Proposed Labor", "Proposed Hours", "Actual Hours",
@@ -412,10 +413,49 @@ for x in sorted(CURVE["rows"], key=lambda z: -z["hours"]):
     r += 1
 put(ws, r, 1, "TOTAL", font=BOLD)
 put(ws, r, 2, f"=SUM(B7:B{r - 1})", font=BOLD, fmt="#,##0", align="right")
-put(ws, r + 2, 1, "Shaded rows have NO counterpart in the 02/04 contract - "
-                  "searched by activity ID and by name across all 1,957 "
-                  "activities. They are carried in the proposed curve and "
-                  "excluded from the baseline.", font=SMALL)
+r += 2
+put(ws, r, 1, "Shaded rows have NO counterpart in the 02/04 contract - "
+              "searched by activity ID and by name across all 1,957 "
+              "activities. Carried in the projected curve, excluded from "
+              "the baseline.", font=SMALL)
+
+# Where the hours come from. The 02/04 Exhibit S has no labour in it at
+# all -- its columns are Activity ID, Activity Name, At Completion
+# Duration, Start, Finish, and a search of all 27 pages for units / labor /
+# hours / budgeted / resource / cost returns nothing. It supplies DATES.
+# Saying so on the face of the audit tab, because "where is the 533,400 in
+# the contract" is the first question anyone will ask.
+r += 2
+put(ws, r, 1, "WHERE THE NUMBERS COME FROM", font=BOLD)
+r += 1
+for line, fnt in [
+    ("The 02/04 Exhibit S contains NO hours. Its columns are Activity ID, "
+     "Activity Name, At Completion Duration, Start, Finish. All 27 pages "
+     "were searched for units / labor / hours / budgeted / resource / cost "
+     "- no such column exists.", BODY),
+    ("So the 02/04 supplies DATES ONLY. Every hour in this workbook is "
+     "JER's.", BOLD),
+    ("", BODY),
+    ("BASELINE  533,400 h - JER planned at contract, spread across the "
+     "02/04 dates.", BODY),
+    ("PROJECTED 605,707 h - JER projection as of 08-Nov-26, spread across "
+     "the 10/07 dates, with actual payroll to 20-Sep-26.", BODY),
+    ("GROWTH     72,307 h  (+13.6%) booked by JER between the two.", BOLD),
+    ("", BODY),
+    ("Scope found in the 10/07 with no 02/04 counterpart: 122,911 h "
+     "(galleries + HV/HVR).", BODY),
+    ("That is 50,604 h MORE than the growth booked. Either part of that "
+     "scope was already inside the 533,400, or the projection has not "
+     "absorbed all of it. See Field Questions.", BOLD),
+    ("", BODY),
+    ("Within a bucket, hours keep their relative position from our P6 and "
+     "are mapped onto the target window, so the internal ramp survives. "
+     "Both curves are built at the same level of detail on purpose - a "
+     "finer baseline would flatten the proposal and understate the "
+     "acceleration.", SMALL)]:
+    c = put(ws, r, 1, line, font=fnt)
+    c.border = Border()
+    r += 1
 
 # ===================================================== 6. FIELD QUESTIONS
 ws = wb.create_sheet("Field Questions")
@@ -424,6 +464,12 @@ titleblock(ws, "Open questions - answer these before the final issue",
            "rhetorical.", [6, 62, 16, 46])
 header(ws, 6, ["#", "Question", "Hours at stake", "Why it matters"])
 Q = [
+    ("Does the 605,707 projection fully absorb the galleries and HV rooms?",
+     "50,604",
+     "We can identify 122,911 h in the 10/07 with no 02/04 counterpart, but "
+     "only 72,307 h of growth has been booked. Either some of that scope "
+     "was already inside the 533,400, or the projection is short by about "
+     "50,604 h. This is the biggest open number in the workbook."),
     ("Are the galleries JER scope?",
      "111,675",
      "Assumed YES in this draft. No counterpart anywhere in the 02/04. If "

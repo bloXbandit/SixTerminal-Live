@@ -39,7 +39,14 @@ from mdc3_1007_bands import BANDS                           # noqa: E402
 
 SCR = ("/tmp/claude-0/-home-user-SixTerminal-Live/"
        "bd14e389-f5e4-5638-b9b0-8ffe79025c5f/scratchpad")
-BASIS = 533400.0
+# Two bases, both JER's own numbers, not derived here.
+#   533,400 is the baseline -- what was planned at contract.
+#   605,707 is the projection as of 08-Nov-26.
+# The baseline curve no longer has to be reconstructed by subtracting scope
+# from today's plan: it is a real figure, and the growth between the two is
+# a stated fact rather than something this script computes.
+BASIS = 533400.0            # baseline, at contract
+PROJECTED = 605707.0        # JER projection as of 08-Nov-26
 DATA_DATE = dt.date(2026, 9, 25)
 MON = {m: i + 1 for i, m in enumerate(
     ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
@@ -253,12 +260,20 @@ for name, pred, band in XWALK:
                  "prop_finish": pw[1].isoformat() if pw else None,
                  "new_scope": pred is None})
 
-# ---- the proposed curve carries actuals to the data date, forecast after
+# ---- normalise each curve onto its own basis -------------------------
+# The baseline carries the 533,400 planned at contract, across the scope the
+# 02/04 actually contains. The proposed carries the 605,707 now projected,
+# across all scope including what the 02/04 has no counterpart for.
+bt = sum(base_wk.values())
+if bt:
+    for w in base_wk:
+        base_wk[w] *= BASIS / bt
+
 act_wk = {dt.date.fromisoformat(d): h for d, _, h in ACTUALS}
 ACT_TOT = sum(h for _, _, h in ACTUALS)
 fwd = {w: v for w, v in prop_wk.items() if w > DATA_DATE}
 fwd_tot = sum(fwd.values())
-k = (BASIS - ACT_TOT) / fwd_tot if fwd_tot else 0
+k = (PROJECTED - ACT_TOT) / fwd_tot if fwd_tot else 0
 cur_wk = collections.Counter()
 for w, h in act_wk.items():
     cur_wk[w] += h
@@ -268,13 +283,16 @@ for w, v in fwd.items():
 base_tot = sum(base_wk.values())
 print(f"our v32 {RAW:,.0f} h -> basis {BASIS:,.0f} (x{SCALE:.5f})")
 print(f"buckets mapped          : {len(rows)}")
-print(f"BASELINE curve total    : {base_tot:,.0f} h   "
-      f"(02/04 scope only, {sum(1 for r in rows if r['new_scope'])} buckets "
-      f"excluded as new scope)")
+newh = sum(r['hours'] for r in rows if r['new_scope'])
+print(f"BASELINE curve total    : {base_tot:,.0f} h   (planned at contract, "
+      f"02/04 scope, {sum(1 for r in rows if r['new_scope'])} buckets excluded)")
 print(f"PROPOSED curve total    : {sum(cur_wk.values()):,.0f} h   "
-      f"(actual {ACT_TOT:,.0f} + forecast {BASIS - ACT_TOT:,.0f})")
-print(f"new scope not in 02/04  : "
-      f"{sum(r['hours'] for r in rows if r['new_scope']):,.0f} h")
+      f"(actual {ACT_TOT:,.0f} + forecast {PROJECTED - ACT_TOT:,.0f})")
+print(f"GROWTH booked by JER    : {PROJECTED - BASIS:,.0f} h  "
+      f"({100*(PROJECTED-BASIS)/BASIS:.1f}%)")
+print(f"new scope we can SEE    : {newh:,.0f} h  (galleries + HV/HVR, "
+      f"no 02/04 counterpart)")
+print(f"   -> unexplained gap   : {newh - (PROJECTED-BASIS):,.0f} h")
 bpk = max(base_wk, key=base_wk.get)
 cpk = max(cur_wk, key=cur_wk.get)
 print(f"\nBASELINE peak : {base_wk[bpk]:>8,.0f} h/wk = "
@@ -284,7 +302,7 @@ print(f"PROPOSED peak : {cur_wk[cpk]:>8,.0f} h/wk = "
 print(f"manager's file peak for MDC-3: 17,500 h/wk = 350 crew at 04/04/27")
 
 allw = sorted(set(base_wk) | set(cur_wk))
-json.dump({"scale": SCALE, "basis": BASIS, "data_date": DATA_DATE.isoformat(),
+json.dump({"scale": SCALE, "basis": BASIS, "projected": PROJECTED, "data_date": DATA_DATE.isoformat(),
            "actual_total": ACT_TOT, "rows": rows,
            "weeks": [{"w": w.isoformat(),
                       "base": round(base_wk.get(w, 0), 1),
