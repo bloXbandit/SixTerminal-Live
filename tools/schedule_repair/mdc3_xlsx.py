@@ -403,32 +403,59 @@ for nm, dur, s, f in sorted(rooms, key=lambda x: x[2]):
         font=BOLD if ov >= 18 else BODY)
     r += 1
 
-r = section(ws, r + 1, "3.  COMMISSIONING OVERLAP",
-            "The three phases were meant to hand over one after another. "
-            "In the 10/07 they run together.")
-header(ws, r, ["Phase", "Days", "Start", "Finish", "", "Note"])
+# An earlier draft reported a 119-day three-phase commissioning overlap as
+# a stacking finding. That figure came from the 10/07's Commissioning /
+# Closeout WBS bands, which the 02/04 has no counterpart for, so it was
+# compared against nothing. Measured the only way both contracts support --
+# Level 3 Cx Start to Substantial Completion -- the overlap went DOWN, from
+# 97 days to 62. The commissioning compression is real and it is in the
+# DURATIONS, not the overlap. Stated that way round here.
+r = section(ws, r + 1, "3.  COMMISSIONING - DURATIONS CUT, OVERLAP EASED",
+            "Measured per phase as Level 3 Cx Start to Substantial "
+            "Completion, the only definition carried by BOTH contracts. "
+            "The windows got shorter; the three phases overlap each other "
+            "LESS than they did.")
+header(ws, r, ["Phase window", "02/04 days", "10/07 days", "Change", "",
+               "What it means"])
 r += 1
-for nm, dur, s, f, pg in BANDS:
-    if "Commissioning / Closeout" in nm:
-        put(ws, r, 1, "Phase " + nm.split("(PH")[1].rstrip(")"))
-        put(ws, r, 2, dur, align="center")
-        put(ws, r, 3, pdb(s), fmt=DATEFMT, align="center")
-        put(ws, r, 4, pdb(f), fmt=DATEFMT, align="center")
-        put(ws, r, 5, None)
-        put(ws, r, 6, "", font=SMALL)
-        r += 1
+CX = [("Phase 1", 146, 147), ("Phase 2", 164, 147), ("Phase 3", 178, 133)]
+for lab, o, n in CX:
+    fill = BADFILL if n - o < -20 else (WARNFILL if n - o < 0 else None)
+    put(ws, r, 1, f"{lab}: L3 Cx Start -> Substantial Completion", fill=fill)
+    put(ws, r, 2, o, align="center", fill=fill)
+    put(ws, r, 3, n, align="center", fill=fill)
+    put(ws, r, 4, f"=C{r}-B{r}", fmt="+0;-0;0", align="center", fill=fill,
+        font=BOLD if n < o else BODY)
+    put(ws, r, 5, None, fill=fill)
+    put(ws, r, 6, "shorter window" if n < o else "about the same",
+        fill=fill, font=SMALL)
+    r += 1
+put(ws, r, 1, "All three phases live together", font=BOLD)
+put(ws, r, 2, 97, align="center", font=BOLD)
+put(ws, r, 3, 62, align="center", font=BOLD)
+put(ws, r, 4, f"=C{r}-B{r}", fmt="+0;-0;0", align="center", font=BOLD)
+put(ws, r, 5, None)
+put(ws, r, 6, "LESS overlap than the contract", font=SMALL)
+r += 1
 ws.merge_cells(start_row=r, start_column=1, end_row=r, end_column=6)
 c = ws.cell(row=r, column=1,
-            value="All three phases are live together from 23-Aug-27 to "
-                  "20-Dec-27 = 119 days.")
+            value="Note: the Level 3 commissioning WINDOWS themselves were "
+                  "cut hard - see the Compression tab, -24 / -42 / -84 days. "
+                  "But the three phases overlap each other LESS than in the "
+                  "02/04, not more. Stated plainly because the opposite is "
+                  "easy to assume.")
 c.font = BOLD
 c.fill = WARNFILL
+c.alignment = Alignment(wrap_text=True, vertical="center")
+ws.row_dimensions[r].height = 28
 r += 2
 
 r = section(ws, r, "4.  WORK HOLDER HAS ALREADY PUT ON A SIX-DAY WEEK",
-            "Each of these has a duration that only works on a six-day "
-            "calendar - matched to within 0.5%. Premium time is already "
-            "assumed in the proposed schedule, and is not priced.")
+            "Each of these has a duration that matches a six-day week "
+            "EXACTLY - Mon-Sat to the day, across spans from 94 to 343 "
+            "days. A five-day calendar with overtime would not change the "
+            "duration, so a six-day calendar is the only fit. Whether it is "
+            "priced is not visible to us - ask Holder.")
 header(ws, r, ["Activity", "Days", "Start", "Finish", "", "Note"])
 r += 1
 SIX = ["Long Lead Equipment Delivery",
@@ -442,7 +469,8 @@ for nm, dur, s, f, pg in BANDS:
         put(ws, r, 3, pdb(s), fmt=DATEFMT, align="center", fill=WARNFILL)
         put(ws, r, 4, pdb(f), fmt=DATEFMT, align="center", fill=WARNFILL)
         put(ws, r, 5, None, fill=WARNFILL)
-        put(ws, r, 6, "6-day week assumed", fill=WARNFILL, font=SMALL)
+        put(ws, r, 6, "matches Mon-Sat exactly", fill=WARNFILL,
+            font=SMALL)
         r += 1
 
 
