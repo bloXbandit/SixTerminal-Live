@@ -271,12 +271,11 @@ put(ws, r + 1, 1, "Negative = the window is shorter in the proposed "
 
 # ===================================================== 3. TRADE STACKING
 ws = wb.create_sheet("Trade Stacking")
-titleblock(ws, "Trade Stacking - how much runs at the same time",
-           "Left: how many of the 24 electrical rooms are open on the 15th "
-           "of each month, counted from the 10/07 band start/finish dates. "
-           "Right: each room's own window. Below: commissioning overlap and "
-           "the activities whose duration matches a six-day week.",
-           [16, 10, 13, 13, 40, 14, 14])
+titleblock(ws, "Trade Stacking - how much work runs at the same time",
+           "Read top to bottom. Three questions, answered in order: how "
+           "many electrical rooms are open each month, when each room runs, "
+           "and what else overlaps.",
+           [30, 14, 14, 14, 11, 44])
 MONB = {m: i + 1 for i, m in enumerate(
     ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
      "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"])}
@@ -288,67 +287,164 @@ def pdb(s):
     return dt.date(2000 + int(y), MONB[m], int(d))
 
 
+def section(ws, row, title, explain):
+    """A banner and one plain line saying what the reader is looking at.
+
+    The first version of this tab put three unrelated tables side by side
+    with blank spacer columns. Everything here is now one column set,
+    stacked, each block introduced.
+    """
+    ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=6)
+    c = ws.cell(row=row, column=1, value=title)
+    c.font = Font(name=F, size=11, bold=True, color="FFFFFF")
+    c.fill = HDRFILL
+    c.alignment = Alignment(horizontal="left", vertical="center")
+    ws.row_dimensions[row].height = 22
+    ws.merge_cells(start_row=row + 1, start_column=1, end_row=row + 1,
+                   end_column=6)
+    c = ws.cell(row=row + 1, column=1, value=explain)
+    c.font = SMALL
+    c.alignment = Alignment(horizontal="left", vertical="center")
+    return row + 2
+
+
+DC = {}
+for n in range(208, 215):
+    DC[f"ER {n}"] = "A  (Phase 1)"
+for n in range(201, 208):
+    DC[f"ER {n}"] = "B  (Phase 2)"
+for n in range(101, 108):
+    DC[f"ER {n}"] = "C  (Phase 3)"
+DC["ERR 202"], DC["ERR 201"], DC["ERR 101"] = ("A  (Phase 1)", "B  (Phase 2)",
+                                               "C  (Phase 3)")
 rooms = [(nm, dur, pdb(s), pdb(f)) for nm, dur, s, f, pg in BANDS
          if nm.startswith(("ER 1", "ER 2", "ERR 1", "ERR 2"))]
-header(ws, 6, ["Month", "Rooms open", "", "", "Electrical room", "Start",
-               "Finish"])
-d = dt.date(2027, 1, 15)
-r = 7
-while d < dt.date(2028, 1, 15):
+
+r = 6
+ws.merge_cells(start_row=r, start_column=1, end_row=r, end_column=6)
+c = ws.cell(row=r, column=1,
+            value="HEADLINE:  on 15-Apr-2027 all 24 electrical rooms across "
+                  "the three datacenters are open at the same time.")
+c.font = Font(name=F, size=12, bold=True, color="FFFFFF")
+c.fill = ALERTFILL
+c.alignment = Alignment(horizontal="left", vertical="center")
+ws.row_dimensions[r].height = 24
+
+r = section(ws, r + 2, "1.  HOW MANY ELECTRICAL ROOMS ARE OPEN, MONTH BY "
+            "MONTH", "Counted on the 15th of each month from the 10/07 "
+            "start and finish dates. 24 rooms in total.")
+header(ws, r, ["Month", "Rooms open", "Out of", "% of all rooms", "",
+               "What this means"])
+r += 1
+chart_first = r
+prev = 0
+for i in range(13):
+    d = dt.date(2027, 1, 15)
+    d = (d.replace(day=1) + dt.timedelta(days=32 * i)).replace(day=15)
+    if d > dt.date(2028, 1, 15):
+        break
     n = sum(1 for _, _, s, f in rooms if s <= d <= f)
     fill = BADFILL if n >= 20 else (WARNFILL if n >= 12 else None)
-    put(ws, r, 1, d.strftime("%b-%y"), fill=fill, align="center")
+    note = ("PEAK - every room in all three buildings" if n == 24 else
+            "none open" if n == 0 else
+            "heavy overlap" if n >= 18 else
+            "ramping up" if n > prev else
+            "coming down" if n < prev else "holding")
+    prev = n
+    put(ws, r, 1, d.strftime("%B %Y"), fill=fill)
     put(ws, r, 2, n, fill=fill, align="center", font=BOLD)
-    put(ws, r, 3, "#" * n, fill=fill, font=Font(name="Consolas", size=10))
-    d = (d.replace(day=28) + dt.timedelta(days=5)).replace(day=15)
+    put(ws, r, 3, 24, fill=fill, align="center")
+    put(ws, r, 4, f"=B{r}/C{r}", fmt="0%", fill=fill, align="center")
+    put(ws, r, 5, None, fill=fill)
+    put(ws, r, 6, note, fill=fill, font=SMALL)
     r += 1
-r2 = 7
+chart_last = r - 1
+
+rc = BarChart()
+rc.type = "col"
+rc.gapWidth = 0
+rc.title = "Electrical rooms open at the same time"
+rc.y_axis.title = "Rooms open"
+rc.x_axis.title = "Month"
+rc.height, rc.width = 8, 18
+rc.roundedCorners = False
+rc.y_axis.delete = False
+rc.x_axis.delete = False
+rc.add_data(Reference(ws, min_col=2, max_col=2, min_row=chart_first - 1,
+                      max_row=chart_last), titles_from_data=True)
+rc.set_categories(Reference(ws, min_col=1, min_row=chart_first,
+                            max_row=chart_last))
+rc.series[0].graphicalProperties.solidFill = "C00000"
+rc.series[0].graphicalProperties.line.noFill = True
+if rc.legend:
+    rc.legend.overlay = False
+    rc.legend.position = "t"
+if rc.title:
+    rc.title.overlay = False
+ws.add_chart(rc, "H8")
+
+r = section(ws, r + 1, "2.  WHEN EACH ELECTRICAL ROOM RUNS",
+            "Sorted by start date. Datacenter A is Phase 1, B is Phase 2, "
+            "C is Phase 3. Note the three buildings interleave rather than "
+            "follow one another.")
+header(ws, r, ["Electrical room", "Datacenter", "Start", "Finish",
+               "Duration (days)", "Rooms already open on its start date"])
+r += 1
 for nm, dur, s, f in sorted(rooms, key=lambda x: x[2]):
-    put(ws, r2, 5, nm)
-    put(ws, r2, 6, s, fmt=DATEFMT, align="center")
-    put(ws, r2, 7, f, fmt=DATEFMT, align="center")
-    r2 += 1
-rr = max(r, r2) + 2
-put(ws, rr, 1, "PEAK: all 24 electrical rooms across the three datacenters "
-               "are open at once on 15-Apr-27.", font=BOLD)
-put(ws, rr + 1, 1, "The three buildings' electrical fit-outs are not "
-                   "staggered - they overlap, so the peak cannot be served "
-                   "by moving crews between phases.", font=BODY)
-rr += 3
-put(ws, rr, 1, "COMMISSIONING / CLOSEOUT OVERLAP", font=BOLD)
-rr += 1
-header(ws, rr, ["Phase", "Days", "Start", "Finish", "", "", ""])
-rr += 1
+    ov = sum(1 for n2, d2, s2, f2 in rooms
+             if n2 != nm and s2 <= s <= f2)
+    fill = BADFILL if ov >= 18 else (WARNFILL if ov >= 12 else None)
+    put(ws, r, 1, nm, fill=fill)
+    put(ws, r, 2, DC.get(nm, "?"), fill=fill, align="center")
+    put(ws, r, 3, s, fmt=DATEFMT, fill=fill, align="center")
+    put(ws, r, 4, f, fmt=DATEFMT, fill=fill, align="center")
+    put(ws, r, 5, dur, fill=fill, align="center")
+    put(ws, r, 6, ov, fill=fill, align="center",
+        font=BOLD if ov >= 18 else BODY)
+    r += 1
+
+r = section(ws, r + 1, "3.  COMMISSIONING OVERLAP",
+            "The three phases were meant to hand over one after another. "
+            "In the 10/07 they run together.")
+header(ws, r, ["Phase", "Days", "Start", "Finish", "", "Note"])
+r += 1
 for nm, dur, s, f, pg in BANDS:
     if "Commissioning / Closeout" in nm:
-        put(ws, rr, 1, nm.replace("Commissioning / Closeout ", ""),
-            align="center")
-        put(ws, rr, 2, dur, align="center")
-        put(ws, rr, 3, pdb(s), fmt=DATEFMT, align="center")
-        put(ws, rr, 4, pdb(f), fmt=DATEFMT, align="center")
-        rr += 1
-put(ws, rr, 1, "All three phases run together 23-Aug-27 to 20-Dec-27 = "
-               "119 days.", font=BOLD)
-rr += 2
-put(ws, rr, 1, "ACTIVITIES HOLDER HAS ALREADY PUT ON A SIX-DAY WEEK",
-    font=BOLD)
-rr += 1
-header(ws, rr, ["Activity", "Days", "Start", "Finish", "", "", ""])
-rr += 1
-SIX = ["Long Lead Equipment Delivery", "Roof Mechanical/Electrical "
-       "Installation", "Equipment Set", "Admin Space", "Mechanical Platform",
-       "Roofing System Installation", "2nd Floor Office Build-Out",
-       "1st Floor Admin Build-Out"]
+        put(ws, r, 1, "Phase " + nm.split("(PH")[1].rstrip(")"))
+        put(ws, r, 2, dur, align="center")
+        put(ws, r, 3, pdb(s), fmt=DATEFMT, align="center")
+        put(ws, r, 4, pdb(f), fmt=DATEFMT, align="center")
+        put(ws, r, 5, None)
+        put(ws, r, 6, "", font=SMALL)
+        r += 1
+ws.merge_cells(start_row=r, start_column=1, end_row=r, end_column=6)
+c = ws.cell(row=r, column=1,
+            value="All three phases are live together from 23-Aug-27 to "
+                  "20-Dec-27 = 119 days.")
+c.font = BOLD
+c.fill = WARNFILL
+r += 2
+
+r = section(ws, r, "4.  WORK HOLDER HAS ALREADY PUT ON A SIX-DAY WEEK",
+            "Each of these has a duration that only works on a six-day "
+            "calendar - matched to within 0.5%. Premium time is already "
+            "assumed in the proposed schedule, and is not priced.")
+header(ws, r, ["Activity", "Days", "Start", "Finish", "", "Note"])
+r += 1
+SIX = ["Long Lead Equipment Delivery",
+       "Roof Mechanical/Electrical Installation", "Equipment Set",
+       "Admin Space", "Mechanical Platform", "Roofing System Installation",
+       "2nd Floor Office Build-Out", "1st Floor Admin Build-Out"]
 for nm, dur, s, f, pg in BANDS:
     if nm in SIX:
-        put(ws, rr, 1, nm, fill=WARNFILL)
-        put(ws, rr, 2, dur, align="center", fill=WARNFILL)
-        put(ws, rr, 3, pdb(s), fmt=DATEFMT, align="center", fill=WARNFILL)
-        put(ws, rr, 4, pdb(f), fmt=DATEFMT, align="center", fill=WARNFILL)
-        rr += 1
-put(ws, rr, 1, "Each of these has a duration matching a six-day week to "
-               "within 0.5% - premium time already built into the proposal, "
-               "not priced.", font=SMALL)
+        put(ws, r, 1, nm, fill=WARNFILL)
+        put(ws, r, 2, dur, align="center", fill=WARNFILL)
+        put(ws, r, 3, pdb(s), fmt=DATEFMT, align="center", fill=WARNFILL)
+        put(ws, r, 4, pdb(f), fmt=DATEFMT, align="center", fill=WARNFILL)
+        put(ws, r, 5, None, fill=WARNFILL)
+        put(ws, r, 6, "6-day week assumed", fill=WARNFILL, font=SMALL)
+        r += 1
+
 
 # ===================================================== 4. LABOR CURVE
 ws = wb.create_sheet("Labor Curve")
