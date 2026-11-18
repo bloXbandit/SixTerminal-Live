@@ -7,6 +7,7 @@ import sys
 import openpyxl
 from openpyxl.chart import BarChart, LineChart, Reference
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+from openpyxl.worksheet.properties import PageSetupProperties
 from openpyxl.utils import get_column_letter
 
 SCR = ("/tmp/claude-0/-home-user-SixTerminal-Live/"
@@ -56,9 +57,17 @@ def titleblock(ws, title, sub, widths):
     for i, w in enumerate(widths, start=1):
         ws.column_dimensions[get_column_letter(i)].width = w
     ws.freeze_panes = "A7"
+    # Landscape, fit to one page wide. Without it a 34cm chart is sliced
+    # across three sheets of paper and the tabs print unusable.
+    ws.page_setup.orientation = "landscape"
+    ws.page_setup.fitToWidth = 1
+    ws.page_setup.fitToHeight = 0
+    ws.sheet_properties.pageSetUpPr.fitToPage = True
+    ws.print_title_rows = "1:6"
 
 
 ALERTFILL = PatternFill("solid", fgColor="C00000")
+ALERT_TEXT = 'ALERT - PROJECTION MAY BE SHORT BY 50,604 h.  The 10/07 carries 122,911 h of scope with no counterpart in the 02/04 (galleries + HV/HVR). JER has booked only 72,307 h of growth. Assumed here that the 533,400 baseline did NOT include this scope - CONFIRM WITH FIELD.'
 
 
 def alert(ws, text, span=8):
@@ -106,11 +115,14 @@ def put(ws, r, c, v, font=BODY, fmt=None, fill=None, align=None):
 # ===================================================== 1. MILESTONES
 ws = wb.create_sheet("Milestones")
 titleblock(ws, "Milestone Comparison - every milestone, both contracts",
-           "Negative = earlier in the proposed schedule. Positive = later. "
-           "Sorted by size of move.",
-           [22, 44, 13, 13, 11, 10, 34])
+           "Every milestone printed on page 1 of the 10/07 Exhibit S (62 "
+           "rows), matched to the 02/04 contract by activity ID, falling "
+           "back to milestone NAME where Holder renumbered it. Dates are as "
+           "printed in each contract. Move = 10/07 date minus 02/04 date.",
+           [22, 42, 13, 13, 11, 18, 10, 32])
 header(ws, 6, ["Activity ID (10/07)", "Milestone", "02/04 Contract",
-               "10/07 Proposed", "Move (days)", "Flag", "Note"])
+               "10/07 Proposed", "Move (days)", "Direction", "Flag",
+               "Note"])
 
 
 def norm(n):
@@ -162,20 +174,36 @@ for aid, nm, od, nd, dlt, flag, note in rows:
     if dlt is not None:
         put(ws, r, 5, dlt, fmt="+0;-0;0", fill=fill, align="center",
             font=BOLD if abs(dlt) > 100 else BODY)
+        # "+218" alone makes a reader stop and work out which way that is.
+        # Spell it: a positive move is LATER, further right on the bar chart.
+        dirn = ("LATER  (shift right)" if dlt > 0 else
+                "EARLIER  (shift left)" if dlt < 0 else "no change")
+        put(ws, r, 6, dirn, fill=fill, align="center",
+            font=BOLD if abs(dlt) > 100 else BODY)
     else:
         put(ws, r, 5, None, fill=fill)
-    put(ws, r, 6, flag, fill=fill, font=BOLD if flag else BODY, align="center")
-    put(ws, r, 7, note, fill=fill, font=SMALL)
+        put(ws, r, 6, "not in 02/04", fill=fill, align="center", font=SMALL)
+    put(ws, r, 7, flag, fill=fill, font=BOLD if flag else BODY, align="center")
+    put(ws, r, 8, note, fill=fill, font=SMALL)
     r += 1
-put(ws, r + 1, 2, "Average move, Phase 1/2/3 milestones", font=BOLD)
+put(ws, r + 1, 2, "Average move, all matched milestones", font=BOLD)
 put(ws, r + 1, 5, f"=ROUND(AVERAGE(E7:E{r - 1}),0)", font=BOLD,
     fmt="+0;-0;0", align="center")
+put(ws, r + 1, 6, "LATER  (shift right)", font=BOLD, align="center")
+put(ws, r + 3, 1, "POSITIVE = the milestone moved LATER (right on the bar "
+                  "chart).  NEGATIVE = it moved EARLIER (left).", font=BOLD)
+put(ws, r + 4, 1, "Rows flagged CHECK sit on the 02/04 contract's own data "
+                  "date (05-Dec-25) - unscheduled placeholders, not a real "
+                  "comparison. They are sorted to the bottom.", font=SMALL)
 
 # ===================================================== 2. COMPRESSION
 ws = wb.create_sheet("Compression")
 titleblock(ws, "Compression - windows that shrank between the two contracts",
-           "Days are calendar days between the two milestones in each "
-           "contract. A shorter window means the same work in less time.",
+           "Each row is the gap between two named milestones, measured "
+           "inside each contract separately. Both ends matched by NAME, so "
+           "Holder's renumbering cannot skew it. Days are calendar days. "
+           "NEGATIVE change = the window is SHORTER in the 10/07 = "
+           "compression.",
            [58, 13, 13, 13, 13, 12, 12, 30])
 header(ws, 6, ["Span", "02/04 start", "02/04 finish", "10/07 start",
                "10/07 finish", "02/04 days", "10/07 days", "Change"])
@@ -244,8 +272,11 @@ put(ws, r + 1, 1, "Negative = the window is shorter in the proposed "
 # ===================================================== 3. TRADE STACKING
 ws = wb.create_sheet("Trade Stacking")
 titleblock(ws, "Trade Stacking - how much runs at the same time",
-           "Electrical rooms open simultaneously, per the 10/07 proposed "
-           "schedule.", [16, 10, 13, 13, 40, 14, 14])
+           "Left: how many of the 24 electrical rooms are open on the 15th "
+           "of each month, counted from the 10/07 band start/finish dates. "
+           "Right: each room's own window. Below: commissioning overlap and "
+           "the activities whose duration matches a six-day week.",
+           [16, 10, 13, 13, 40, 14, 14])
 MONB = {m: i + 1 for i, m in enumerate(
     ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
      "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"])}
@@ -322,99 +353,129 @@ put(ws, rr, 1, "Each of these has a duration matching a six-day week to "
 # ===================================================== 4. LABOR CURVE
 ws = wb.create_sheet("Labor Curve")
 titleblock(ws, "Labour Curve - baseline (02/04) vs projected (10/07)",
-           "Weekly, week ending Sunday. Hours = crew x 50, matching the JER "
-           "labour report.  BASELINE 533,400 h planned at contract.  "
-           "PROJECTED 605,707 h per JER as of 08-Nov-26.",
-           [13, 13, 14, 13, 14, 13, 15, 15])
-alert(ws, 'ALERT - PROJECTION MAY BE SHORT BY 50,604 h.  The 10/07 carries 122,911 h of scope with no counterpart in the 02/04 (galleries + HV/HVR). JER has booked only 72,307 h of growth. Assumed here that the 533,400 baseline did NOT include this scope - CONFIRM WITH FIELD.', span=8)
-header(ws, 6, ["Week Ending", "Baseline Labor", "Baseline Hours",
-               "Proposed Labor", "Proposed Hours", "Actual Hours",
-               "Cum Baseline", "Cum Proposed"])
+           "One row per week, week ending SUNDAY (matching the JER labour "
+           "report). Crew = hours / 50. Columns C,E,G are the three P6 "
+           "series: BL Project Labor, Actual Labor, Remaining Labor. "
+           "Actual runs to the 25-Sep-26 data date; Remaining is everything "
+           "after it. C sums to 533,400 (baseline at contract). E+G sums to "
+           "605,707 (JER projection at 08-Nov-26).",
+           [13, 12, 13, 12, 13, 12, 14, 13, 14, 14])
+alert(ws, ALERT_TEXT, span=10)
+header(ws, 6, ["Week Ending", "BL Crew", "BL Project Labor (h)",
+               "Actual Crew", "Actual Labor (h)", "Remaining Crew",
+               "Remaining Labor (h)", "Projected Total (h)",
+               "Cum Baseline", "Cum Projected"])
 r = 7
 first = r
+DD = dt.date.fromisoformat(CURVE["data_date"])
 for w in CURVE["weeks"]:
     wd = dt.date.fromisoformat(w["w"])
+    act = round(w["actual"], 0)
+    rem = round(w["cur"] - w["actual"], 0)
     put(ws, r, 1, wd, fmt=DATEFMT, align="center")
     put(ws, r, 2, f"=ROUND(C{r}/50,0)", align="center")
     put(ws, r, 3, round(w["base"], 0), fmt="#,##0", align="right")
     put(ws, r, 4, f"=ROUND(E{r}/50,0)", align="center")
-    put(ws, r, 5, round(w["cur"], 0), fmt="#,##0", align="right")
-    put(ws, r, 6, round(w["actual"], 0) if w["actual"] else None,
-        fmt="#,##0", align="right")
-    put(ws, r, 7, f"=SUM($C${first}:C{r})", fmt="#,##0", align="right")
-    put(ws, r, 8, f"=SUM($E${first}:E{r})", fmt="#,##0", align="right")
+    put(ws, r, 5, act, fmt="#,##0", align="right")
+    put(ws, r, 6, f"=ROUND(G{r}/50,0)", align="center")
+    put(ws, r, 7, rem, fmt="#,##0", align="right")
+    put(ws, r, 8, f"=E{r}+G{r}", fmt="#,##0", align="right")
+    put(ws, r, 9, f"=SUM($C${first}:C{r})", fmt="#,##0", align="right")
+    put(ws, r, 10, f"=SUM($H${first}:H{r})", fmt="#,##0", align="right")
     r += 1
 last = r - 1
 put(ws, r, 1, "TOTAL", font=BOLD)
-put(ws, r, 3, f"=SUM(C{first}:C{last})", font=BOLD, fmt="#,##0",
-    align="right")
-put(ws, r, 5, f"=SUM(E{first}:E{last})", font=BOLD, fmt="#,##0",
-    align="right")
-put(ws, r, 6, f"=SUM(F{first}:F{last})", font=BOLD, fmt="#,##0",
-    align="right")
+for col in (3, 5, 7, 8):
+    put(ws, r, col, f"=SUM({get_column_letter(col)}{first}:"
+                    f"{get_column_letter(col)}{last})",
+        font=BOLD, fmt="#,##0", align="right")
 put(ws, r + 1, 1, "PEAK", font=BOLD)
 put(ws, r + 1, 2, f"=ROUND(MAX(C{first}:C{last})/50,0)", font=BOLD,
     align="center")
 put(ws, r + 1, 3, f"=MAX(C{first}:C{last})", font=BOLD, fmt="#,##0",
     align="right")
-put(ws, r + 1, 4, f"=ROUND(MAX(E{first}:E{last})/50,0)", font=BOLD,
+put(ws, r + 1, 6, f"=ROUND(MAX(H{first}:H{last})/50,0)", font=BOLD,
     align="center")
-put(ws, r + 1, 5, f"=MAX(E{first}:E{last})", font=BOLD, fmt="#,##0",
+put(ws, r + 1, 8, f"=MAX(H{first}:H{last})", font=BOLD, fmt="#,##0",
     align="right")
 
-ch = BarChart()
-ch.type = "col"
-ch.style = 10
-ch.grouping = "clustered"
-ch.overlap = -10
-ch.gapWidth = 12                       # thick bars, P6 usage-profile look
-ch.title = "MDC-3 Labour Curve - Baseline (02/04) vs Proposed (10/07)"
-ch.y_axis.title = "Hours per week"
-ch.x_axis.title = "Week ending"
-ch.height = 12
-ch.width = 34
-ch.roundedCorners = False
-ch.y_axis.delete = False
-ch.x_axis.delete = False
-data = Reference(ws, min_col=3, max_col=3, min_row=6, max_row=last)
-data2 = Reference(ws, min_col=5, max_col=5, min_row=6, max_row=last)
-cats = Reference(ws, min_col=1, min_row=first, max_row=last)
-ch.add_data(data, titles_from_data=True)
-ch.add_data(data2, titles_from_data=True)
-ch.set_categories(cats)
-ch.series[0].graphicalProperties.solidFill = "9DC3E6"
-ch.series[0].graphicalProperties.line.noFill = True
-ch.series[1].graphicalProperties.solidFill = "C00000"
-ch.series[1].graphicalProperties.line.noFill = True
-if ch.legend:
-    ch.legend.overlay = False
-    ch.legend.position = "t"
-if ch.title:
-    ch.title.overlay = False
+# P6 draws its histogram with the bars touching -- no gap between periods
+# and none between the series inside a period. gapWidth 0 with overlap 0
+# is that look; the default 150/-10 is what makes an Excel chart read as
+# an Excel chart rather than a usage profile.
+P6_RED, P6_BLUE, P6_GREEN = "FF0000", "0000FF", "00B050"
 
+
+def p6chart(title, cols, colours, anchor, stacked=False):
+    ch = BarChart()
+    ch.type = "col"
+    ch.grouping = "stacked" if stacked else "clustered"
+    ch.overlap = 100 if stacked else 0
+    ch.gapWidth = 0
+    ch.title = title
+    ch.y_axis.title = "Units (hours per week)"
+    ch.x_axis.title = "Week ending"
+    ch.height, ch.width = 10.5, 34
+    ch.roundedCorners = False
+    ch.y_axis.delete = False
+    ch.x_axis.delete = False
+    ch.x_axis.tickLblSkip = 13
+    ch.x_axis.tickMarkSkip = 13
+    for col, colour in zip(cols, colours):
+        ref = Reference(ws, min_col=col, max_col=col, min_row=6,
+                        max_row=last)
+        ch.add_data(ref, titles_from_data=True)
+    ch.set_categories(Reference(ws, min_col=1, min_row=first, max_row=last))
+    for s, colour in zip(ch.series, colours):
+        s.graphicalProperties.solidFill = colour
+        s.graphicalProperties.line.noFill = True
+    if ch.legend:
+        ch.legend.overlay = False
+        ch.legend.position = "t"
+    if ch.title:
+        ch.title.overlay = False
+    ws.add_chart(ch, anchor)
+    return ch
+
+
+p6chart("1. BASELINE - 02/04 Contract (BL Project Labor, 533,400 h)",
+        [3], [P6_RED], "L6")
+p6chart("2. PROJECTED - 10/07 Proposed (Actual to 25-Sep-26, then "
+        "Remaining; 605,707 h)",
+        [5, 7], [P6_BLUE, P6_GREEN], "L28", stacked=True)
+ch = p6chart("3. COMBINED - Baseline vs Projected (P6 usage profile)",
+             [3, 5, 7], [P6_RED, P6_BLUE, P6_GREEN], "L50")
+
+# S-curve on the combined chart only, so charts 1 and 2 stay clean
 ln = LineChart()
-cum = Reference(ws, min_col=7, max_col=8, min_row=6, max_row=last)
+cum = Reference(ws, min_col=9, max_col=10, min_row=6, max_row=last)
 ln.add_data(cum, titles_from_data=True)
 ln.y_axis.axId = 200
-ln.y_axis.title = "Cumulative hours"
+ln.y_axis.title = "Cumulative hours (S-curve)"
 ln.y_axis.delete = False
-ln.series[0].graphicalProperties.line.solidFill = "2E75B6"
-ln.series[0].graphicalProperties.line.width = 20000
-ln.series[1].graphicalProperties.line.solidFill = "843C0C"
-ln.series[1].graphicalProperties.line.width = 20000
+# Without this the secondary scale is drawn on the LEFT, on top of the
+# primary one, and both sets of numbers become unreadable.
+ln.y_axis.crosses = "max"
+ln.series[0].graphicalProperties.line.solidFill = "A50021"
+ln.series[0].graphicalProperties.line.width = 22000
+ln.series[1].graphicalProperties.line.solidFill = "1F4E79"
+ln.series[1].graphicalProperties.line.width = 22000
 for s in ln.series:
     s.smooth = False
 ch.y_axis.crosses = "autoZero"
 ch += ln
-ws.add_chart(ch, "J6")
+
 
 # ===================================================== 5. CROSSWALK
 ws = wb.create_sheet("Scope Crosswalk")
 titleblock(ws, "Scope Crosswalk - how hours were placed in each contract",
            "THIS IS THE AUDIT TAB. Every hour in both curves comes from a "
-           "row here. Check the mapping before trusting the curves.",
+           "row here. Hours are our P6 v32 rescaled to the basis; the 02/04 "
+           "columns are that contract's own date range for the bucket; the "
+           "10/07 columns are the matching WBS band. Check the mapping "
+           "before trusting the curves.",
            [28, 12, 9, 13, 13, 38, 13, 13, 14])
-alert(ws, 'ALERT - PROJECTION MAY BE SHORT BY 50,604 h.  The 10/07 carries 122,911 h of scope with no counterpart in the 02/04 (galleries + HV/HVR). JER has booked only 72,307 h of growth. Assumed here that the 533,400 baseline did NOT include this scope - CONFIRM WITH FIELD.', span=9)
+alert(ws, ALERT_TEXT, span=9)
 header(ws, 6, ["Scope bucket", "Hours", "Acts", "02/04 start",
                "02/04 finish", "10/07 band it maps to", "10/07 start",
                "10/07 finish", "In 02/04?"])
@@ -486,7 +547,7 @@ ws = wb.create_sheet("Field Questions")
 titleblock(ws, "Open questions - answer these before the final issue",
            "Each one moves a number in this workbook. Nothing here is "
            "rhetorical.", [6, 62, 16, 46])
-alert(ws, 'ALERT - PROJECTION MAY BE SHORT BY 50,604 h.  The 10/07 carries 122,911 h of scope with no counterpart in the 02/04 (galleries + HV/HVR). JER has booked only 72,307 h of growth. Assumed here that the 533,400 baseline did NOT include this scope - CONFIRM WITH FIELD.', span=4)
+alert(ws, ALERT_TEXT, span=4)
 header(ws, 6, ["#", "Question", "Hours at stake", "Why it matters"])
 Q = [
     ("Does the 605,707 projection fully absorb the galleries and HV rooms?",
