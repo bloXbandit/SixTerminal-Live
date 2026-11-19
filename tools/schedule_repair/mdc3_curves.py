@@ -170,12 +170,22 @@ XWALK = [
     ("CUP - PH2",               idpre(r"^MDC3\.PH2\.(L\.UP|CHLR)"), "CUP - Datacenter B"),
     ("CUP - PH3",               idpre(r"^MDC3\.PH3\.(L\.UP|CHLR)"), "CUP - Datacenter C"),
     ("Admin Space - PH1",       idpre(r"^MDC3\.PH1\.(1ST|2ND)\.FL"), "Admin Space"),
-    ("Elevators - PH1",         idpre(r"^MDC3\.PH1\.EL\.RM"),   "Elevators"),
-    ("Elevators - PH2",         idpre(r"^MDC3\.PH1\.EL\.RM"),   "Elevators"),
-    ("Elevators - PH3",         idpre(r"^MDC3\.PH1\.EL\.RM"),   "Elevators"),
-    ("Dry Coolers - PH1",       idpre(r"^MDC3\.LLE\.SUB"),      "PH1 Dry Coolers"),
-    ("Dry Coolers - PH2",       idpre(r"^MDC3\.LLE\.SUB"),      "PH2 Dry Coolers"),
-    ("Dry Coolers - PH3",       idpre(r"^MDC3\.LLE\.SUB"),      "PH3 Dry Coolers"),
+    # Our "Elevators" bucket is MDC3.ST.ELEV.* -- excavate footers,
+    # waterproofing and pours for the elevator PITS. Structural work. It was
+    # matched to MDC3.PH1.EL.RM in the 02/04, which is Final Paint and Floor
+    # Finishes in the elevator machine room: wrong trade, and Jul-Sep 2027
+    # instead of during structure. The 02/04 has no elevator-pit activity of
+    # its own, so the pit work maps to its structure window.
+    ("Elevators - PH1",         idpre(r"^MDC3\.(ST|STR)\."),    "Elevators"),
+    ("Elevators - PH2",         idpre(r"^MDC3\.(ST|STR)\."),    "Elevators"),
+    ("Elevators - PH3",         idpre(r"^MDC3\.(ST|STR)\."),    "Elevators"),
+    # MDC3.LLE.SUB is Long Lead Equipment SUBMITTAL development, Jan-Mar 26.
+    # The dry cooler INSTALL carries the same ids in both files --
+    # MDC3.PH#.CHLR.#### "Dry Coolers Rigging / Install" -- so this is a
+    # direct id match and was putting 3,678 h fourteen months too early.
+    ("Dry Coolers - PH1",       idpre(r"^MDC3\.PH1\.CHLR\."),  "PH1 Dry Coolers"),
+    ("Dry Coolers - PH2",       idpre(r"^MDC3\.PH2\.CHLR\."),  "PH2 Dry Coolers"),
+    ("Dry Coolers - PH3",       idpre(r"^MDC3\.PH3\.CHLR\."),  "PH3 Dry Coolers"),
     ("Galleries - PH1",         None,                           "Galleries (GL 203 & GL 204)"),
     ("Galleries - PH2",         None,                           "Galleries (GL 201 & GL 202)"),
     ("Galleries - PH3",         None,                           "Galleries (GL 101 & GL 102)"),
@@ -184,8 +194,13 @@ XWALK = [
     ("HV Rooms - PH3",          None,                           "HV Rooms - Datacenter C"),
     # bucket() emits these two without a phase (they sit under Core & Shell).
     # Leaving them out of the crosswalk dropped 3,471 h from both curves.
-    ("Generator Rooms",         idpre(r"^MDC3\.GEN\."),         "Long Lead Equipment Delivery"),
-    ("Elevators",               idpre(r"^MDC3\.PH1\.EL\.RM"),   "Elevators"),
+    # ^MDC3\.GEN\. also catches MDC3.GEN.PRO.* -- the 02/04's GENERAL
+    # PROCUREMENT -- which stretched this window to Dec-25..Jul-27. The
+    # generator ROOMS are MDC3.GEN.### with digits. These six activities are
+    # final paint and floor finishes in the gen rooms, so they belong with
+    # the generator rooms, not with long lead delivery.
+    ("Generator Rooms",         idpre(r"^MDC3\.GEN\.\d{3}"),    "Generator Rooms - Datacenter A"),
+    ("Elevators",               idpre(r"^MDC3\.(ST|STR)\."),    "Elevators"),
     ("Other",                   idpre(r"^MDC3\.(PH\d\.(SK|XFMR|LLE|C\.OUT|CO\.CL)|SOD|LLE|REM|GEN\.PRO)"),
                                 "Long Lead Equipment Delivery"),
 ]
