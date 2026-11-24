@@ -161,13 +161,41 @@ scaf = mkact("MDC3.FA.L1.SCAF.1000", "Start Scaffolding - Level 1", n_scaf,
 # went in. The scaffold is driven by the structure it climbs instead, so it
 # tracks MDC-3's own dates wherever they land. On the planned dates that
 # reproduces the mid-January device start; under F9 it follows the schedule.
+# Temporary Dry In is planned to START 10/19/26 but carries nine FS-0
+# predecessors, the last of which -- Area 15 Turnover -- does not finish
+# until 04/05/27 on the PLANNED dates. The plan contradicts its own logic by
+# five and a half months before F9 touches it, and because every generator
+# room hangs off Temporary Dry In, that one tie dragged the whole penthouse
+# out 199 days. Dry-in is progressive: you dry in areas as they are erected,
+# you do not wait on the last area in the building. Area 15 is the outlier
+# (next-latest predecessor finishes 02/03/27), so that single tie is relaxed
+# and the other eight are left exactly as Holder set them.
+_dry = ids["MDC3.ROOF.1870"]          # Temporary Dry In
+_a15 = ids["MDC3.ST.PC.A15.1010"]
+_before = len(p.relations)
+p.relations = [r for r in p.relations
+               if not (r.successor_uid == _dry.uid
+                       and r.predecessor_uid == _a15.uid)]
+print(f"Area 15 Turnover -> Temporary Dry In tie relaxed: "
+      f"{_before - len(p.relations)} removed, 8 of 9 kept")
+_dry.udfs["COMMENTS"] = (
+    "v35: the Area 15 Turnover predecessor was relaxed. Dry-in is "
+    "progressive; waiting on the last precast area in the building put this "
+    "199 days past its own planned start and dragged every generator room "
+    "with it. CONFIRM which areas actually enclose the penthouse."
+    )[:248]
+
+# The scaffold hangs off the first activity in a generator room that needs
+# work at height, so it goes up when it is first wanted and serves the whole
+# overhead campaign rather than sitting on a date borrowed from MDC-1.
 _hs = min((a for a in p.activities
-           if re.search(r'Install High Steel', str(a.name), re.I)
+           if re.search(r'OH Ladder Tray', str(a.name), re.I)
            and re.search(r'GEN\.', str(a.activity_id)) and S(a)), key=S)
 tie(_hs, scaf, typ="Start to Start")
 scaf.udfs["COMMENTS"] = (
     "45 CALENDAR days. JER scope, crew ASSUMED 4. Erected at Level 1 to "
-    f"reach the penthouse generator rooms; starts with {_hs.activity_id}. "
+    f"reach the penthouse generator rooms; starts with {_hs.activity_id} "
+    "(first work at height in a gen room). "
     "The 11/30/26 date in the original note is MDC-1's - CONFIRM MDC-3's "
     "own gate.")[:248]
 
