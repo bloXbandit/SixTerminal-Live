@@ -42,7 +42,11 @@ def D(v):
     except (TypeError,ValueError): return None
 
 def finish(p):
-    compute_dates(p)
+    # apply_dates=False: refresh early/late/float but DO NOT overwrite
+    # planned_start/planned_finish. Measuring must not rewrite the two
+    # columns the user types into -- that is how v37 first shipped with F9
+    # output sitting in its planned dates.
+    compute_dates(p, apply_dates=False)
     return max(D(a.actual_finish) or D(a.early_finish) for a in p.activities
                if D(a.actual_finish) or D(a.early_finish))
 

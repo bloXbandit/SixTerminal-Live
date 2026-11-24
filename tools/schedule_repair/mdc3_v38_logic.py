@@ -55,7 +55,8 @@ def D(v):
     try: return dt.date.fromisoformat(str(v)[:10])
     except (TypeError,ValueError): return None
 def stats(p):
-    compute_dates(p)
+    # apply_dates=False so measuring does not overwrite planned dates
+    compute_dates(p, apply_dates=False)
     f=max(D(a.actual_finish) or D(a.early_finish) for a in p.activities
           if D(a.actual_finish) or D(a.early_finish))
     n=sum(1 for a in p.activities if a.total_float is not None and a.total_float<0)
