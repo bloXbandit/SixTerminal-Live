@@ -34,6 +34,7 @@ the file. Nothing existing is removed.
 """
 import collections
 import datetime as dt
+import re
 import sys
 
 sys.path.insert(0, "/home/user/SixTerminal-Live")
@@ -130,7 +131,6 @@ n_phvr = mkwbs("Valve Rooms", PH.uid, "MDC3.FA.PH.VR", 3)
 # ====================================================================
 # 1. move the pure-FA activities (logic survives untouched)
 # ====================================================================
-import re                                                   # noqa: E402
 PURE = re.compile(r'^(Install Fire Alarm Devices|Install Upper Vesda|'
                   r'Upper Vesda Install|Install Lower Vesda|'
                   r'Lower Vesda Install|Inspection of (Upper|Lower) Vesda)',
@@ -156,9 +156,20 @@ scaf = mkact("MDC3.FA.L1.SCAF.1000", "Start Scaffolding - Level 1", n_scaf,
              note="45 CALENDAR days from 11/30/26. JER scope. Erected at "
                   "Level 1 to reach the penthouse generator rooms. Crew size "
                   "ASSUMED 4, matching the FA device crew - confirm.")
-scaf.constraint_type = "Start On"
-scaf.constraint_date = SCAF_START
-scaf.planned_start = SCAF_START
+# The 11/30/26 start came off MDC-1 and does not belong to MDC-3: holding it
+# left the scaffold erected and idle for 175 days before the first device
+# went in. The scaffold is driven by the structure it climbs instead, so it
+# tracks MDC-3's own dates wherever they land. On the planned dates that
+# reproduces the mid-January device start; under F9 it follows the schedule.
+_hs = min((a for a in p.activities
+           if re.search(r'Install High Steel', str(a.name), re.I)
+           and re.search(r'GEN\.', str(a.activity_id)) and S(a)), key=S)
+tie(_hs, scaf, typ="Start to Start")
+scaf.udfs["COMMENTS"] = (
+    "45 CALENDAR days. JER scope, crew ASSUMED 4. Erected at Level 1 to "
+    f"reach the penthouse generator rooms; starts with {_hs.activity_id}. "
+    "The 11/30/26 date in the original note is MDC-1's - CONFIRM MDC-3's "
+    "own gate.")[:248]
 
 # ====================================================================
 # 3. generator rooms - FA device install, penthouse
