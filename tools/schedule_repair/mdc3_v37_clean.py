@@ -80,6 +80,12 @@ for a in p.activities:
     saved += was - 1
     a.planned_duration = HRS
     a.remaining_duration = HRS
+    # The bar is gone, so the planned dates must stop describing one. Leaving
+    # planned_start back at the start of a 500-day procurement bar made the
+    # activity still READ as a bar: the SS analysis later measured a 312-day
+    # overlap against it and pushed Set LBB (Gen 322) out 435 days.
+    a.planned_start = dlv.isoformat()
+    a.planned_finish = dlv.isoformat()
     # 824 of these are "In Progress" procurement bars anchored on an actual
     # start of 02/09/26. An in-progress activity is scheduled from its actual
     # start, so cutting the bar to one day drags the finish back to that start
