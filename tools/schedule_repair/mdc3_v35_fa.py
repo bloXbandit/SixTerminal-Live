@@ -152,10 +152,10 @@ print(f"pure-FA activities moved into the FA tree : {moved}")
 # 2. scaffolding
 # ====================================================================
 scaf = mkact("MDC3.FA.L1.SCAF.1000", "Start Scaffolding - Level 1", n_scaf,
-             SCAF_CAL_DAYS, 0, cal=CAL7,
-             note="45 CALENDAR days from 11/30/26. Erected at Level 1 to "
-                  "reach the penthouse generator rooms. Labour shown as 0 - "
-                  "CONFIRM whether scaffold is JER or WBO.")
+             SCAF_CAL_DAYS, 4, cal=CAL7,
+             note="45 CALENDAR days from 11/30/26. JER scope. Erected at "
+                  "Level 1 to reach the penthouse generator rooms. Crew size "
+                  "ASSUMED 4, matching the FA device crew - confirm.")
 scaf.constraint_type = "Start On"
 scaf.constraint_date = SCAF_START
 scaf.planned_start = SCAF_START
