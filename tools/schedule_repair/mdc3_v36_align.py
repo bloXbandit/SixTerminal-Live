@@ -104,6 +104,16 @@ for k, a in ours.items():
         a.status = "In Progress"
         log["status -> In Progress"] += 1
 
+# Two typos in the export itself, corrected rather than carried over.
+TYPO = {"MDC3.ST.L2.A13.1020": ("Form & Tie Rebarg", "Form & Tie Rebar"),
+        "MDC3.ST.SHF.1540":    ("Tie Rebar - The Segment G", "Tie Rebar - Segment G")}
+for k, (bad, good) in TYPO.items():
+    a = ours.get(k)
+    if a and bad in str(a.name):
+        a.name = str(a.name).replace(bad, good)
+        log["export typos corrected"] += 1
+        print(f"typo fixed  {k}  {bad!r} -> {good!r}")
+
 print("CHANGES")
 for k, v in log.most_common():
     print(f"   {v:>5}  {k}")
