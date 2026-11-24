@@ -30,8 +30,10 @@ from engine.schedule_model import compute_dates
 
 SRC, OUT = sys.argv[1], sys.argv[2]
 ALL = "--all" in sys.argv
-TEMPLATE = "101"
-JER_SLOTS = {"1190", "1200"}
+# --hv runs the HV rooms off the HV 104 template instead of MV off MV 101
+PREFIX = "HV" if "--hv" in sys.argv else "MV"
+TEMPLATE = "104" if PREFIX == "HV" else "101"
+JER_SLOTS = {"1190", "1200"} if PREFIX == "MV" else {"1200", "1250"}
 
 
 def slot(aid):
@@ -39,7 +41,7 @@ def slot(aid):
 
 
 def room(aid):
-    m = re.search(r'\.MV\.(\d{3})\.', str(aid))
+    m = re.search(rf'\.{PREFIX}R?\.(\d{{3}})\.', str(aid))
     return m.group(1) if m else None
 
 
@@ -49,7 +51,7 @@ ids = {str(a.activity_id): a for a in p.activities}
 tpl = {slot(a.activity_id): a for a in p.activities
        if room(a.activity_id) == TEMPLATE}
 if not tpl:
-    sys.exit(f"no MV {TEMPLATE} template found in {SRC}")
+    sys.exit(f"no {PREFIX} {TEMPLATE} template found in {SRC}")
 rooms = sorted({r for a in p.activities if (r := room(a.activity_id))})
 have = collections.defaultdict(set)
 for a in p.activities:
@@ -69,7 +71,7 @@ Rel = type(p.relations[0])
 nact = max(int(a.uid) for a in p.activities if str(a.uid).isdigit()) + 1
 nrel = max(int(r.uid) for r in p.relations if str(r.uid).isdigit()) + 1
 added = relinked = 0
-print(f"template MV {TEMPLATE}: {len(tpl)} slots, {len(tpl_rel)} internal ties")
+print(f"template {PREFIX} {TEMPLATE}: {len(tpl)} slots, {len(tpl_rel)} internal ties")
 print(f"scope: {'JER + WBO placeholders' if ALL else 'JER electrical only'}\n")
 for r in rooms:
     missing = sorted(set(tpl) - have[r])
@@ -80,14 +82,14 @@ for r in rooms:
     # file new work in whichever node this room already uses most
     node = collections.Counter(a.wbs_uid for a in p.activities
                                if room(a.activity_id) == r).most_common(1)[0][0]
-    print(f"   MV {r}: adding {len(missing)}  ({', '.join(missing)})")
+    print(f"   {PREFIX} {r}: adding {len(missing)}  ({', '.join(missing)})")
     for s in missing:
         t = tpl[s]
-        aid = f"MDC3.MV.{r}.{s}"
+        aid = f"MDC3.{PREFIX}.{r}.{s}"
         if aid in ids:
             continue
         a = Act(uid=str(nact), activity_id=aid,
-                name=re.sub(rf'\bMV\s*{TEMPLATE}\b', f"MV {r}", str(t.name)),
+                name=re.sub(rf'\b{PREFIX}R?\s*{TEMPLATE}\b', f"{PREFIX} {r}", str(t.name)),
                 wbs_uid=node, calendar_uid=t.calendar_uid,
                 planned_duration=t.planned_duration,
                 remaining_duration=t.planned_duration,
@@ -96,9 +98,9 @@ for r in rooms:
         a.remaining_labor_units = t.planned_labor_units
         a.udfs = dict(t.udfs or {})
         a.udfs["COMMENTS"] = (
-            f"Added to match the MV {TEMPLATE} template; slot {s} was reserved "
+            f"Added to match the {PREFIX} {TEMPLATE} template; slot {s} was reserved "
             f"in this room's numbering and never filled. Duration, hours and "
-            f"logic copied from MV {TEMPLATE}. CONFIRM with the field.")[:248]
+            f"logic copied from {PREFIX} {TEMPLATE}. CONFIRM with the field.")[:248]
         p.activities.append(a)
         ids[aid] = a
         byu[a.uid] = a
@@ -108,7 +110,7 @@ for r in rooms:
 exists = {(x.predecessor_uid, x.successor_uid) for x in p.relations}
 for r in rooms:
     for ps, ss, typ, lag in tpl_rel:
-        a, b = ids.get(f"MDC3.MV.{r}.{ps}"), ids.get(f"MDC3.MV.{r}.{ss}")
+        a, b = ids.get(f"MDC3.{PREFIX}.{r}.{ps}"), ids.get(f"MDC3.{PREFIX}.{r}.{ss}")
         if not a or not b or (a.uid, b.uid) in exists:
             continue
         p.relations.append(Rel(uid=str(nrel), predecessor_uid=a.uid,
