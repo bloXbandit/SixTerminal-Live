@@ -31,8 +31,17 @@ from engine.schedule_model import compute_dates
 SCR = ("/tmp/claude-0/-home-user-SixTerminal-Live/"
        "bd14e389-f5e4-5638-b9b0-8ffe79025c5f/scratchpad")
 SRC = f"{SCR}/MDC3_logic_repaired_v49.xml"
-OUT = f"{SCR}/MDC3_logic_repaired_v50.xml"
 UDF = "Number of Electricians"
+
+# Hours for the six steps.
+#   "preserve": keep the room's existing total and split it by man-day share.
+#   "crews":    hours = men x 10.6 x duration days, the formula the rest of
+#               MDC3 uses, so the sequence carries what its own crews imply
+#               rather than what the single rolled-up bar happened to hold.
+HOURS = "crews"
+OUT = (f"{SCR}/MDC3_logic_repaired_v51.xml" if HOURS == "crews"
+       else f"{SCR}/MDC3_logic_repaired_v50.xml")
+HOURS_PER_MANDAY = 10.6
 
 # name, duration days, men, lag in days from the previous one (SS)
 STEPS = [("Install High Steel",  2, 3, None),
@@ -148,10 +157,13 @@ def main():
             newacts.append(a)
             made.append((a, dur, men, lag))
 
-        # split the room's hours across the steps actually made
+        # hours for the steps actually made
         mdt = sum(d * m for _, d, m, _ in made) or 1
         for a, dur, men, lag in made:
-            a.planned_labor_units = round(hours * (dur * men) / mdt, 1)
+            if HOURS == "crews" and hours > 0:
+                a.planned_labor_units = round(men * HOURS_PER_MANDAY * dur, 1)
+            else:
+                a.planned_labor_units = round(hours * (dur * men) / mdt, 1)
             a.remaining_labor_units = a.planned_labor_units
 
         # ladder them Start to Start
@@ -231,11 +243,17 @@ def main():
     print(f"   milestones moved: {len(moved)}")
     for k, v, nv in moved:
         print(f"      {k}  {v} -> {nv}")
-    crewhours = sum(d * m * 10.6 for _, d, m, _ in STEPS) * len(log)
-    print(f"\n   for reference: at {manday_total} man-days a room and 10.6 h a "
-          f"man-day, crew-based hours would be {crewhours:,.0f} across "
-          f"{len(log)} rooms, against the {sum(l[4] for l in log):,.0f} "
-          f"preserved here")
+    was = sum(l[4] for l in log)
+    now = sum(float(byid[i].planned_labor_units or 0)
+              for l in log for i in l[5] if i in byid)
+    BASIS = 605707.0
+    print(f"\n   hours mode: {HOURS}")
+    print(f"   the itemised rooms carry {now:,.0f} h, against {was:,.0f} h in "
+          f"the bars they replaced ({now-was:+,.0f})")
+    print(f"   schedule total {h1:,.0f} h = {100*h1/BASIS:.1f}% of the "
+          f"{BASIS:,.0f} h basis (was {100*h0/BASIS:.1f}%)")
+    # hours must not move a date in this engine; prove it
+    assert f1 == f0, "finish moved"
     write_p6_xml(p, OUT)
     print(f"   written {OUT}")
     return log
