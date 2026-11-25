@@ -11,7 +11,7 @@ from engine.schedule_model import compute_dates
 
 SCR = ("/tmp/claude-0/-home-user-SixTerminal-Live/"
        "bd14e389-f5e4-5638-b9b0-8ffe79025c5f/scratchpad")
-OUT = f"{SCR}/MDC3_v46_change_log.xlsx"
+OUT = f"{SCR}/MDC3_v47_change_log.xlsx"
 HDR = Font(bold=True, color="FFFFFF")
 FILL = PatternFill("solid", fgColor="1F3864")
 TITLE = Font(bold=True, size=13)
@@ -51,7 +51,7 @@ def sheet(wb, name, cols, rows, note=""):
 
 def main():
     a = load(f"{SCR}/MDC3_logic_repaired_v45.xml")
-    b = load(f"{SCR}/MDC3_logic_repaired_v46.xml")
+    b = load(f"{SCR}/MDC3_logic_repaired_v47.xml")
     A = {str(x.activity_id): x for x in a.activities}
     B = {str(x.activity_id): x for x in b.activities}
     wa = {w.uid: w for w in a.wbs_nodes}
@@ -69,7 +69,7 @@ def main():
 
     # --- summary ---
     ws = wb.create_sheet("Summary")
-    ws["A1"] = "MDC-3 v46 — WBS cleanup and orphan logic"
+    ws["A1"] = "MDC-3 v47 — WBS structure and orphan logic (against v45)"
     ws["A1"].font = TITLE
     fa = max((d10(x.early_finish) for x in a.activities if x.early_finish), default="")
     fb = max((d10(x.early_finish) for x in b.activities if x.early_finish), default="")
@@ -85,7 +85,7 @@ def main():
              sum(1 for x in a.activities if (x.total_float or 0) < 0),
              sum(1 for x in b.activities if (x.total_float or 0) < 0)),
             ("Project finish", fa, fb)]
-    for i, h in enumerate(("Measure", "v45", "v46"), 1):
+    for i, h in enumerate(("Measure", "v45", "v47"), 1):
         c = ws.cell(3, i, h); c.font = HDR; c.fill = FILL
     for j, r in enumerate(rows, 4):
         for i, v in enumerate(r, 1):
@@ -94,7 +94,11 @@ def main():
                  "was already in the file is removed. Every tie added is Finish to "
                  "Start with no lag, written only where the predecessor already "
                  "finishes before the successor starts, so it records the sequence "
-                 "without taking a day out of anyone's float.")
+                 "without taking a day out of anyone's float. All 911 deliveries now "
+                 "sit in the LLE bucket for their phase, so room folders show "
+                 "installed scope only and every MV room folder holds the same 18 "
+                 "activities. No pair is tied in both directions and no delivery "
+                 "feeds another delivery.")
     ws["A12"].alignment = Alignment(wrap_text=True, vertical="top")
     ws.merge_cells("A12:F18")
     ws.column_dimensions["A"].width = 34

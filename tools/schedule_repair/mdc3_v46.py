@@ -199,8 +199,11 @@ def main():
         return None, None
 
     # --- rule 5: the next work in the same area -------------------------
+    # a delivery is never the successor of another delivery: procurement rows
+    # do not perform work, so chaining them invents sequence that is not real
+    # and can close a loop between two deliveries in the same folder
     sameparent = collections.defaultdict(list)
-    for b in p.activities:
+    for b in nonlle:
         sameparent[b.wbs_uid].append(b)
     parent_of = {w.uid: w.parent_uid for w in p.wbs_nodes}
     predset = collections.defaultdict(set)
@@ -215,8 +218,8 @@ def main():
                 continue
             pool = sameparent.get(scope, [])
             if scope != a.wbs_uid:
-                pool = [b for w, bs in sameparent.items() for b in bs
-                        if parent_of.get(w) == scope]
+                pool = [b for wu, bs in sameparent.items() for b in bs
+                        if parent_of.get(wu) == scope]
             c = [b for b in pool
                  if b.uid != a.uid and es(b) >= fin
                  and b.uid not in predset.get(a.uid, set())
