@@ -183,15 +183,25 @@ def main():
                     tie(prev, a)
                 prev = a
                 chain.append(a)
+            # Only successors inside this same room may move onto the new
+            # chain. A tie that leaves the room is a crew moving to the next
+            # room, and a close-in or a pull must not hold that crew up: v34
+            # first time round put Wall Close-Ins After Skid Set (MV 105) in
+            # front of Electrical Pulls (HV 101) and pushed the programme.
+            uid2room = {}
+            for b in p.activities:
+                fu2, fn2 = roomfolder(b.wbs_uid)
+                if fn2:
+                    uid2room[b.uid] = re.sub(r'^WBO\s+', '', fn2)
+            same = [r for r in moving if uid2room.get(r.successor_uid) == fn]
             if par:
-                # feed whatever the anchor feeds, without displacing it
-                for r in moving:
+                for r in same:
                     tgt = next((x for x in p.activities
                                 if x.uid == r.successor_uid), None)
                     if tgt is not None:
                         tie(prev, tgt)
             else:
-                for r in moving:
+                for r in same:
                     r.predecessor_uid = prev.uid     # insert, do not append
             report[job] += len(chain)
     print()
